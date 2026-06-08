@@ -3,6 +3,38 @@
 Owns Trip, Day, Leg, PilotProfile, labels (ReasonCode, PremiumCategory).
 The engine knows nothing about these; schedule lowers them into the
 engine's Chunk / FloorEvent vocabulary.
-
-Not yet implemented — engine layer comes first per build order.
 """
+
+from .labels import (
+    DutyType,
+    EntryMode,
+    Position,
+    PremiumCategory,
+    PremiumScope,
+    ReasonCode,
+)
+from .lower import lower_month
+from .models import (
+    AssignmentVersion,
+    Day,
+    Leg,
+    Month,
+    PilotProfile,
+    Trip,
+)
+
+__all__ = [
+    "AssignmentVersion",
+    "Day",
+    "DutyType",
+    "EntryMode",
+    "Leg",
+    "Month",
+    "PilotProfile",
+    "Position",
+    "PremiumCategory",
+    "PremiumScope",
+    "ReasonCode",
+    "Trip",
+    "lower_month",
+]
