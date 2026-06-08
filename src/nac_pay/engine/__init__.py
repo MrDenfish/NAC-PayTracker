@@ -14,6 +14,11 @@ from .models import (
     FloorEventKind,
     WinningOption,
 )
+from .trip_pch import (
+    TripPchComponents,
+    components_from_times,
+    effective_trip_pch_after_reassignment,
+)
 
 __all__ = [
     "Chunk",
@@ -23,6 +28,9 @@ __all__ = [
     "EngineResult",
     "FloorEvent",
     "FloorEventKind",
+    "TripPchComponents",
     "WinningOption",
+    "components_from_times",
     "compute_pay",
+    "effective_trip_pch_after_reassignment",
 ]
