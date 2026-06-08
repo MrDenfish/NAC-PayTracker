@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtualenv
+.venv/
+venv/
+
+# uv
+uv.lock
+# (lockfile is committed by convention; uncomment the line above to ignore)
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local data / databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets / env
+.env
+.env.local
+
+# Build artifacts
+dist/
+build/
