@@ -5,6 +5,11 @@ The engine knows nothing about these; schedule lowers them into the
 engine's Chunk / FloorEvent vocabulary.
 """
 
+from .apply_actuals import (
+    AppliedEvent,
+    AppliedEventKind,
+    apply_actuals_to_month,
+)
 from .from_master_schedule import ConversionWarning, month_from_master_schedule
 from .labels import (
     DutyType,
@@ -25,6 +30,8 @@ from .models import (
 )
 
 __all__ = [
+    "AppliedEvent",
+    "AppliedEventKind",
     "AssignmentVersion",
     "ConversionWarning",
     "Day",
@@ -38,6 +45,7 @@ __all__ = [
     "PremiumScope",
     "ReasonCode",
     "Trip",
+    "apply_actuals_to_month",
     "lower_month",
     "month_from_master_schedule",
 ]
