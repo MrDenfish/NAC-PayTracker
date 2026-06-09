@@ -18,6 +18,12 @@ from .master_schedule import (
     PilotMonthSchedule,
     parse_master_schedule,
 )
+from .reconciliation import (
+    MatchStatus,
+    ReconciledTrip,
+    ReconciliationResult,
+    reconcile_feed_to_packet,
+)
 from .trip_pairing_packet import (
     TripPairing,
     parse_trip_pairing_packet,
@@ -30,9 +36,12 @@ from .validation import (
 __all__ = [
     "DayCell",
     "FlightLegEvent",
+    "MatchStatus",
     "OffEvent",
     "ParsedFeed",
     "PilotMonthSchedule",
+    "ReconciledTrip",
+    "ReconciliationResult",
     "ReserveEvent",
     "TripPairing",
     "UnknownEvent",
@@ -40,5 +49,6 @@ __all__ = [
     "parse_ical_feed",
     "parse_master_schedule",
     "parse_trip_pairing_packet",
+    "reconcile_feed_to_packet",
     "validate_trip_pairing_packet",
 ]

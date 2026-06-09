@@ -53,9 +53,17 @@ class FlightLegEvent:
 
     @property
     def block_hours(self) -> Decimal:
-        """Scheduled block time = DTEND - DTSTART, expressed in hours."""
+        """Scheduled block time = DTEND - DTSTART, expressed in hours.
+
+        Uses integer-second division through Decimal so the result is
+        exactly the same form as the packet's hh:mm-derived hours
+        (Decimal(h) + Decimal(m)/Decimal(60)). Going through float would
+        lose precision and prevent direct equality checks against packet
+        values.
+        """
         delta = self.dt_end_utc - self.dt_start_utc
-        return Decimal(str(delta.total_seconds() / 3600))
+        total_seconds = delta.days * 86400 + delta.seconds
+        return Decimal(total_seconds) / Decimal("3600")
 
 
 @dataclass(frozen=True)
@@ -87,10 +95,10 @@ class UnknownEvent:
 
 @dataclass(frozen=True)
 class ParsedFeed:
-    flight_legs: tuple[FlightLegEvent, ...]
-    reserves: tuple[ReserveEvent, ...]
-    off_days: tuple[OffEvent, ...]
-    unknown: tuple[UnknownEvent, ...]
+    flight_legs: tuple[FlightLegEvent, ...] = ()
+    reserves: tuple[ReserveEvent, ...] = ()
+    off_days: tuple[OffEvent, ...] = ()
+    unknown: tuple[UnknownEvent, ...] = ()
 
     @property
     def total_events(self) -> int:
