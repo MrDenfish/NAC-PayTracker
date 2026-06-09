@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — {{ data.month_label }} — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="dashboard">
+  {# ── Identity strip ─────────────────────────────────────────────── #}
+  <div class="identity-row">
+    <div class="identity">
+      <h1>{{ data.pilot.name }}</h1>
+      <p class="subtle">
+        {{ data.pilot.position.value }}
+        · 737
+        · ${{ "%.2f"|format(data.pilot.hourly_rate) }}/hr
+      </p>
+    </div>
+
+    <form action="/" method="get" class="month-switcher">
+      <label class="visually-hidden" for="month-pick">Month</label>
+      <select id="month-pick" name="ym" onchange="this.form.submit()">
+        {% for y, m, label in data.available_months %}
+        <option value="{{ y }}-{{ m }}"
+                {% if y == data.year and m == data.month %}selected{% endif %}>
+          {{ label }}
+        </option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {# ── Three metric cards ─────────────────────────────────────────── #}
+  <div class="metrics">
+    <div class="metric">
+      <div class="metric-label">Monthly PCH</div>
+      <div class="metric-value">{{ "%.2f"|format(data.base_monthly_pch) }}</div>
+      <div class="metric-sub">winning: {{ data.winning_option }}</div>
+    </div>
+    <div class="metric metric--accent">
+      <div class="metric-label">Total pay</div>
+      <div class="metric-value">${{ "{:,.2f}".format(data.total_pay) }}</div>
+      <div class="metric-sub">
+        earned ${{ "{:,.2f}".format(data.earned_dollars) }}
+        {% if data.topup_dollars > 0 %}
+        + top-up ${{ "{:,.2f}".format(data.topup_dollars) }}
+        {% endif %}
+      </div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Vs. guarantee</div>
+      <div class="metric-value">
+        {% set delta = data.base_monthly_pch - 65 %}
+        {% if delta >= 0 %}
+          +{{ "%.2f"|format(delta) }}
+        {% else %}
+          {{ "%.2f"|format(delta) }}
+        {% endif %}
+      </div>
+      <div class="metric-sub">monthly PCH vs MPG 65</div>
+    </div>
+  </div>
+
+  {# ── Greater-of-three breakdown ─────────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Greater-of-three (Section 6)</h2>
+    <table class="option-table">
+      <thead>
+        <tr>
+          <th>Option</th>
+          <th>PCH</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="{% if data.winning_option == 'Guarantee floor' %}winning{% endif %}">
+          <td>Floor</td>
+          <td class="num">{{ "%.2f"|format(data.option1_floor) }}</td>
+          <td class="note">max(line, 65) ± events</td>
+        </tr>
+        <tr class="{% if data.winning_option == 'Workdays × DPG' %}winning{% endif %}">
+          <td>Workdays × DPG</td>
+          <td class="num">{{ "%.2f"|format(data.option2_workdays_dpg) }}</td>
+          <td class="note">3.82 PCH per duty period</td>
+        </tr>
+        <tr class="{% if data.winning_option == 'Sum earned' %}winning{% endif %}">
+          <td>Earned</td>
+          <td class="num">{{ "%.2f"|format(data.option3_earned) }}</td>
+          <td class="note">Σ trips, days, reserves</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>Monthly PCH</td>
+          <td class="num strong">{{ "%.2f"|format(data.base_monthly_pch) }}</td>
+          <td class="note">winning: {{ data.winning_option }}</td>
+        </tr>
+        {% if data.topup_pch > 0 %}
+        <tr>
+          <td>Top-up at regular rate</td>
+          <td class="num">{{ "%.2f"|format(data.topup_pch) }}</td>
+          <td class="note">${{ "{:,.2f}".format(data.topup_dollars) }}</td>
+        </tr>
+        {% endif %}
+      </tfoot>
+    </table>
+  </div>
+
+  {# ── Status strip ──────────────────────────────────────────────── #}
+  <div class="card status-strip">
+    <h2 class="card-title">Data sources</h2>
+    <ul class="status-list">
+      <li>
+        <span class="status-dot {% if data.fa_loaded %}ok{% else %}off{% endif %}"></span>
+        Final Award {{ "loaded" if data.fa_loaded else "not loaded" }}
+        <span class="subtle">— line value {{ "%.2f"|format(data.line_value) }}</span>
+      </li>
+      <li>
+        <span class="status-dot {% if data.packet_loaded %}ok{% else %}off{% endif %}"></span>
+        Trip Pairing Packet {{ "loaded" if data.packet_loaded else "not loaded" }}
+        <span class="subtle">— {{ data.packet_trip_count }} trips</span>
+      </li>
+      <li>
+        <span class="status-dot {% if data.feed_loaded %}ok{% else %}off{% endif %}"></span>
+        iCal feed {{ "loaded" if data.feed_loaded else "not loaded" }}
+        {% if data.feed_loaded %}
+        <span class="subtle">— {{ data.feed_event_count }} events</span>
+        {% endif %}
+      </li>
+      <li>
+        <span class="status-dot {% if data.validation_discrepancies|length == 0 %}ok{% else %}warn{% endif %}"></span>
+        Packet validation
+        <span class="subtle">
+          — {{ data.validation_discrepancies|length }} discrepancies
+          {% if data.validation_discrepancies|length == 0 %} (clean){% endif %}
+        </span>
+      </li>
+    </ul>
+  </div>
+
+  {# ── Applied events ─────────────────────────────────────────────── #}
+  {% if data.applied_events %}
+  <div class="card">
+    <h2 class="card-title">Mid-month events applied</h2>
+    <ul class="event-list">
+      {% for event in data.applied_events %}
+      <li>
+        <span class="event-kind event-kind--{{ event.kind.value|lower }}">
+          {{ event.kind.value|replace("_", " ")|lower }}
+        </span>
+        <span class="event-date">{{ event.date }}</span>
+        <span class="event-detail">{{ event.detail }}</span>
+        {% if event.delta_pch is not none %}
+        <span class="event-delta">
+          {% if event.delta_pch > 0 %}+{% endif %}{{ "%.2f"|format(event.delta_pch) }} PCH
+        </span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Validation discrepancies ───────────────────────────────────── #}
+  {% if data.validation_discrepancies %}
+  <div class="card card--warn">
+    <h2 class="card-title">Packet validation issues</h2>
+    <ul class="event-list">
+      {% for d in data.validation_discrepancies %}
+      <li>
+        <span class="event-detail">{{ d }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

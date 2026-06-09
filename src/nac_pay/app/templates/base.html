@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}NAC Pay Tracker{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  <script src="https://unpkg.com/htmx.org@2.0.4"
+          integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
+          crossorigin="anonymous"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">NAC Pay Tracker</div>
+    <nav class="primary-nav">
+      <a href="/" class="nav-link nav-link--active">Dashboard</a>
+      <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Calendar</a>
+      <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Pay breakdown</a>
+      <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Compare to stub</a>
+      <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Discrepancies</a>
+      <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Settings</a>
+    </nav>
+  </header>
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>JCBA-2019 Section 3</span>
+    <span class="dot">·</span>
+    <span>Engine v0.1.0</span>
+  </footer>
+</body>
+</html>
