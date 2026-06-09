@@ -5,6 +5,14 @@ domain-model assumptions baked in. Higher layers (or callers) translate
 the parser output into ``schedule.Month`` etc.
 """
 
+from .ical_feed import (
+    FlightLegEvent,
+    OffEvent,
+    ParsedFeed,
+    ReserveEvent,
+    UnknownEvent,
+    parse_ical_feed,
+)
 from .master_schedule import (
     DayCell,
     PilotMonthSchedule,
@@ -21,9 +29,15 @@ from .validation import (
 
 __all__ = [
     "DayCell",
+    "FlightLegEvent",
+    "OffEvent",
+    "ParsedFeed",
     "PilotMonthSchedule",
+    "ReserveEvent",
     "TripPairing",
+    "UnknownEvent",
     "ValidationDiscrepancy",
+    "parse_ical_feed",
     "parse_master_schedule",
     "parse_trip_pairing_packet",
     "validate_trip_pairing_packet",
