@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "NAC pilot monthly pay tracker — JCBA-2019 Section 3 engine + web app"
 requires-python = ">=3.11"
 authors = [{ name = "MrDenfish" }]
-dependencies = []
+dependencies = [
+    "pdfplumber>=0.11",
+]
 
 [project.optional-dependencies]
 # Engine layer has zero runtime deps. The optional groups below are for later layers.
@@ -15,7 +17,6 @@ app = [
     "python-multipart>=0.0.9",
     "httpx>=0.27",
     "icalendar>=5.0",
-    "pdfplumber>=0.11",
 ]
 dev = [
     "pytest>=8.0",
