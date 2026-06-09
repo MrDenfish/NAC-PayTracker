@@ -120,6 +120,7 @@ def apply_actuals_to_month(
         matched_aid = _find_baseline_aid_for_packet_trip(rt.trip_id, aid_segments)
         idx = _next_unmatched_index_for_aid(
             matched_aid, aid_to_indexes, matched_indexes,
+            baseline.trips, first_date,
         )
 
         if idx is not None:
@@ -155,6 +156,7 @@ def apply_actuals_to_month(
                     workdays=rt.calendar_days_touched,
                     entry_mode=EntryMode.SIMPLE,
                     label=f"Mid-month pickup {rt.trip_id} on {first_date.isoformat()}",
+                    dates=(first_date,),
                 )
             )
             events.append(
@@ -250,19 +252,31 @@ def _next_unmatched_index_for_aid(
     aid: str | None,
     aid_to_indexes: dict[str, list[int]],
     matched_indexes: set[int],
+    baseline_trips: tuple[Trip, ...],
+    target_date: date_t,
 ) -> int | None:
     """First unmatched baseline-trip index for a given aid, or None.
 
-    Resolves the duplicate-aid case (e.g. FISHER's ``722/754`` on both
-    June 6 and June 17) — successive reconciled trips claim successive
-    baseline indexes, not the same one twice.
+    When a baseline Trip carries ``dates`` (set by the FA converter),
+    prefer the index whose Trip.dates contains the reconciled trip's
+    first-leg date — this prevents same-aid trips on different dates
+    from claiming each other's events (e.g. a duty extension on June 17
+    must update FISHER's June 17 ``722/754`` Trip, not her June 6 one).
+
+    Falls back to first-available when no candidate carries the date
+    (or none carry dates at all — synthetic / legacy Trips).
     """
     if aid is None:
         return None
-    for idx in aid_to_indexes.get(aid, ()):
-        if idx not in matched_indexes:
+    candidates = [
+        idx for idx in aid_to_indexes.get(aid, ()) if idx not in matched_indexes
+    ]
+    if not candidates:
+        return None
+    for idx in candidates:
+        if target_date in baseline_trips[idx].dates:
             return idx
-    return None
+    return candidates[0]
 
 
 def _is_ordered_subsequence(needle: tuple[str, ...], haystack: list[str]) -> bool:

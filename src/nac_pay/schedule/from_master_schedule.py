@@ -124,6 +124,7 @@ def month_from_master_schedule(
                     workdays=1,
                     entry_mode=EntryMode.SIMPLE,
                     label=f"{cell.assignment_id} on {cell.date.isoformat()}",
+                    dates=(cell.date,),
                 )
             )
         else:

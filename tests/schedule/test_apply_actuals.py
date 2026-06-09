@@ -350,6 +350,90 @@ def test_open_time_pickup_adds_new_trip_at_bid_period_default():
     assert len(pickup_events) == 1
 
 
+# ── Duplicate-aid disambiguation via Trip.dates ────────────────────────
+
+
+def test_same_aid_on_different_dates_disambiguates_by_date():
+    """FISHER has aid='722/754' scheduled on TWO dates in a month. A duty
+    extension on one of those dates must update *that* baseline Trip, not
+    the first one with matching aid. Without Trip.dates this regressed —
+    the duty extension landed on the wrong baseline slot."""
+    trip_june_6 = Trip(
+        trip_id="722/754",
+        published_pch=D("5.25"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+        dates=(date(2026, 6, 6),),
+        label="722/754 on 2026-06-06",
+    )
+    trip_june_17 = Trip(
+        trip_id="722/754",
+        published_pch=D("5.25"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+        dates=(date(2026, 6, 17),),
+        label="722/754 on 2026-06-17",
+    )
+    baseline = _empty_month(trips=(trip_june_6, trip_june_17))
+
+    # iCal trip on June 17 with extended block → should match the June-17 Trip
+    rt = _matched_trip(
+        "722/723/754/755",
+        actual_block="6.50",      # > 5.25 + tolerance → triggers extension
+        packet_pch="5.25",
+        packet_block="5.25",
+        packet_duty="9.15",
+        on_date=date(2026, 6, 17),
+    )
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    updated, events = apply_actuals_to_month(baseline, reconciliation)
+
+    # Both Trips survive; only the June-17 one has a version.
+    assert len(updated.trips) == 2
+    june_6_updated = next(t for t in updated.trips if date(2026, 6, 6) in t.dates)
+    june_17_updated = next(t for t in updated.trips if date(2026, 6, 17) in t.dates)
+    assert june_6_updated.versions == ()
+    assert len(june_17_updated.versions) == 1
+
+    duty_events = [e for e in events if e.kind is AppliedEventKind.DUTY_EXTENSION]
+    assert len(duty_events) == 1
+    assert duty_events[0].date == date(2026, 6, 17)
+
+
+def test_falls_back_to_first_available_when_no_baseline_dates():
+    """Synthetic / legacy Trips without dates fall back to first-available
+    matching (the pre-dates behavior). This guards against accidentally
+    breaking older Trip constructions that don't supply dates."""
+    trip_a = Trip(
+        trip_id="722/754",
+        published_pch=D("5.25"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+    )
+    trip_b = Trip(
+        trip_id="722/754",
+        published_pch=D("5.25"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+    )
+    baseline = _empty_month(trips=(trip_a, trip_b))
+
+    rt = _matched_trip(
+        "722/723/754/755",
+        actual_block="6.50",
+        packet_pch="5.25",
+        packet_block="5.25",
+        packet_duty="9.15",
+    )
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+    updated, _ = apply_actuals_to_month(baseline, reconciliation)
+
+    # First trip gets the version; second is untouched.
+    assert len(updated.trips[0].versions) == 1
+    assert updated.trips[1].versions == ()
+
+
 # ── Unmatched ──────────────────────────────────────────────────────────
 
 

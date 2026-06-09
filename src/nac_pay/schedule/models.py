@@ -82,6 +82,12 @@ class Trip:
     workdays: int = 0
     custom_multiplier: Decimal | None = None   # required iff premium is CUSTOM
     label: str = ""
+    dates: tuple[date_t, ...] = ()
+    """Calendar dates this trip occupies. Populated by the FA converter from
+    the day-cell date; used by apply_actuals to disambiguate when the same
+    aid is scheduled on multiple dates in a month (e.g. FISHER's ``"722/754"``
+    on both June 6 and June 17). Empty tuple for legacy/synthetic Trips —
+    those fall back to first-available matching in apply_actuals."""
 
     @property
     def effective_pch(self) -> Decimal:
