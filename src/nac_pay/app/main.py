@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .services import available_months, load_calendar, load_dashboard
+from .services import available_months, load_calendar, load_dashboard, load_day
 
 _HERE = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
@@ -66,6 +66,27 @@ def dashboard(
         request,
         "dashboard.html",
         {"data": data, "active_screen": "dashboard"},
+    )
+
+
+@app.get("/day/{date_iso}", response_class=HTMLResponse)
+def day_detail(request: Request, date_iso: str) -> HTMLResponse:
+    """Day detail view (read-only first cut; edit form is disabled until the
+    persistence layer lands)."""
+    try:
+        target = date.fromisoformat(date_iso)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid date {date_iso!r}: expected YYYY-MM-DD"
+        ) from exc
+    try:
+        data = load_day(target.year, target.month, target.day)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "day.html",
+        {"data": data, "active_screen": "calendar"},
     )
 
 

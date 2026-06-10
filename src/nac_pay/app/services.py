@@ -32,7 +32,10 @@ from pathlib import Path
 
 from nac_pay.engine import EngineResult, WinningOption, compute_pay
 from nac_pay.parsers import (
+    FlightLegEvent,
     ParsedFeed,
+    ReconciliationResult,
+    TripPairing,
     ValidationDiscrepancy,
     parse_ical_feed,
     parse_master_schedule,
@@ -95,6 +98,8 @@ class PipelineResult:
     applied_events: tuple[AppliedEvent, ...]
     validation_discrepancies: tuple[ValidationDiscrepancy, ...]
     feed: ParsedFeed | None
+    reconciliation: ReconciliationResult | None
+    packet: dict[str, TripPairing]
     packet_trip_count: int
     fa_loaded: bool
     packet_loaded: bool
@@ -157,6 +162,8 @@ def _pipeline(
         applied_events=tuple(applied),
         validation_discrepancies=validation,
         feed=feed,
+        reconciliation=reconciliation,
+        packet=packet,
         packet_trip_count=len(packet),
         fa_loaded=True,
         packet_loaded=True,
@@ -347,6 +354,401 @@ def load_calendar(
         monthly_pch=pr.engine_result.base_monthly_pch,
         delta_vs_mpg=pr.engine_result.base_monthly_pch - Decimal("65"),
     )
+
+
+# ── Day detail view ──────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PchComponent:
+    label: str
+    pch: Decimal
+    is_winning: bool          # which component is currently winning the max
+
+
+@dataclass(frozen=True)
+class DayLeg:
+    flight_no: str
+    origin: str
+    destination: str
+    tail: str
+    dt_start_utc: str         # ISO string for display
+    dt_end_utc: str
+    block_hours: Decimal
+
+
+@dataclass(frozen=True)
+class DayVersion:
+    seq: int
+    pch_value: Decimal
+    label: str
+    is_effective: bool        # this version is what currently pays
+
+
+@dataclass(frozen=True)
+class DayDetailData:
+    pilot: PilotProfile
+    year: int
+    month: int
+    day: int
+    date_iso: str
+    date_label: str           # "Friday, June 12, 2026"
+    weekday_label: str        # "Fri"
+
+    # Navigation
+    prev_date_iso: str | None
+    next_date_iso: str | None
+    back_to_calendar_url: str
+
+    # Classification
+    kind: str                 # "trip" | "reserve" | "off" | "other"
+    duty_label: str
+    duty_class: str
+    assignment_id: str | None
+    in_packet: bool
+
+    # PCH
+    published_pch: Decimal | None
+    effective_pch: Decimal | None
+    pch_uplift: Decimal | None     # max(0, effective - published)
+
+    # Reason + premium
+    reason_label: str
+    premium_label: str
+    premium_multiplier: Decimal | None
+
+    # Packet detail (for FLT days only — when matched)
+    packet_trip_id: str | None
+    packet_components: tuple[PchComponent, ...]
+    sch_block_hours: Decimal | None
+    sch_duty_hours: Decimal | None
+    sch_tafb_hours: Decimal | None
+
+    # iCal leg detail (for FLT days)
+    legs: tuple[DayLeg, ...]
+    actual_block_hours: Decimal | None
+    block_delta: Decimal | None         # actual - scheduled
+
+    # Assignment history (versions)
+    versions: tuple[DayVersion, ...]
+
+    # Reserve callout
+    callout_trip_pch: Decimal | None
+    callout_excess: Decimal | None      # max(0, callout - DPG)
+
+    # Activity log on this date
+    applied_events: tuple[AppliedEvent, ...]
+
+
+_WEEKDAY_FULL = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+)
+_WEEKDAY_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_DPG = Decimal("3.82")
+
+_REASON_LABELS = {
+    "FLOWN": "Flown",
+    "PTO": "PTO",
+    "SICK": "Sick",
+    "JURY": "Jury",
+    "BEREAVEMENT": "Bereavement",
+    "TRAINING": "Training",
+    "MOVING": "Moving",
+    "FAR": "FAR",
+    "MILITARY": "Military",
+    "FMLA": "FMLA",
+    "UNPAID_LOA": "Unpaid LOA",
+    "VOLUNTARY_DROP": "Voluntary drop",
+    "LESSER_TRADE": "Lesser trade",
+    "UNPROTECTED_UNAVAIL": "Unprotected unavail.",
+    "OFF": "Day off",
+}
+
+_PREMIUM_LABELS = {
+    "NONE": "None (1.0×)",
+    "OPEN_TIME_MID_MONTH": "Open time, mid-month (1.5×)",
+    "OPEN_TIME_BID_PERIOD": "Open time, bid period (1.0×)",
+    "OVERTIME": "Overtime (1.5×)",
+    "JUNIOR_ASSIGNMENT_1ST": "Junior assignment 1st (2.0×)",
+    "JUNIOR_ASSIGNMENT_NTH": "Junior assignment Nth (2.5×)",
+    "LANDING": "Landing (1.5×, leg)",
+    "HOSTILE": "Hostile area (2.0×, duty period)",
+    "NRFO_SPECIALIZED": "NRFO specialized (1.5×)",
+    "CUSTOM": "Custom",
+}
+
+
+def load_day(
+    year: int,
+    month: int,
+    day: int,
+    pilot_code: str = "DFI",
+) -> DayDetailData:
+    try:
+        target = date_t(year, month, day)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid date {year}-{month}-{day}: {exc}"
+        ) from exc
+
+    pr = _pipeline(year, month, pilot_code)
+    updated = pr.updated_month
+
+    # Find the Trip or Day for this date.
+    trip = next(
+        (t for t in updated.trips if target in t.dates),
+        None,
+    )
+    day_entry = next(
+        (d for d in updated.days if d.date == target),
+        None,
+    )
+
+    # iCal legs on this date.
+    legs: tuple[DayLeg, ...] = ()
+    actual_block: Decimal | None = None
+    if pr.feed is not None:
+        date_legs = sorted(
+            (leg for leg in pr.feed.flight_legs if leg.dt_start_utc.date() == target),
+            key=lambda leg: leg.dt_start_utc,
+        )
+        legs = tuple(
+            DayLeg(
+                flight_no=leg.flight_no_short,
+                origin=leg.origin,
+                destination=leg.destination,
+                tail=leg.tail,
+                dt_start_utc=leg.dt_start_utc.strftime("%Y-%m-%d %H:%MZ"),
+                dt_end_utc=leg.dt_end_utc.strftime("%Y-%m-%d %H:%MZ"),
+                block_hours=leg.block_hours,
+            )
+            for leg in date_legs
+        )
+        if date_legs:
+            actual_block = sum(
+                (leg.block_hours for leg in date_legs),
+                Decimal("0"),
+            )
+
+    # Matched packet trip via reconciliation.
+    packet_trip: TripPairing | None = None
+    if pr.reconciliation is not None and trip is not None:
+        for rt in pr.reconciliation.matched:
+            if (
+                rt.first_dt_utc.date() == target
+                and rt.packet_trip is not None
+                and _ordered_subseq(trip.trip_id.split("/"), rt.trip_id.split("/"))
+            ):
+                packet_trip = rt.packet_trip
+                break
+
+    # Applied events on this date.
+    events_today = tuple(e for e in pr.applied_events if e.date == target)
+
+    return _build_day_detail(
+        target=target,
+        pr=pr,
+        trip=trip,
+        day_entry=day_entry,
+        packet_trip=packet_trip,
+        legs=legs,
+        actual_block=actual_block,
+        events_today=events_today,
+    )
+
+
+def _build_day_detail(
+    target: date_t,
+    pr: PipelineResult,
+    trip: Trip | None,
+    day_entry: Day | None,
+    packet_trip: TripPairing | None,
+    legs: tuple[DayLeg, ...],
+    actual_block: Decimal | None,
+    events_today: tuple[AppliedEvent, ...],
+) -> DayDetailData:
+    weekday_idx = target.weekday()
+    date_label = (
+        f"{_WEEKDAY_FULL[weekday_idx]}, "
+        f"{_MONTH_NAMES[target.month]} {target.day}, {target.year}"
+    )
+
+    # Sibling-month navigation (only if both targets are in bundled data).
+    prev_iso = next_iso = None
+    today = target
+    from datetime import timedelta
+    prev_candidate = today - timedelta(days=1)
+    next_candidate = today + timedelta(days=1)
+    if (prev_candidate.year, prev_candidate.month) in _DOC_INDEX or (
+        prev_candidate.year == today.year and prev_candidate.month == today.month
+    ):
+        prev_iso = prev_candidate.isoformat()
+    if (next_candidate.year, next_candidate.month) in _DOC_INDEX or (
+        next_candidate.year == today.year and next_candidate.month == today.month
+    ):
+        next_iso = next_candidate.isoformat()
+
+    back_url = f"/calendar?ym={target.year}-{target.month}"
+
+    if trip is not None:
+        kind = "trip"
+        duty_label = "FLT"
+        duty_class = "flt"
+        assignment_id = trip.trip_id
+        published = trip.published_pch
+        effective = trip.effective_pch
+        uplift = effective - published
+        reason_label = _REASON_LABELS.get(trip.reason_code.value, trip.reason_code.value)
+        premium_label = _PREMIUM_LABELS.get(
+            trip.premium_category.value, trip.premium_category.value
+        )
+        from .services import _premium_multiplier
+        premium_multiplier = _premium_multiplier(trip)
+        callout_pch: Decimal | None = None
+        callout_excess: Decimal | None = None
+        sch_block = packet_trip.sch_block_hours if packet_trip else None
+        sch_duty = packet_trip.duty_hours if packet_trip else None
+        sch_tafb = packet_trip.tafb_hours if packet_trip else None
+        block_delta = (
+            actual_block - sch_block
+            if actual_block is not None and sch_block is not None
+            else None
+        )
+        components = (
+            _packet_components(packet_trip) if packet_trip is not None else ()
+        )
+        in_packet = packet_trip is not None
+        packet_trip_id = packet_trip.trip_id if packet_trip else None
+        versions = (
+            (DayVersion(seq=0, pch_value=published, label="Original published",
+                        is_effective=(effective == published)),)
+            + tuple(
+                DayVersion(seq=v.seq, pch_value=v.pch_value,
+                           label=v.label or f"Revision #{v.seq}",
+                           is_effective=(effective == v.pch_value))
+                for v in trip.versions
+            )
+        ) if trip.versions else ()
+    elif day_entry is not None:
+        kind = "reserve" if day_entry.duty_type is DutyType.RSV else "other"
+        is_callout = day_entry.callout_trip_pch is not None
+        class_suffix, base_label = _DUTY_DISPLAY.get(
+            day_entry.duty_type, ("other", day_entry.duty_type.value)
+        )
+        duty_label = "CALLOUT" if is_callout else base_label
+        duty_class = "flt" if is_callout else class_suffix
+        assignment_id = day_entry.label or None
+        published = day_entry.pch_value
+        effective = (
+            max(_DPG, day_entry.callout_trip_pch) if is_callout else day_entry.pch_value
+        )
+        uplift = effective - published if is_callout else Decimal("0")
+        reason_label = _REASON_LABELS.get(
+            day_entry.reason_code.value, day_entry.reason_code.value
+        )
+        premium_label = _PREMIUM_LABELS.get(
+            day_entry.premium_category.value, day_entry.premium_category.value
+        )
+        premium_multiplier = None
+        callout_pch = day_entry.callout_trip_pch
+        callout_excess = (
+            max(Decimal("0"), day_entry.callout_trip_pch - _DPG)
+            if is_callout else None
+        )
+        sch_block = sch_duty = sch_tafb = None
+        block_delta = None
+        components = ()
+        in_packet = False
+        packet_trip_id = None
+        versions = ()
+    else:
+        kind = "off"
+        duty_label = "OFF"
+        duty_class = "off"
+        assignment_id = None
+        published = effective = uplift = None
+        reason_label = "—"
+        premium_label = "—"
+        premium_multiplier = None
+        callout_pch = callout_excess = None
+        sch_block = sch_duty = sch_tafb = None
+        block_delta = None
+        components = ()
+        in_packet = False
+        packet_trip_id = None
+        versions = ()
+
+    return DayDetailData(
+        pilot=pr.pilot,
+        year=target.year,
+        month=target.month,
+        day=target.day,
+        date_iso=target.isoformat(),
+        date_label=date_label,
+        weekday_label=_WEEKDAY_SHORT[weekday_idx],
+        prev_date_iso=prev_iso,
+        next_date_iso=next_iso,
+        back_to_calendar_url=back_url,
+        kind=kind,
+        duty_label=duty_label,
+        duty_class=duty_class,
+        assignment_id=assignment_id,
+        in_packet=in_packet,
+        published_pch=published,
+        effective_pch=effective,
+        pch_uplift=uplift,
+        reason_label=reason_label,
+        premium_label=premium_label,
+        premium_multiplier=premium_multiplier,
+        packet_trip_id=packet_trip_id,
+        packet_components=components,
+        sch_block_hours=sch_block,
+        sch_duty_hours=sch_duty,
+        sch_tafb_hours=sch_tafb,
+        legs=legs,
+        actual_block_hours=actual_block,
+        block_delta=block_delta,
+        versions=versions,
+        callout_trip_pch=callout_pch,
+        callout_excess=callout_excess,
+        applied_events=events_today,
+    )
+
+
+def _packet_components(packet: TripPairing) -> tuple[PchComponent, ...]:
+    """The four §3.E components + deadhead, with the winning component marked."""
+    values = {
+        "Flight Operation": packet.flight_op_pch,
+        "Duty Rig": packet.duty_rig_pch,
+        "Trip Rig": packet.trip_rig_pch,
+        "Cumulative DPG": packet.cumulative_dpg_pch,
+    }
+    winning_pch = max(values.values())
+    return tuple(
+        PchComponent(label=label, pch=val, is_winning=(val == winning_pch))
+        for label, val in values.items()
+    ) + (
+        PchComponent(label="Deadhead", pch=packet.deadhead_pch, is_winning=False),
+    )
+
+
+def _premium_multiplier(trip: Trip) -> Decimal:
+    """Resolve the trip's premium multiplier — wraps the labels-table lookup
+    so the template doesn't need to know the import path."""
+    from nac_pay.schedule.labels import premium_multiplier
+    return premium_multiplier(trip.premium_category, trip.custom_multiplier)
+
+
+def _ordered_subseq(needle: list[str], haystack: list[str]) -> bool:
+    if not needle:
+        return False
+    i = 0
+    for token in haystack:
+        if i < len(needle) and needle[i] == token:
+            i += 1
+        if i == len(needle):
+            return True
+    return False
 
 
 def _build_cell(

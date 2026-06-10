@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}{{ data.date_label }} — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="day-detail">
+
+  {# ── Header / navigation ─────────────────────────────────────── #}
+  <div class="day-header">
+    <div>
+      <a href="{{ data.back_to_calendar_url }}" class="back-link">← back to calendar</a>
+      <h1>{{ data.date_label }}</h1>
+      <p class="subtle">{{ data.pilot.name }} · {{ data.pilot.position.value }} · 737</p>
+    </div>
+    <div class="day-nav">
+      {% if data.prev_date_iso %}
+      <a href="/day/{{ data.prev_date_iso }}" class="nav-btn">← {{ data.prev_date_iso }}</a>
+      {% else %}
+      <span class="nav-btn nav-btn--disabled">←</span>
+      {% endif %}
+      {% if data.next_date_iso %}
+      <a href="/day/{{ data.next_date_iso }}" class="nav-btn">{{ data.next_date_iso }} →</a>
+      {% else %}
+      <span class="nav-btn nav-btn--disabled">→</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Assignment block ────────────────────────────────────────── #}
+  <div class="card">
+    <div class="assignment-row">
+      <div>
+        <h2 class="card-title">Assignment</h2>
+        <div class="aid-large duty-bg--{{ data.duty_class }}">
+          {% if data.assignment_id %}{{ data.assignment_id }}{% else %}—{% endif %}
+        </div>
+        <div class="duty-line">
+          <span class="duty-label duty-label--big">{{ data.duty_label }}</span>
+          {% if data.packet_trip_id and data.packet_trip_id != data.assignment_id %}
+          <span class="subtle">packet trip {{ data.packet_trip_id }}</span>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if data.effective_pch is not none %}
+      <div class="pch-block">
+        <div class="metric-label">Effective PCH</div>
+        <div class="metric-value pch-effective">{{ "%.2f"|format(data.effective_pch) }}</div>
+        {% if data.published_pch is not none and data.published_pch != data.effective_pch %}
+        <div class="metric-sub">
+          original {{ "%.2f"|format(data.published_pch) }} · paid the greater (§3.E.1.b)
+        </div>
+        {% elif data.published_pch is not none %}
+        <div class="metric-sub">published value · {{ data.kind }}</div>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Reason / Premium (display-only for now) ─────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Reason & premium</h2>
+    <div class="form-grid">
+      <label>
+        <span class="form-label">Reason</span>
+        <select disabled>
+          <option>{{ data.reason_label }}</option>
+        </select>
+      </label>
+      <label>
+        <span class="form-label">Premium</span>
+        <select disabled>
+          <option>{{ data.premium_label }}</option>
+        </select>
+      </label>
+      <label>
+        <span class="form-label">Entry mode</span>
+        <select disabled>
+          <option>Value (from FA)</option>
+        </select>
+      </label>
+    </div>
+    <p class="subtle form-note">
+      Editing reason/premium/entry-mode requires the persistence layer — coming next.
+    </p>
+  </div>
+
+  {# ── Callout summary ─────────────────────────────────────────── #}
+  {% if data.callout_trip_pch is not none %}
+  <div class="card">
+    <h2 class="card-title">Reserve callout</h2>
+    <table class="kv-table">
+      <tr><th>Reserve line</th><td>{{ data.assignment_id }}</td></tr>
+      <tr><th>Reserve credit (DPG)</th><td>3.82</td></tr>
+      <tr><th>Callout trip PCH</th><td>{{ "%.2f"|format(data.callout_trip_pch) }}</td></tr>
+      <tr><th>Paid the greater</th><td><strong>{{ "%.2f"|format(data.effective_pch) }}</strong></td></tr>
+      <tr><th>On-top floor excess (§3.D)</th><td>+{{ "%.2f"|format(data.callout_excess) }}</td></tr>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Components from packet ────────────────────────────────── #}
+  {% if data.packet_components %}
+  <div class="card">
+    <h2 class="card-title">PCH components (§3.E from packet)</h2>
+    <table class="option-table">
+      <thead><tr><th>Component</th><th>PCH</th></tr></thead>
+      <tbody>
+        {% for c in data.packet_components %}
+        <tr class="{% if c.is_winning %}winning{% endif %}">
+          <td>{{ c.label }}</td>
+          <td class="num">{{ "%.2f"|format(c.pch) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>Trip PCH = max + DH</td>
+          <td class="num strong">{{ "%.2f"|format(data.effective_pch) }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Times: scheduled vs actual ──────────────────────────────── #}
+  {% if data.sch_block_hours is not none or data.actual_block_hours is not none %}
+  <div class="card">
+    <h2 class="card-title">Times</h2>
+    <table class="times-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Block</th>
+          <th>Duty</th>
+          <th>TAFB</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if data.sch_block_hours is not none %}
+        <tr>
+          <th>Scheduled (packet)</th>
+          <td class="num">{{ "%.2f"|format(data.sch_block_hours) }} h</td>
+          <td class="num">{{ "%.2f"|format(data.sch_duty_hours) }} h</td>
+          <td class="num">{{ "%.2f"|format(data.sch_tafb_hours) }} h</td>
+        </tr>
+        {% endif %}
+        {% if data.actual_block_hours is not none %}
+        <tr>
+          <th>Actual (iCal)</th>
+          <td class="num">{{ "%.2f"|format(data.actual_block_hours) }} h</td>
+          <td class="num">—</td>
+          <td class="num">—</td>
+        </tr>
+        {% endif %}
+        {% if data.block_delta is not none %}
+        <tr class="{% if data.block_delta > 0 %}winning{% endif %}">
+          <th>Δ</th>
+          <td class="num">
+            {% if data.block_delta > 0 %}+{% endif %}{{ "%.2f"|format(data.block_delta) }} h
+          </td>
+          <td></td>
+          <td></td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Legs from iCal ─────────────────────────────────────────── #}
+  {% if data.legs %}
+  <div class="card">
+    <h2 class="card-title">Legs (iCal)</h2>
+    <table class="legs-table">
+      <thead>
+        <tr>
+          <th>Flight</th>
+          <th>Route</th>
+          <th>Tail</th>
+          <th>Out</th>
+          <th>In</th>
+          <th>Block</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for leg in data.legs %}
+        <tr>
+          <td><code>NC{{ leg.flight_no }}</code></td>
+          <td>{{ leg.origin }}–{{ leg.destination }}</td>
+          <td>{{ leg.tail }}</td>
+          <td class="time-cell">{{ leg.dt_start_utc }}</td>
+          <td class="time-cell">{{ leg.dt_end_utc }}</td>
+          <td class="num">{{ "%.2f"|format(leg.block_hours) }} h</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Assignment history ─────────────────────────────────────── #}
+  {% if data.versions %}
+  <div class="card">
+    <h2 class="card-title">Assignment history (§3.E.1.b)</h2>
+    <ul class="version-list">
+      {% for v in data.versions %}
+      <li class="{% if v.is_effective %}version--effective{% endif %}">
+        <span class="version-seq">v{{ v.seq }}</span>
+        <span class="version-pch">{{ "%.2f"|format(v.pch_value) }} PCH</span>
+        <span class="version-label">{{ v.label }}</span>
+        {% if v.is_effective %}<span class="badge badge--ok">paid the greater</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Applied events on this date ────────────────────────────── #}
+  {% if data.applied_events %}
+  <div class="card">
+    <h2 class="card-title">Events applied to this day</h2>
+    <ul class="event-list">
+      {% for event in data.applied_events %}
+      <li>
+        <span class="event-kind event-kind--{{ event.kind.value|lower }}">
+          {{ event.kind.value|replace("_", " ")|lower }}
+        </span>
+        <span class="event-date">{{ event.date }}</span>
+        <span class="event-detail">{{ event.detail }}</span>
+        {% if event.delta_pch is not none %}
+        <span class="event-delta">
+          {% if event.delta_pch > 0 %}+{% endif %}{{ "%.2f"|format(event.delta_pch) }} PCH
+        </span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if data.kind == 'off' %}
+  <div class="card">
+    <p class="subtle">No scheduled activity for this day. Day off, OFF cell on the Final Award.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

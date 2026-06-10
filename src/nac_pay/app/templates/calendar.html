@@ -56,10 +56,12 @@
     {% for week in data.weeks %}
     <div class="week-row">
       {% for cell in week %}
-      <div class="day-cell
-                  {% if not cell.in_month %} day-cell--out{% endif %}
-                  {% if cell.is_weekend %} day-cell--weekend{% endif %}
-                  {% if cell.duty_class %} duty-bg--{{ cell.duty_class }}{% endif %}">
+      {% if cell.in_month %}
+      <a href="/day/{{ cell.date.isoformat() }}"
+         class="day-cell{% if cell.is_weekend %} day-cell--weekend{% endif %}{% if cell.duty_class %} duty-bg--{{ cell.duty_class }}{% endif %}">
+      {% else %}
+      <div class="day-cell day-cell--out{% if cell.is_weekend %} day-cell--weekend{% endif %}{% if cell.duty_class %} duty-bg--{{ cell.duty_class }}{% endif %}">
+      {% endif %}
         <div class="day-cell-header">
           <span class="day-number">{{ cell.date.day }}</span>
           <span class="day-flags">
@@ -80,7 +82,11 @@
           {% endif %}
         </div>
         {% endif %}
+      {% if cell.in_month %}
+      </a>
+      {% else %}
       </div>
+      {% endif %}
       {% endfor %}
     </div>
     {% endfor %}
