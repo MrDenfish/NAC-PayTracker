@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .services import available_months, load_dashboard
+from .services import available_months, load_calendar, load_dashboard
 
 _HERE = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
@@ -65,5 +65,38 @@ def dashboard(
     return _TEMPLATES.TemplateResponse(
         request,
         "dashboard.html",
-        {"data": data},
+        {"data": data, "active_screen": "dashboard"},
+    )
+
+
+@app.get("/calendar", response_class=HTMLResponse)
+def calendar_view(
+    request: Request,
+    year: int | None = Query(default=None),
+    month: int | None = Query(default=None),
+    ym: str | None = Query(default=None),
+) -> HTMLResponse:
+    if ym and (year is None or month is None):
+        try:
+            y_str, m_str = ym.split("-", 1)
+            year = int(y_str)
+            month = int(m_str)
+        except (ValueError, AttributeError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid ym={ym!r}"
+            ) from exc
+
+    default_year, default_month = _default_year_month()
+    target_year = year or default_year
+    target_month = month or default_month
+
+    try:
+        data = load_calendar(target_year, target_month)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "calendar.html",
+        {"data": data, "active_screen": "calendar"},
     )

@@ -13,8 +13,8 @@
   <header class="topbar">
     <div class="brand">NAC Pay Tracker</div>
     <nav class="primary-nav">
-      <a href="/" class="nav-link nav-link--active">Dashboard</a>
-      <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Calendar</a>
+      <a href="/" class="nav-link {% if active_screen == 'dashboard' %}nav-link--active{% endif %}">Dashboard</a>
+      <a href="/calendar" class="nav-link {% if active_screen == 'calendar' %}nav-link--active{% endif %}">Calendar</a>
       <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Pay breakdown</a>
       <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Compare to stub</a>
       <a href="#" class="nav-link nav-link--disabled" title="Coming soon">Discrepancies</a>

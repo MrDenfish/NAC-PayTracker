@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Calendar — {{ data.month_label }} — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="calendar-view">
+
+  <div class="identity-row">
+    <div class="identity">
+      <h1>{{ data.month_label }}</h1>
+      <p class="subtle">
+        {{ data.pilot.name }} · {{ data.pilot.position.value }} · 737
+      </p>
+    </div>
+
+    <form action="/calendar" method="get" class="month-switcher">
+      <label class="visually-hidden" for="month-pick">Month</label>
+      <select id="month-pick" name="ym" onchange="this.form.submit()">
+        {% for y, m, label in data.available_months %}
+        <option value="{{ y }}-{{ m }}"
+                {% if y == data.year and m == data.month %}selected{% endif %}>
+          {{ label }}
+        </option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {# ── Legend ─────────────────────────────────────────────────────── #}
+  {% if data.legend %}
+  <div class="legend">
+    {% for entry in data.legend %}
+    <span class="legend-item">
+      <span class="legend-swatch duty-bg--{{ entry.duty_class }}"></span>
+      {{ entry.label }}
+    </span>
+    {% endfor %}
+    <span class="legend-item legend-item--note">
+      <span class="flag-icon">↔</span> reassigned
+    </span>
+    <span class="legend-item legend-item--note">
+      <span class="flag-icon">⚡</span> callout
+    </span>
+  </div>
+  {% endif %}
+
+  {# ── Grid ───────────────────────────────────────────────────────── #}
+  <div class="calendar-grid card">
+    <div class="weekday-row">
+      {% for label in data.weekday_headers %}
+      <div class="weekday {% if loop.index >= 6 %}weekday--weekend{% endif %}">
+        {{ label }}
+      </div>
+      {% endfor %}
+    </div>
+
+    {% for week in data.weeks %}
+    <div class="week-row">
+      {% for cell in week %}
+      <div class="day-cell
+                  {% if not cell.in_month %} day-cell--out{% endif %}
+                  {% if cell.is_weekend %} day-cell--weekend{% endif %}
+                  {% if cell.duty_class %} duty-bg--{{ cell.duty_class }}{% endif %}">
+        <div class="day-cell-header">
+          <span class="day-number">{{ cell.date.day }}</span>
+          <span class="day-flags">
+            {% if cell.is_reassigned %}<span class="flag-icon" title="reassigned (greater-of-original)">↔</span>{% endif %}
+            {% if cell.has_callout %}<span class="flag-icon" title="reserve callout">⚡</span>{% endif %}
+          </span>
+        </div>
+        {% if cell.in_month and (cell.assignment_id or cell.duty_label) %}
+        <div class="day-cell-body">
+          {% if cell.assignment_id %}
+          <div class="aid">{{ cell.assignment_id }}</div>
+          {% endif %}
+          {% if cell.duty_label %}
+          <div class="duty-label">{{ cell.duty_label }}</div>
+          {% endif %}
+          {% if cell.pch is not none %}
+          <div class="pch">{{ "%.2f"|format(cell.pch) }}</div>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ── Footer running total ──────────────────────────────────────── #}
+  <div class="card calendar-footer">
+    <div class="footer-cell">
+      <span class="footer-label">Monthly PCH</span>
+      <span class="footer-value">{{ "%.2f"|format(data.monthly_pch) }}</span>
+    </div>
+    <div class="footer-cell">
+      <span class="footer-label">Line value</span>
+      <span class="footer-value">{{ "%.2f"|format(data.line_value) }}</span>
+    </div>
+    <div class="footer-cell">
+      <span class="footer-label">Vs MPG 65</span>
+      <span class="footer-value">
+        {% if data.delta_vs_mpg >= 0 %}+{% endif %}{{ "%.2f"|format(data.delta_vs_mpg) }}
+      </span>
+    </div>
+  </div>
+</section>
+{% endblock %}

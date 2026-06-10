@@ -274,6 +274,155 @@ html, body {
   color: var(--text-subtle);
 }
 
+/* ── Calendar ─────────────────────────────────────────────────── */
+
+.calendar-view { display: flex; flex-direction: column; gap: 18px; }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 18px;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--text-subtle);
+}
+.legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-item--note { color: var(--text); font-weight: 500; }
+.legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.calendar-grid {
+  padding: 0;
+  overflow: hidden;
+}
+
+.weekday-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  background: #f4f5f7;
+  border-bottom: 1px solid var(--border);
+}
+.weekday {
+  padding: 10px 12px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-subtle);
+  text-align: left;
+}
+.weekday--weekend { color: var(--accent); }
+
+.week-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border-bottom: 1px solid var(--border);
+}
+.week-row:last-child { border-bottom: none; }
+
+.day-cell {
+  min-height: 92px;
+  padding: 8px 10px 10px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #ffffff;
+  font-size: 12.5px;
+}
+.day-cell:last-child { border-right: none; }
+.day-cell--out {
+  background: #fafbfc;
+  color: var(--text-subtle);
+}
+.day-cell--out .day-number { opacity: 0.55; }
+.day-cell--weekend:not(.day-cell--out) { background: #fbfcfd; }
+
+.day-cell-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 4px;
+}
+.day-number {
+  font-weight: 600;
+  font-size: 13px;
+}
+.day-flags {
+  display: inline-flex;
+  gap: 4px;
+}
+.flag-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.day-cell-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+}
+.aid {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.duty-label {
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  color: var(--text-subtle);
+  text-transform: uppercase;
+}
+.pch {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Duty-type tinted backgrounds. Subtle — desktop calendars get noisy fast. */
+.duty-bg--flt        { background: #e6f1ff; }
+.duty-bg--rsv        { background: #fff2db; }
+.duty-bg--pto        { background: #e3f6ec; }
+.duty-bg--fmla       { background: #ffe5e3; }
+.duty-bg--training   { background: #f0e6ff; }
+.duty-bg--dh         { background: #e0f7f9; }
+.duty-bg--vx         { background: #f3f5f8; }
+.duty-bg--off        { background: #ffffff; }
+.duty-bg--moving     { background: #fdf2c5; }
+.duty-bg--taxi       { background: #ecfbe2; }
+.duty-bg--other      { background: #f2f3f5; }
+.duty-bg--void       { background: #fafbfc; }
+
+.day-cell--out.duty-bg--off { background: #fafbfc; }
+
+.calendar-footer {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.footer-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.footer-label {
+  font-size: 11.5px;
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.footer-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 720px) {
@@ -281,4 +430,6 @@ html, body {
   .content { padding: 16px; }
   .metrics { grid-template-columns: 1fr; }
   .event-list li { grid-template-columns: 1fr; }
+  .calendar-footer { grid-template-columns: 1fr; }
+  .day-cell { min-height: 72px; padding: 6px 8px; }
 }

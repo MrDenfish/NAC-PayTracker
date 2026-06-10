@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from nac_pay.app.main import app
-from nac_pay.app.services import load_dashboard
+from nac_pay.app.services import _pipeline, load_dashboard
 
 
 client = TestClient(app)
@@ -79,10 +79,15 @@ def test_dashboard_status_strip_reports_loaded_sources():
     assert "0 discrepancies" in r.text
 
 
-def test_services_load_dashboard_caches_repeat_calls():
-    """The lru_cache should make a second call cheap (same object identity)."""
-    # Clear any previous cache state so the test is hermetic
-    load_dashboard.cache_clear()
-    first = load_dashboard(2026, 6)
-    second = load_dashboard(2026, 6)
+def test_pipeline_caches_repeat_calls():
+    """The shared pipeline's lru_cache returns the same object on a second
+    call — both load_dashboard and load_calendar consume it, so re-parsing
+    PDFs happens at most once per (year, month)."""
+    _pipeline.cache_clear()
+    first = _pipeline(2026, 6)
+    second = _pipeline(2026, 6)
     assert first is second
+    # The dashboard projection over the pipeline is also stable in content
+    # (the outer wrappers no longer cache identity, but the data they
+    # produce is value-equal because they pull from the same PipelineResult).
+    assert load_dashboard(2026, 6) == load_dashboard(2026, 6)
