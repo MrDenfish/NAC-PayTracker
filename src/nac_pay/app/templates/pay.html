@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Pay breakdown — {{ data.month_label }} — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="pay-view">
+
+  <div class="identity-row">
+    <div class="identity">
+      <h1>Pay breakdown</h1>
+      <p class="subtle">
+        {{ data.pilot.name }} · {{ data.pilot.position.value }} · 737
+        · ${{ "%.2f"|format(data.pilot.hourly_rate) }}/hr regular
+      </p>
+    </div>
+
+    <form action="/pay" method="get" class="month-switcher">
+      <label class="visually-hidden" for="month-pick">Month</label>
+      <select id="month-pick" name="ym" onchange="this.form.submit()">
+        {% for y, m, label in data.available_months %}
+        <option value="{{ y }}-{{ m }}"
+                {% if y == data.year and m == data.month %}selected{% endif %}>
+          {{ label }}
+        </option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {# ── Earnings (mirrors pay stub) ─────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Earnings — {{ data.month_label }}</h2>
+    <table class="earnings-table">
+      <thead>
+        <tr>
+          <th>Pay type</th>
+          <th class="num">PCH</th>
+          <th class="num">Rate</th>
+          <th class="num">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in data.earning_rows %}
+        <tr>
+          <td>
+            {{ row.pay_type }}
+            {% if row.multiplier != 1 %}
+            <span class="multiplier-tag">{{ "%.1f"|format(row.multiplier) }}×</span>
+            {% endif %}
+          </td>
+          <td class="num">{{ "%.2f"|format(row.pch) }}</td>
+          <td class="num">
+            ${{ "{:,.2f}".format(row.rate) }}
+            {% if row.multiplier != 1 %}
+            <span class="rate-detail subtle">
+              = ${{ "{:,.2f}".format(row.base_rate) }} × {{ "%.1f"|format(row.multiplier) }}
+            </span>
+            {% endif %}
+          </td>
+          <td class="num">${{ "{:,.2f}".format(row.amount) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr class="subtotal">
+          <td>Earned subtotal</td>
+          <td class="num">{{ "%.2f"|format(data.earned_pch_total) }}</td>
+          <td></td>
+          <td class="num">${{ "{:,.2f}".format(data.earned_dollars) }}</td>
+        </tr>
+        {% if data.topup_pch > 0 %}
+        <tr class="topup">
+          <td>
+            Guarantee top-up
+            <span class="subtle">(regular rate, §3.C)</span>
+          </td>
+          <td class="num">{{ "%.2f"|format(data.topup_pch) }}</td>
+          <td class="num">${{ "{:,.2f}".format(data.pilot.hourly_rate) }}</td>
+          <td class="num">${{ "{:,.2f}".format(data.topup_dollars) }}</td>
+        </tr>
+        {% endif %}
+        <tr class="total">
+          <td>Total pay</td>
+          <td class="num">{{ "%.2f"|format(data.total_pch) }}</td>
+          <td></td>
+          <td class="num strong">${{ "{:,.2f}".format(data.total_pay) }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  {# ── Greater-of-three guarantee ─────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Greater-of-three guarantee (Section 6)</h2>
+    <table class="option-table">
+      <thead>
+        <tr>
+          <th>Option</th>
+          <th class="num">PCH</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="{% if data.winning_key == 'floor' %}winning{% endif %}">
+          <td>Floor (§3.D)</td>
+          <td class="num">{{ "%.2f"|format(data.option1_floor) }}</td>
+          <td class="note">max(line, MPG) ± events</td>
+        </tr>
+        <tr class="{% if data.winning_key == 'workdays_dpg' %}winning{% endif %}">
+          <td>Workdays × DPG (§3.D.2)</td>
+          <td class="num">{{ "%.2f"|format(data.option2_workdays_dpg) }}</td>
+          <td class="note">3.82 PCH per duty period</td>
+        </tr>
+        <tr class="{% if data.winning_key == 'earned' %}winning{% endif %}">
+          <td>Earned (§3.E + chunks)</td>
+          <td class="num">{{ "%.2f"|format(data.option3_earned) }}</td>
+          <td class="note">Σ trips, days, reserves</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>Monthly PCH</td>
+          <td class="num strong">{{ "%.2f"|format(data.base_monthly_pch) }}</td>
+          <td class="note">winning: {{ data.winning_option }}</td>
+        </tr>
+        {% if data.topup_pch > 0 %}
+        <tr>
+          <td>Top-up shortfall (to floor)</td>
+          <td class="num">{{ "%.2f"|format(data.topup_pch) }}</td>
+          <td class="note">paid at regular rate</td>
+        </tr>
+        {% endif %}
+      </tfoot>
+    </table>
+  </div>
+
+</section>
+{% endblock %}

@@ -751,6 +751,174 @@ def _ordered_subseq(needle: list[str], haystack: list[str]) -> bool:
     return False
 
 
+# ── Pay breakdown view ─────────────────────────────────────────────────
+
+
+from collections import defaultdict
+from decimal import ROUND_HALF_UP
+
+from nac_pay.engine import ChunkKind, ChunkResult
+
+
+_DOLLAR_QUANT = Decimal("0.01")
+
+
+@dataclass(frozen=True)
+class EarningRow:
+    pay_type: str               # "Regular Pay", "Open Time", etc.
+    pch: Decimal                # sum of raw PCH in this row
+    rate: Decimal               # multiplied rate (base × multiplier)
+    base_rate: Decimal
+    multiplier: Decimal
+    amount: Decimal             # pch × rate, rounded HALF_UP
+
+
+@dataclass(frozen=True)
+class PayBreakdownData:
+    pilot: PilotProfile
+    year: int
+    month: int
+    month_label: str
+    available_months: tuple[tuple[int, int, str], ...]
+
+    earning_rows: tuple[EarningRow, ...]
+    earned_pch_total: Decimal
+    earned_dollars: Decimal
+
+    topup_pch: Decimal
+    topup_dollars: Decimal
+    total_pch: Decimal           # earned + topup
+    total_pay: Decimal           # earned + topup_dollars
+
+    option1_floor: Decimal
+    option2_workdays_dpg: Decimal
+    option3_earned: Decimal
+    winning_option: str          # human label
+    winning_key: str             # "floor" / "workdays_dpg" / "earned" — for CSS
+    base_monthly_pch: Decimal
+
+
+# Pay-stub category labels, in display order.
+_PAY_TYPE_ORDER: tuple[str, ...] = (
+    "Regular Pay",
+    "Open Time",
+    "Paid Time Off",
+    "Sick",
+    "Jury Duty",
+    "Bereavement",
+    "Training",
+    "Moving",
+    "Home Study",
+    "NRFO",
+    "Other",
+)
+
+
+def _categorize(chunk: ChunkResult) -> str:
+    """Map a ChunkResult to a pay-stub category. The user's terminology
+    note in SYSTEM_CONTEXT.md §5: reserves and straight-time reassignments
+    roll into Regular Pay; Open Time is only the qualifying 1.5× pickup;
+    PTO/SICK/etc. always get their own categories regardless of multiplier."""
+    kind = chunk.kind
+    if kind is ChunkKind.PTO:
+        return "Paid Time Off"
+    if kind is ChunkKind.SICK:
+        return "Sick"
+    if kind is ChunkKind.JURY:
+        return "Jury Duty"
+    if kind is ChunkKind.BEREAVEMENT:
+        return "Bereavement"
+    if kind is ChunkKind.TRAINING:
+        return "Training"
+    if kind is ChunkKind.MOVING:
+        return "Moving"
+    if kind is ChunkKind.HOME_STUDY:
+        return "Home Study"
+    if kind is ChunkKind.OPEN_TIME and chunk.multiplier > Decimal("1.0"):
+        return "Open Time"
+    if kind is ChunkKind.NRFO and chunk.multiplier > Decimal("1.0"):
+        return "NRFO"
+    # TRIP, RESERVE_DAY, MILITARY, OTHER, OPEN_TIME @ 1.0×, NRFO @ 1.0× → Regular Pay.
+    return "Regular Pay"
+
+
+def _build_earning_rows(
+    chunks: tuple[ChunkResult, ...],
+    base_rate: Decimal,
+) -> tuple[EarningRow, ...]:
+    """Group chunks by (category, multiplier). Each group yields one row with
+    PCH = sum(raw_pch), rate = base × multiplier, amount = PCH × rate."""
+    pch_by_key: dict[tuple[str, Decimal], Decimal] = defaultdict(lambda: Decimal("0"))
+    for c in chunks:
+        key = (_categorize(c), c.multiplier)
+        pch_by_key[key] += c.raw_pch
+
+    rows: list[EarningRow] = []
+    for (cat, mult), pch in pch_by_key.items():
+        rate = base_rate * mult
+        amount = (pch * rate).quantize(_DOLLAR_QUANT, rounding=ROUND_HALF_UP)
+        rows.append(
+            EarningRow(
+                pay_type=cat,
+                pch=pch,
+                rate=rate,
+                base_rate=base_rate,
+                multiplier=mult,
+                amount=amount,
+            )
+        )
+
+    def sort_key(r: EarningRow) -> tuple[int, str, Decimal]:
+        order = _PAY_TYPE_ORDER.index(r.pay_type) if r.pay_type in _PAY_TYPE_ORDER else 99
+        # Higher multipliers first within a category.
+        return (order, r.pay_type, -r.multiplier)
+
+    rows.sort(key=sort_key)
+    return tuple(rows)
+
+
+def load_pay_breakdown(
+    year: int,
+    month: int,
+    pilot_code: str = "DFI",
+) -> PayBreakdownData:
+    pr = _pipeline(year, month, pilot_code)
+    r = pr.engine_result
+    base_rate = pr.pilot.hourly_rate
+
+    rows = _build_earning_rows(r.per_chunk, base_rate)
+    earned_pch = sum((row.pch for row in rows), Decimal("0"))
+    earned_dollars_from_rows = sum(
+        (row.amount for row in rows), Decimal("0")
+    )
+
+    return PayBreakdownData(
+        pilot=pr.pilot,
+        year=pr.year,
+        month=pr.month,
+        month_label=f"{_MONTH_NAMES[pr.month]} {pr.year}",
+        available_months=available_months(),
+        earning_rows=rows,
+        earned_pch_total=earned_pch,
+        # Display the row-sum so the table footer matches the displayed rows.
+        # The engine's r.earned_dollars uses raw-accumulator rounding which
+        # may differ by a cent or two; we surface that in tests but the
+        # user-facing total here is row-anchored to keep the pay-stub
+        # PCH × rate identity visible.
+        earned_dollars=earned_dollars_from_rows,
+        topup_pch=r.topup_pch,
+        topup_dollars=r.topup_dollars,
+        total_pch=earned_pch + r.topup_pch,
+        total_pay=earned_dollars_from_rows + r.topup_dollars,
+        option1_floor=r.option1_floor,
+        option2_workdays_dpg=r.option2_workdays_dpg,
+        option3_earned=r.option3_earned,
+        winning_option=_winning_option_label(r.winning_option),
+        winning_key=r.winning_option.value,
+        base_monthly_pch=r.base_monthly_pch,
+    )
+
+
 def _build_cell(
     d: date_t,
     month: int,
