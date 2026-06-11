@@ -704,6 +704,97 @@ a.day-cell:hover {
   padding-top: 14px;
 }
 
+/* ── Compare to pay stub ──────────────────────────────────────── */
+
+.compare-view { display: flex; flex-direction: column; gap: 18px; }
+
+.banner {
+  padding: 18px 22px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+}
+.banner strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.banner p { margin: 0; color: var(--text-subtle); font-size: 13.5px; }
+
+.banner--ok {
+  background: #e9f7ef;
+  border-color: #b8e0c4;
+}
+.banner--ok strong { color: #1e7038; }
+.banner--warn {
+  background: #fff5e0;
+  border-color: #f1d28e;
+}
+.banner--warn strong { color: #8b5a00; }
+.banner--info {
+  background: #eef5fd;
+  border-color: #c5dcf3;
+}
+.banner--info strong { color: var(--accent); }
+
+.compare-table { width: 100%; border-collapse: collapse; }
+.compare-table th, .compare-table td {
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.compare-table thead th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-subtle);
+  border-bottom: 1px solid var(--border);
+}
+.compare-table tbody tr { border-bottom: 1px solid var(--border); }
+.compare-table tbody tr:last-child { border-bottom: none; }
+.compare-table .num {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  text-align: right;
+  white-space: nowrap;
+}
+.compare-table .delta-cell { font-weight: 600; }
+.compare-table tr.row--mismatch { background: #fff8eb; }
+.compare-table tr.row--mismatch .delta-cell { color: #c2780b; }
+.compare-table tfoot tr.totals td {
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.stub-chips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.stub-chips li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 14px;
+  align-items: baseline;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #f4f5f7;
+}
+.chip-label {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-weight: 500;
+}
+.chip-amount {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.source-note { margin-top: 12px; }
+
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 720px) {

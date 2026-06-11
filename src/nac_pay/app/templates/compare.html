@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Compare to pay stub — {{ data.month_label }} — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="compare-view">
+
+  <div class="identity-row">
+    <div class="identity">
+      <h1>Compare to pay stub</h1>
+      <p class="subtle">
+        {{ data.pilot.name }} · {{ data.pilot.position.value }} · 737
+      </p>
+    </div>
+
+    <form action="/compare" method="get" class="month-switcher">
+      <label class="visually-hidden" for="month-pick">Month</label>
+      <select id="month-pick" name="ym" onchange="this.form.submit()">
+        {% for y, m, label in data.available_months %}
+        <option value="{{ y }}-{{ m }}"
+                {% if y == data.year and m == data.month %}selected{% endif %}>
+          {{ label }}
+        </option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {# ── Verdict banner ─────────────────────────────────────────────── #}
+  {% if data.verdict.value == 'NO_STUBS' %}
+  <div class="banner banner--info">
+    <strong>No pay stubs bundled for {{ data.month_label }}.</strong>
+    <p>{{ data.note }}</p>
+  </div>
+  {% elif data.verdict.value == 'MATCH' %}
+  <div class="banner banner--ok">
+    <strong>Match.</strong>
+    <p>Tracker and company agree within ±$0.50 across every category.</p>
+  </div>
+  {% elif data.verdict.value == 'TRACKER_UNDER' %}
+  <div class="banner banner--warn">
+    <strong>Tracker shows ${{ "{:,.2f}".format(-data.total_delta) }} less than the company.</strong>
+    {% if data.note %}<p>{{ data.note }}</p>{% endif %}
+  </div>
+  {% else %}
+  <div class="banner banner--warn">
+    <strong>Tracker shows ${{ "{:,.2f}".format(data.total_delta) }} more than the company.</strong>
+    {% if data.note %}<p>{{ data.note }}</p>{% endif %}
+  </div>
+  {% endif %}
+
+  {# ── Per-category comparison ────────────────────────────────────── #}
+  {% if data.rows %}
+  <div class="card">
+    <h2 class="card-title">By category</h2>
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th>Pay type</th>
+          <th class="num">Tracker $</th>
+          <th class="num">Stub $</th>
+          <th class="num">Δ (tracker − stub)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in data.rows %}
+        <tr class="{% if not row.matches %}row--mismatch{% endif %}">
+          <td>
+            {{ row.pay_type }}
+            {% if row.tracker_pch > 0 or row.stub_hours > 0 %}
+            <span class="subtle">
+              · tracker {{ "%.2f"|format(row.tracker_pch) }} PCH · stub {{ "%.2f"|format(row.stub_hours) }} hrs
+            </span>
+            {% endif %}
+          </td>
+          <td class="num">${{ "{:,.2f}".format(row.tracker_amount) }}</td>
+          <td class="num">${{ "{:,.2f}".format(row.stub_amount) }}</td>
+          <td class="num delta-cell">
+            {% if row.delta_amount > 0 %}+{% endif %}${{ "{:,.2f}".format(row.delta_amount) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr class="totals">
+          <td>Total</td>
+          <td class="num">${{ "{:,.2f}".format(data.total_tracker) }}</td>
+          <td class="num">${{ "{:,.2f}".format(data.total_stub) }}</td>
+          <td class="num">
+            {% if data.total_delta > 0 %}+{% endif %}${{ "{:,.2f}".format(data.total_delta) }}
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Stub source chips ─────────────────────────────────────────── #}
+  {% if data.stub_chips %}
+  <div class="card">
+    <h2 class="card-title">Source stubs</h2>
+    <ul class="stub-chips">
+      {% for chip in data.stub_chips %}
+      <li>
+        <span class="chip-label">{{ chip.label }}</span>
+        <span class="subtle">pay date {{ chip.pay_date_iso }}</span>
+        <span class="chip-amount">net ${{ "{:,.2f}".format(chip.net_pay) }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if data.mpg_advance_netted %}
+    <p class="subtle source-note">
+      The +32.50 / −32.50 PCH MPG advance is netted at the monthly level (fixed semi-monthly
+      advance, always cancels — see §10 / §13 compare-to-pay-stub note).
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -27,6 +27,7 @@ import calendar as _cal
 from dataclasses import dataclass
 from datetime import date as date_t
 from decimal import Decimal
+from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 
@@ -34,11 +35,13 @@ from nac_pay.engine import EngineResult, WinningOption, compute_pay
 from nac_pay.parsers import (
     FlightLegEvent,
     ParsedFeed,
+    PayStub,
     ReconciliationResult,
     TripPairing,
     ValidationDiscrepancy,
     parse_ical_feed,
     parse_master_schedule,
+    parse_pay_stub,
     parse_trip_pairing_packet,
     reconcile_feed_to_packet,
     validate_trip_pairing_packet,
@@ -76,6 +79,14 @@ _DOC_INDEX: dict[tuple[int, int], tuple[Path, Path, Path | None]] = {
         DOCS_ROOT / "JUNE 2026 ANC 737 - FIRST OFFICER FINAL AWARDS.pdf",
         DOCS_ROOT / "JUNE 2026 Trip Pairing Packet.pdf",
         DOCS_ROOT / "iCal_schedule_feed.ics",
+    ),
+}
+
+# (year, month) → list of semi-monthly stub PDFs (ordered, may be 0–N).
+_STUB_INDEX: dict[tuple[int, int], tuple[Path, ...]] = {
+    (2026, 5): (
+        DOCS_ROOT / "pay Stubs" / "May_ Base_payStub.pdf",
+        DOCS_ROOT / "pay Stubs" / "May_payStub.pdf",
     ),
 }
 
@@ -875,6 +886,258 @@ def _build_earning_rows(
 
     rows.sort(key=sort_key)
     return tuple(rows)
+
+
+# ── Pay-stub compare view ─────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class MonthlyStubSummary:
+    """Two (or more) semi-monthly stubs netted to a monthly view."""
+
+    stubs: tuple[PayStub, ...]
+    # Pay-type → (net hours, net current dollars). Multi-row categories
+    # (e.g. +80.29 and −32.50 Regular Pay) collapse to one entry.
+    by_category: dict[str, tuple[Decimal, Decimal]]
+    total_hours: Decimal
+    total_dollars: Decimal
+    net_pay_sum: Decimal
+
+
+def combine_stubs(stubs: tuple[PayStub, ...]) -> MonthlyStubSummary:
+    by_cat: dict[str, list[Decimal]] = {}    # pay_type → [hours_sum, dollars_sum]
+    for stub in stubs:
+        for line in stub.earnings:
+            slot = by_cat.setdefault(line.pay_type, [Decimal("0"), Decimal("0")])
+            slot[0] += line.hours if line.hours is not None else Decimal("0")
+            slot[1] += line.current_amount
+    summary = {k: (v[0], v[1]) for k, v in by_cat.items()}
+    total_hours = sum((h for h, _d in summary.values()), Decimal("0"))
+    total_dollars = sum((d for _h, d in summary.values()), Decimal("0"))
+    return MonthlyStubSummary(
+        stubs=stubs,
+        by_category=summary,
+        total_hours=total_hours,
+        total_dollars=total_dollars,
+        net_pay_sum=sum((s.net_pay for s in stubs), Decimal("0")),
+    )
+
+
+_COMPARE_TOL = Decimal("0.50")     # ±$0.50 per category before flagging
+
+# Stub categories that aren't pilot earnings (benefits, taxes). Excluded
+# from the comparison totals — the spec notes "Group Term Life is a
+# benefit, not PCH".
+_NON_EARNING_CATEGORIES: frozenset[str] = frozenset({"Group Term Life"})
+
+
+class CompareVerdict(StrEnum):
+    MATCH = "MATCH"
+    TRACKER_OVER = "TRACKER_OVER"      # tracker > company
+    TRACKER_UNDER = "TRACKER_UNDER"    # tracker < company
+    NO_STUBS = "NO_STUBS"              # no stubs bundled / parsed
+
+
+@dataclass(frozen=True)
+class CategoryCompare:
+    pay_type: str
+    tracker_pch: Decimal
+    tracker_amount: Decimal
+    stub_hours: Decimal
+    stub_amount: Decimal
+    delta_amount: Decimal              # tracker - stub (signed)
+    matches: bool
+
+
+@dataclass(frozen=True)
+class StubChip:
+    label: str
+    pay_date_iso: str
+    net_pay: Decimal
+
+
+@dataclass(frozen=True)
+class CompareData:
+    pilot: PilotProfile
+    year: int
+    month: int
+    month_label: str
+    available_months: tuple[tuple[int, int, str], ...]
+
+    verdict: CompareVerdict
+    total_tracker: Decimal
+    total_stub: Decimal
+    total_delta: Decimal               # tracker - stub
+    rows: tuple[CategoryCompare, ...]
+    stub_chips: tuple[StubChip, ...]
+    note: str                          # optional contextual note
+    mpg_advance_netted: bool           # True when the +/-32.50 cancels
+
+
+# Mapping our internal pay-stub category labels (used by _categorize) to the
+# company stub labels. Mostly identical; this exists so deviations
+# (e.g. "NRFO") don't accidentally compare against "" on the stub side.
+_STUB_LABEL_BY_TRACKER: dict[str, str] = {
+    "Regular Pay": "Regular Pay",
+    "Open Time": "Open Time",
+    "Paid Time Off": "Paid Time Off",
+    "Sick": "Sick",
+    "Jury Duty": "Jury Duty",
+    "Bereavement": "Bereavement",
+    "Training": "Training",
+    "Moving": "Moving",
+    "Home Study": "Home Study",
+    "NRFO": "NRFO",
+    "Other": "Other",
+}
+
+
+def load_compare(
+    year: int,
+    month: int,
+    pilot_code: str = "DFI",
+) -> CompareData:
+    pb = load_pay_breakdown(year, month, pilot_code)
+
+    stub_paths = _STUB_INDEX.get((year, month), ())
+    if not stub_paths:
+        return CompareData(
+            pilot=pb.pilot,
+            year=year,
+            month=month,
+            month_label=pb.month_label,
+            available_months=available_months(),
+            verdict=CompareVerdict.NO_STUBS,
+            total_tracker=pb.total_pay,
+            total_stub=Decimal("0"),
+            total_delta=Decimal("0"),
+            rows=(),
+            stub_chips=(),
+            note="No company pay stubs bundled for this month — upload/entry coming with the persistence layer.",
+            mpg_advance_netted=False,
+        )
+
+    stubs = tuple(parse_pay_stub(p) for p in stub_paths)
+    summary = combine_stubs(stubs)
+
+    # Tracker per-category dollars (aggregate row.amounts by category label).
+    tracker_amount_by_cat: dict[str, Decimal] = {}
+    tracker_pch_by_cat: dict[str, Decimal] = {}
+    for row in pb.earning_rows:
+        tracker_amount_by_cat[row.pay_type] = (
+            tracker_amount_by_cat.get(row.pay_type, Decimal("0")) + row.amount
+        )
+        tracker_pch_by_cat[row.pay_type] = (
+            tracker_pch_by_cat.get(row.pay_type, Decimal("0")) + row.pch
+        )
+
+    # Sweep both sides to build per-category rows.
+    seen_categories: set[str] = set()
+    rows: list[CategoryCompare] = []
+    for tracker_cat in tracker_amount_by_cat:
+        stub_label = _STUB_LABEL_BY_TRACKER.get(tracker_cat, tracker_cat)
+        stub_hours, stub_amount = summary.by_category.get(stub_label, (Decimal("0"), Decimal("0")))
+        tracker_amt = tracker_amount_by_cat[tracker_cat]
+        delta = tracker_amt - stub_amount
+        rows.append(
+            CategoryCompare(
+                pay_type=tracker_cat,
+                tracker_pch=tracker_pch_by_cat[tracker_cat],
+                tracker_amount=tracker_amt,
+                stub_hours=stub_hours,
+                stub_amount=stub_amount,
+                delta_amount=delta,
+                matches=abs(delta) <= _COMPARE_TOL,
+            )
+        )
+        seen_categories.add(stub_label)
+    # Stub categories tracker doesn't know about (e.g. extra Earnings rows).
+    # Benefits are excluded — not part of pilot earnings.
+    for stub_cat, (hours, amount) in summary.by_category.items():
+        if stub_cat in seen_categories:
+            continue
+        if stub_cat in _NON_EARNING_CATEGORIES:
+            continue
+        if amount == 0 and hours == 0:
+            continue
+        rows.append(
+            CategoryCompare(
+                pay_type=stub_cat,
+                tracker_pch=Decimal("0"),
+                tracker_amount=Decimal("0"),
+                stub_hours=hours,
+                stub_amount=amount,
+                delta_amount=-amount,
+                matches=False,
+            )
+        )
+
+    # Sort: non-matching rows first, then by category display order.
+    def sort_key(r: CategoryCompare) -> tuple[int, int, str]:
+        order = _PAY_TYPE_ORDER.index(r.pay_type) if r.pay_type in _PAY_TYPE_ORDER else 99
+        return (0 if not r.matches else 1, order, r.pay_type)
+    rows.sort(key=sort_key)
+
+    total_tracker = sum((r.tracker_amount for r in rows), Decimal("0"))
+    total_stub = sum((r.stub_amount for r in rows), Decimal("0"))
+    total_delta = total_tracker - total_stub
+
+    if abs(total_delta) <= _COMPARE_TOL:
+        verdict = CompareVerdict.MATCH
+    elif total_delta > 0:
+        verdict = CompareVerdict.TRACKER_OVER
+    else:
+        verdict = CompareVerdict.TRACKER_UNDER
+
+    # MPG advance detection: look at individual Regular Pay LINES across all
+    # stubs. Per-stub sums hide the +/- when both signs share a stub.
+    regular_lines = [
+        line for stub in stubs for line in stub.earnings
+        if line.pay_type == "Regular Pay" and line.hours is not None
+    ]
+    mpg_netted = (
+        any(line.hours < 0 for line in regular_lines)
+        and any(line.hours > 0 for line in regular_lines)
+    )
+
+    note = ""
+    if verdict is CompareVerdict.TRACKER_UNDER:
+        note = (
+            "Tracker shows less than the company. Most common cause: mid-month "
+            "events (reassignments, callouts, open-time pickups) that aren't yet "
+            "reflected in the bundled iCal feed."
+        )
+    elif verdict is CompareVerdict.TRACKER_OVER:
+        note = (
+            "Tracker shows more than the company. Possible causes: an event was "
+            "double-counted, a premium was applied incorrectly, or the company "
+            "missed something. Review the category rows below."
+        )
+
+    chips = tuple(
+        StubChip(
+            label=stub.label,
+            pay_date_iso=stub.pay_date.isoformat(),
+            net_pay=stub.net_pay,
+        )
+        for stub in stubs
+    )
+
+    return CompareData(
+        pilot=pb.pilot,
+        year=year,
+        month=month,
+        month_label=pb.month_label,
+        available_months=available_months(),
+        verdict=verdict,
+        total_tracker=total_tracker,
+        total_stub=total_stub,
+        total_delta=total_delta,
+        rows=tuple(rows),
+        stub_chips=chips,
+        note=note,
+        mpg_advance_netted=mpg_netted,
+    )
 
 
 def load_pay_breakdown(

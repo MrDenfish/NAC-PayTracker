@@ -18,6 +18,11 @@ from .master_schedule import (
     PilotMonthSchedule,
     parse_master_schedule,
 )
+from .pay_stub import (
+    PayStub,
+    PayStubLine,
+    parse_pay_stub,
+)
 from .reconciliation import (
     MatchStatus,
     ReconciledTrip,
@@ -39,6 +44,8 @@ __all__ = [
     "MatchStatus",
     "OffEvent",
     "ParsedFeed",
+    "PayStub",
+    "PayStubLine",
     "PilotMonthSchedule",
     "ReconciledTrip",
     "ReconciliationResult",
@@ -48,6 +55,7 @@ __all__ = [
     "ValidationDiscrepancy",
     "parse_ical_feed",
     "parse_master_schedule",
+    "parse_pay_stub",
     "parse_trip_pairing_packet",
     "reconcile_feed_to_packet",
     "validate_trip_pairing_packet",
