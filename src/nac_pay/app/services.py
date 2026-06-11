@@ -1140,6 +1140,167 @@ def load_compare(
     )
 
 
+# ── Discrepancies queue (§13 #6) ──────────────────────────────────────
+
+
+class DiscrepancyKind(StrEnum):
+    PACKET_VALIDATION = "PACKET_VALIDATION"
+    COMPARE_MISMATCH = "COMPARE_MISMATCH"
+    UNMATCHED_TRIP = "UNMATCHED_TRIP"
+
+
+class DiscrepancySeverity(StrEnum):
+    OWED_MONEY = "OWED_MONEY"           # tracker > stub: company underpaid
+    INVESTIGATION = "INVESTIGATION"     # tracker < stub: likely missing data on our side
+    REVIEW = "REVIEW"                   # needs pilot input (categorize / triage)
+    INFO = "INFO"                       # advisory only
+
+
+_SEVERITY_PRIORITY: dict[DiscrepancySeverity, int] = {
+    DiscrepancySeverity.OWED_MONEY: 0,
+    DiscrepancySeverity.INVESTIGATION: 1,
+    DiscrepancySeverity.REVIEW: 2,
+    DiscrepancySeverity.INFO: 3,
+}
+
+
+@dataclass(frozen=True)
+class DiscrepancyItem:
+    kind: DiscrepancyKind
+    severity: DiscrepancySeverity
+    title: str
+    detail: str
+    date: date_t | None
+    trip_id: str | None
+    money_impact: Decimal | None        # signed; positive = tracker > stub
+    action_label: str
+    action_url: str
+
+
+@dataclass(frozen=True)
+class DiscrepanciesData:
+    pilot: PilotProfile
+    year: int
+    month: int
+    month_label: str
+    available_months: tuple[tuple[int, int, str], ...]
+
+    items: tuple[DiscrepancyItem, ...]
+    counts_by_severity: dict[str, int]
+    total_money_impact: Decimal
+
+
+def load_discrepancies(
+    year: int,
+    month: int,
+    pilot_code: str = "DFI",
+) -> DiscrepanciesData:
+    pr = _pipeline(year, month, pilot_code)
+    items: list[DiscrepancyItem] = []
+    ym = f"{year}-{month}"
+
+    # 1. Packet validation flags (§9)
+    for v in pr.validation_discrepancies:
+        items.append(
+            DiscrepancyItem(
+                kind=DiscrepancyKind.PACKET_VALIDATION,
+                severity=DiscrepancySeverity.REVIEW,
+                title=f"Trip {v.trip_id}: {v.field} mismatch",
+                detail=(
+                    f"Packet printed {v.printed}, recomputed {v.recomputed} "
+                    f"(Δ {v.delta:+}). Check packet printing vs §3.E formula."
+                ),
+                date=None,
+                trip_id=v.trip_id,
+                money_impact=None,
+                action_label="View pay breakdown",
+                action_url=f"/pay?ym={ym}",
+            )
+        )
+
+    # 2. Compare mismatches (only when stubs exist)
+    if _STUB_INDEX.get((year, month)):
+        compare = load_compare(year, month, pilot_code)
+        if compare.verdict is not CompareVerdict.NO_STUBS:
+            for row in compare.rows:
+                if row.matches:
+                    continue
+                if row.delta_amount > 0:
+                    severity = DiscrepancySeverity.OWED_MONEY
+                    title = (
+                        f"{row.pay_type}: tracker says you're owed "
+                        f"${row.delta_amount:.2f}"
+                    )
+                else:
+                    severity = DiscrepancySeverity.INVESTIGATION
+                    title = (
+                        f"{row.pay_type}: tracker shows "
+                        f"${-row.delta_amount:.2f} less than the company"
+                    )
+                items.append(
+                    DiscrepancyItem(
+                        kind=DiscrepancyKind.COMPARE_MISMATCH,
+                        severity=severity,
+                        title=title,
+                        detail=(
+                            f"Tracker: {row.tracker_pch:.2f} PCH = "
+                            f"${row.tracker_amount:,.2f}; "
+                            f"Stub: {row.stub_hours:.2f} hrs = "
+                            f"${row.stub_amount:,.2f}."
+                        ),
+                        date=None,
+                        trip_id=None,
+                        money_impact=row.delta_amount,
+                        action_label="Open compare",
+                        action_url=f"/compare?ym={ym}",
+                    )
+                )
+
+    # 3. Unmatched iCal trips (apply_actuals UNMATCHED_TRIP_REVIEW)
+    from nac_pay.schedule import AppliedEventKind
+    for ev in pr.applied_events:
+        if ev.kind is not AppliedEventKind.UNMATCHED_TRIP_REVIEW:
+            continue
+        items.append(
+            DiscrepancyItem(
+                kind=DiscrepancyKind.UNMATCHED_TRIP,
+                severity=DiscrepancySeverity.REVIEW,
+                title=f"Unmatched flight on {ev.date.isoformat()}",
+                detail=ev.detail,
+                date=ev.date,
+                trip_id=ev.trip_id,
+                money_impact=None,
+                action_label="View day",
+                action_url=f"/day/{ev.date.isoformat()}",
+            )
+        )
+
+    def sort_key(it: DiscrepancyItem) -> tuple[int, Decimal, str]:
+        prio = _SEVERITY_PRIORITY[it.severity]
+        magnitude = -abs(it.money_impact) if it.money_impact is not None else Decimal("0")
+        return (prio, magnitude, it.title)
+
+    items.sort(key=sort_key)
+
+    counts = {s.value: 0 for s in DiscrepancySeverity}
+    total_impact = Decimal("0")
+    for it in items:
+        counts[it.severity.value] += 1
+        if it.money_impact is not None:
+            total_impact += it.money_impact
+
+    return DiscrepanciesData(
+        pilot=pr.pilot,
+        year=year,
+        month=month,
+        month_label=f"{_MONTH_NAMES[month]} {year}",
+        available_months=available_months(),
+        items=tuple(items),
+        counts_by_severity=counts,
+        total_money_impact=total_impact,
+    )
+
+
 def load_pay_breakdown(
     year: int,
     month: int,

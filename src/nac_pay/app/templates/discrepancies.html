@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Discrepancies — {{ data.month_label }} — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="discrepancies-view">
+
+  <div class="identity-row">
+    <div class="identity">
+      <h1>Discrepancies</h1>
+      <p class="subtle">
+        {{ data.month_label }} · {{ data.pilot.name }}
+      </p>
+    </div>
+
+    <form action="/discrepancies" method="get" class="month-switcher">
+      <label class="visually-hidden" for="month-pick">Month</label>
+      <select id="month-pick" name="ym" onchange="this.form.submit()">
+        {% for y, m, label in data.available_months %}
+        <option value="{{ y }}-{{ m }}"
+                {% if y == data.year and m == data.month %}selected{% endif %}>
+          {{ label }}
+        </option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {% if not data.items %}
+  <div class="banner banner--ok">
+    <strong>All clear.</strong>
+    <p>
+      No packet-validation flags, no compare mismatches, and no unmatched
+      iCal trips for {{ data.month_label }}.
+    </p>
+  </div>
+  {% else %}
+
+  {# ── Summary strip ──────────────────────────────────────────────── #}
+  <div class="discrepancy-summary card">
+    <div class="discrepancy-counts">
+      {% if data.counts_by_severity['OWED_MONEY'] > 0 %}
+      <span class="count-chip count-chip--owed">
+        {{ data.counts_by_severity['OWED_MONEY'] }} owed money
+      </span>
+      {% endif %}
+      {% if data.counts_by_severity['INVESTIGATION'] > 0 %}
+      <span class="count-chip count-chip--invest">
+        {{ data.counts_by_severity['INVESTIGATION'] }} investigation
+      </span>
+      {% endif %}
+      {% if data.counts_by_severity['REVIEW'] > 0 %}
+      <span class="count-chip count-chip--review">
+        {{ data.counts_by_severity['REVIEW'] }} review
+      </span>
+      {% endif %}
+      {% if data.counts_by_severity['INFO'] > 0 %}
+      <span class="count-chip count-chip--info">
+        {{ data.counts_by_severity['INFO'] }} info
+      </span>
+      {% endif %}
+    </div>
+    {% if data.total_money_impact != 0 %}
+    <div class="discrepancy-total">
+      <span class="metric-label">Net money impact</span>
+      <span class="metric-value
+                   {% if data.total_money_impact > 0 %}impact--positive{% else %}impact--negative{% endif %}">
+        {% if data.total_money_impact > 0 %}+{% endif %}${{ "{:,.2f}".format(data.total_money_impact) }}
+      </span>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Item list ─────────────────────────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Queue ({{ data.items|length }})</h2>
+    <ul class="discrepancy-list">
+      {% for item in data.items %}
+      <li class="discrepancy-item discrepancy-item--{{ item.severity.value|lower }}">
+        <div class="discrepancy-meta">
+          <span class="discrepancy-source source--{{ item.kind.value|lower }}">
+            {{ item.kind.value|replace("_", " ")|lower }}
+          </span>
+          <span class="discrepancy-sev sev--{{ item.severity.value|lower }}">
+            {{ item.severity.value|replace("_", " ")|lower }}
+          </span>
+          {% if item.date %}
+          <span class="subtle">{{ item.date.isoformat() }}</span>
+          {% endif %}
+        </div>
+        <div class="discrepancy-title">{{ item.title }}</div>
+        <div class="discrepancy-detail subtle">{{ item.detail }}</div>
+        <div class="discrepancy-actions">
+          {% if item.money_impact is not none %}
+          <span class="impact-badge
+                       {% if item.money_impact > 0 %}impact--positive{% else %}impact--negative{% endif %}">
+            {% if item.money_impact > 0 %}+{% endif %}${{ "{:,.2f}".format(item.money_impact) }}
+          </span>
+          {% endif %}
+          <a href="{{ item.action_url }}" class="action-link">
+            {{ item.action_label }} →
+          </a>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

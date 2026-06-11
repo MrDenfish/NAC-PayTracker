@@ -16,6 +16,7 @@ from .services import (
     load_compare,
     load_dashboard,
     load_day,
+    load_discrepancies,
     load_pay_breakdown,
 )
 
@@ -73,6 +74,36 @@ def dashboard(
         request,
         "dashboard.html",
         {"data": data, "active_screen": "dashboard"},
+    )
+
+
+@app.get("/discrepancies", response_class=HTMLResponse)
+def discrepancies_view(
+    request: Request,
+    year: int | None = Query(default=None),
+    month: int | None = Query(default=None),
+    ym: str | None = Query(default=None),
+) -> HTMLResponse:
+    if ym and (year is None or month is None):
+        try:
+            y_str, m_str = ym.split("-", 1)
+            year = int(y_str)
+            month = int(m_str)
+        except (ValueError, AttributeError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid ym={ym!r}"
+            ) from exc
+    default_year, default_month = _default_year_month()
+    target_year = year or default_year
+    target_month = month or default_month
+    try:
+        data = load_discrepancies(target_year, target_month)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "discrepancies.html",
+        {"data": data, "active_screen": "discrepancies"},
     )
 
 
