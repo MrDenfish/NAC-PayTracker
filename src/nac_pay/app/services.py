@@ -55,8 +55,16 @@ from nac_pay.schedule import (
     Position,
     Trip,
     apply_actuals_to_month,
+    apply_overrides_to_month,
     lower_month,
     month_from_master_schedule,
+)
+from nac_pay.storage import (
+    DayOverride,
+    DayOverrideStore,
+    PersistedPilotProfile,
+    PilotProfileStore,
+    get_data_dir,
 )
 
 DEFAULT_PILOT = PilotProfile(
@@ -65,6 +73,25 @@ DEFAULT_PILOT = PilotProfile(
     position=Position.FO,
     hourly_rate=Decimal("124.59"),
 )
+DEFAULT_PERSISTED = PersistedPilotProfile(profile=DEFAULT_PILOT)
+
+
+def profile_store() -> PilotProfileStore:
+    return PilotProfileStore(get_data_dir())
+
+
+def override_store() -> DayOverrideStore:
+    return DayOverrideStore(get_data_dir())
+
+
+def load_persisted_profile() -> PersistedPilotProfile:
+    return profile_store().load(DEFAULT_PERSISTED)
+
+
+def invalidate_caches() -> None:
+    """Clear pipeline cache — called after any pilot save so subsequent
+    requests re-run with the new profile / overrides."""
+    _pipeline.cache_clear()
 
 DOCS_ROOT = Path(__file__).resolve().parents[3] / "docs"
 
@@ -137,7 +164,10 @@ def _pipeline(
     if paths is None:
         raise ValueError(f"No data bundled for {_MONTH_NAMES[month]} {year}")
     fa_path, packet_path, feed_path = paths
-    pilot = DEFAULT_PILOT if pilot_code == "DFI" else DEFAULT_PILOT  # multi-pilot TBD
+
+    # Resolved per call so a Settings save (which triggers invalidate_caches())
+    # picks up changes on the next request.
+    pilot = load_persisted_profile().profile
 
     fa_grids = parse_master_schedule(str(fa_path))
     sched = fa_grids.get(pilot_code)
@@ -161,6 +191,10 @@ def _pipeline(
         updated, applied = apply_actuals_to_month(baseline, reconciliation)
     else:
         updated, applied = baseline, ()
+
+    # Apply pilot overrides last so they trump iCal-derived events.
+    overrides = override_store().load_all()
+    updated = apply_overrides_to_month(updated, overrides)
 
     engine_result = compute_pay(lower_month(updated))
 
@@ -397,6 +431,15 @@ class DayVersion:
 
 
 @dataclass(frozen=True)
+class FormOption:
+    """One <option> entry for the Day-detail Reason/Premium dropdowns."""
+
+    value: str
+    label: str
+    selected: bool
+
+
+@dataclass(frozen=True)
 class DayDetailData:
     pilot: PilotProfile
     year: int
@@ -450,6 +493,14 @@ class DayDetailData:
     # Activity log on this date
     applied_events: tuple[AppliedEvent, ...]
 
+    # Editing — form options + saved-banner flag
+    reason_options: tuple[FormOption, ...] = ()
+    premium_options: tuple[FormOption, ...] = ()
+    entry_mode_options: tuple[FormOption, ...] = ()
+    has_override: bool = False
+    editable: bool = True
+    saved: bool = False
+
 
 _WEEKDAY_FULL = (
     "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
@@ -489,11 +540,63 @@ _PREMIUM_LABELS = {
 }
 
 
+def _reason_options(selected_value: str, kind: str) -> tuple[FormOption, ...]:
+    from nac_pay.schedule.labels import ReasonCode
+    # Only show codes that make sense for the kind. Off-only categories
+    # are filtered out when the day has work.
+    relevant = (
+        ReasonCode.FLOWN,
+        ReasonCode.PTO,
+        ReasonCode.SICK,
+        ReasonCode.JURY,
+        ReasonCode.BEREAVEMENT,
+        ReasonCode.TRAINING,
+        ReasonCode.MOVING,
+        ReasonCode.FAR,
+        ReasonCode.MILITARY,
+        ReasonCode.FMLA,
+        ReasonCode.UNPAID_LOA,
+        ReasonCode.VOLUNTARY_DROP,
+        ReasonCode.LESSER_TRADE,
+        ReasonCode.UNPROTECTED_UNAVAIL,
+        ReasonCode.OFF,
+    )
+    return tuple(
+        FormOption(value=r.value, label=_REASON_LABELS[r.value],
+                   selected=(r.value == selected_value))
+        for r in relevant
+    )
+
+
+def _premium_options(selected_value: str) -> tuple[FormOption, ...]:
+    from nac_pay.schedule.labels import PremiumCategory
+    return tuple(
+        FormOption(value=p.value, label=_PREMIUM_LABELS[p.value],
+                   selected=(p.value == selected_value))
+        for p in PremiumCategory
+    )
+
+
+def _entry_mode_options(selected_value: str) -> tuple[FormOption, ...]:
+    from nac_pay.schedule.labels import EntryMode
+    labels = {
+        EntryMode.SIMPLE.value: "Value (from FA)",
+        EntryMode.DETAILED.value: "Detailed (compute from actual times)",
+    }
+    return tuple(
+        FormOption(value=m.value, label=labels[m.value],
+                   selected=(m.value == selected_value))
+        for m in EntryMode
+    )
+
+
 def load_day(
     year: int,
     month: int,
     day: int,
     pilot_code: str = "DFI",
+    *,
+    saved: bool = False,
 ) -> DayDetailData:
     try:
         target = date_t(year, month, day)
@@ -556,6 +659,9 @@ def load_day(
     # Applied events on this date.
     events_today = tuple(e for e in pr.applied_events if e.date == target)
 
+    # Check for an existing pilot override on this date.
+    override = override_store().load_all().get(target.isoformat())
+
     return _build_day_detail(
         target=target,
         pr=pr,
@@ -565,6 +671,8 @@ def load_day(
         legs=legs,
         actual_block=actual_block,
         events_today=events_today,
+        has_override=override is not None,
+        saved=saved,
     )
 
 
@@ -577,6 +685,8 @@ def _build_day_detail(
     legs: tuple[DayLeg, ...],
     actual_block: Decimal | None,
     events_today: tuple[AppliedEvent, ...],
+    has_override: bool = False,
+    saved: bool = False,
 ) -> DayDetailData:
     weekday_idx = target.weekday()
     date_label = (
@@ -609,10 +719,11 @@ def _build_day_detail(
         published = trip.published_pch
         effective = trip.effective_pch
         uplift = effective - published
-        reason_label = _REASON_LABELS.get(trip.reason_code.value, trip.reason_code.value)
-        premium_label = _PREMIUM_LABELS.get(
-            trip.premium_category.value, trip.premium_category.value
-        )
+        reason_value = trip.reason_code.value
+        premium_value = trip.premium_category.value
+        entry_mode_value = trip.entry_mode.value
+        reason_label = _REASON_LABELS.get(reason_value, reason_value)
+        premium_label = _PREMIUM_LABELS.get(premium_value, premium_value)
         from .services import _premium_multiplier
         premium_multiplier = _premium_multiplier(trip)
         callout_pch: Decimal | None = None
@@ -654,12 +765,11 @@ def _build_day_detail(
             max(_DPG, day_entry.callout_trip_pch) if is_callout else day_entry.pch_value
         )
         uplift = effective - published if is_callout else Decimal("0")
-        reason_label = _REASON_LABELS.get(
-            day_entry.reason_code.value, day_entry.reason_code.value
-        )
-        premium_label = _PREMIUM_LABELS.get(
-            day_entry.premium_category.value, day_entry.premium_category.value
-        )
+        reason_value = day_entry.reason_code.value
+        premium_value = day_entry.premium_category.value
+        entry_mode_value = "SIMPLE"
+        reason_label = _REASON_LABELS.get(reason_value, reason_value)
+        premium_label = _PREMIUM_LABELS.get(premium_value, premium_value)
         premium_multiplier = None
         callout_pch = day_entry.callout_trip_pch
         callout_excess = (
@@ -678,6 +788,9 @@ def _build_day_detail(
         duty_class = "off"
         assignment_id = None
         published = effective = uplift = None
+        reason_value = "OFF"
+        premium_value = "NONE"
+        entry_mode_value = "SIMPLE"
         reason_label = "—"
         premium_label = "—"
         premium_multiplier = None
@@ -723,6 +836,12 @@ def _build_day_detail(
         callout_trip_pch=callout_pch,
         callout_excess=callout_excess,
         applied_events=events_today,
+        reason_options=_reason_options(reason_value, kind),
+        premium_options=_premium_options(premium_value),
+        entry_mode_options=_entry_mode_options(entry_mode_value),
+        has_override=has_override,
+        editable=(kind != "off"),
+        saved=saved,
     )
 
 

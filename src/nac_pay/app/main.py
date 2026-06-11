@@ -5,19 +5,29 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from decimal import Decimal, InvalidOperation
+
+from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from nac_pay.schedule import PilotProfile, Position
+from nac_pay.storage import DayOverride, PersistedPilotProfile
+
 from .services import (
+    DEFAULT_PERSISTED,
     available_months,
+    invalidate_caches,
     load_calendar,
     load_compare,
     load_dashboard,
     load_day,
     load_discrepancies,
     load_pay_breakdown,
+    load_persisted_profile,
+    override_store,
+    profile_store,
 )
 
 _HERE = Path(__file__).resolve().parent
@@ -75,6 +85,89 @@ def dashboard(
         "dashboard.html",
         {"data": data, "active_screen": "dashboard"},
     )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_view(request: Request) -> HTMLResponse:
+    persisted = load_persisted_profile()
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "persisted": persisted,
+            "active_screen": "settings",
+            "saved": request.query_params.get("saved") == "1",
+        },
+    )
+
+
+@app.post("/settings")
+def settings_save(
+    name: str = Form(...),
+    position: str = Form(...),
+    hourly_rate: str = Form(...),
+    sick_bank_days: int = Form(0),
+    pto_bank_days: int = Form(0),
+    feed_url: str = Form(""),
+    feed_auto_update: str = Form(""),
+) -> RedirectResponse:
+    try:
+        position_enum = Position(position)
+    except ValueError as exc:
+        raise HTTPException(400, f"Invalid position {position!r}") from exc
+    try:
+        rate = Decimal(hourly_rate)
+    except InvalidOperation as exc:
+        raise HTTPException(400, f"Invalid hourly_rate {hourly_rate!r}") from exc
+    if rate <= 0:
+        raise HTTPException(400, "hourly_rate must be positive")
+    if sick_bank_days < 0 or pto_bank_days < 0:
+        raise HTTPException(400, "bank days cannot be negative")
+
+    current = load_persisted_profile()
+    new_profile = PilotProfile(
+        pilot_id=current.profile.pilot_id,
+        name=name,
+        position=position_enum,
+        hourly_rate=rate,
+        fleet=current.profile.fleet,
+        sick_bank_days=sick_bank_days,
+        pto_bank_days=pto_bank_days,
+    )
+    profile_store().save(
+        PersistedPilotProfile(
+            profile=new_profile,
+            feed_url=feed_url.strip(),
+            feed_auto_update=feed_auto_update == "on",
+        )
+    )
+    invalidate_caches()
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@app.post("/day/{date_iso}")
+def day_save(
+    date_iso: str,
+    reason_code: str = Form(""),
+    premium_category: str = Form(""),
+    entry_mode: str = Form(""),
+    custom_multiplier: str = Form(""),
+) -> RedirectResponse:
+    try:
+        date.fromisoformat(date_iso)
+    except ValueError as exc:
+        raise HTTPException(400, f"Invalid date {date_iso!r}") from exc
+
+    override = DayOverride(
+        date_iso=date_iso,
+        reason_code=reason_code or None,
+        premium_category=premium_category or None,
+        custom_multiplier=custom_multiplier.strip() or None,
+        entry_mode=entry_mode or None,
+    )
+    override_store().save_one(override)
+    invalidate_caches()
+    return RedirectResponse(f"/day/{date_iso}?saved=1", status_code=303)
 
 
 @app.get("/discrepancies", response_class=HTMLResponse)
@@ -181,7 +274,10 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
             status_code=400, detail=f"Invalid date {date_iso!r}: expected YYYY-MM-DD"
         ) from exc
     try:
-        data = load_day(target.year, target.month, target.day)
+        data = load_day(
+            target.year, target.month, target.day,
+            saved=(request.query_params.get("saved") == "1"),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _TEMPLATES.TemplateResponse(

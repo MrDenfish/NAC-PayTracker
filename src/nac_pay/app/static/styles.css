@@ -919,6 +919,71 @@ a.day-cell:hover {
 }
 .action-link:hover { text-decoration: underline; }
 
+/* ── Settings ──────────────────────────────────────────────────── */
+
+.settings-view { display: flex; flex-direction: column; gap: 18px; }
+.settings-form { display: flex; flex-direction: column; gap: 18px; }
+
+.form-grid input[type="text"],
+.form-grid input[type="number"],
+.form-grid select {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  font: inherit;
+}
+.form-grid input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin-top: 4px;
+}
+.form-grid input:disabled {
+  background: #f3f5f8;
+  color: var(--text-subtle);
+}
+.form-grid--wide {
+  grid-column: span 2;
+}
+.form-hint {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--text-subtle);
+}
+.form-hint code {
+  background: #f4f5f7;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.btn {
+  padding: 10px 22px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  font: inherit;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+.btn--primary:hover {
+  filter: brightness(1.1);
+  color: #ffffff;
+}
+.btn--secondary {
+  background: #ffffff;
+  color: var(--text);
+}
+
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 720px) {

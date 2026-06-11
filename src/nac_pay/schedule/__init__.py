@@ -10,6 +10,7 @@ from .apply_actuals import (
     AppliedEventKind,
     apply_actuals_to_month,
 )
+from .apply_overrides import apply_overrides_to_month
 from .from_master_schedule import ConversionWarning, month_from_master_schedule
 from .labels import (
     DutyType,
@@ -46,6 +47,7 @@ __all__ = [
     "ReasonCode",
     "Trip",
     "apply_actuals_to_month",
+    "apply_overrides_to_month",
     "lower_month",
     "month_from_master_schedule",
 ]

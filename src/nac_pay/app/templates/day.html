@@ -57,32 +57,62 @@
     </div>
   </div>
 
-  {# ── Reason / Premium (display-only for now) ─────────────────── #}
+  {# ── Reason / Premium (editable when day has work) ──────────── #}
   <div class="card">
-    <h2 class="card-title">Reason & premium</h2>
-    <div class="form-grid">
-      <label>
-        <span class="form-label">Reason</span>
-        <select disabled>
-          <option>{{ data.reason_label }}</option>
-        </select>
-      </label>
-      <label>
-        <span class="form-label">Premium</span>
-        <select disabled>
-          <option>{{ data.premium_label }}</option>
-        </select>
-      </label>
-      <label>
-        <span class="form-label">Entry mode</span>
-        <select disabled>
-          <option>Value (from FA)</option>
-        </select>
-      </label>
+    <h2 class="card-title">Reason &amp; premium</h2>
+    {% if data.saved %}
+    <div class="banner banner--ok" style="margin-bottom: 12px;">
+      <strong>Saved.</strong>
+      <p>Override stored, pipeline re-runs on next request.</p>
     </div>
-    <p class="subtle form-note">
-      Editing reason/premium/entry-mode requires the persistence layer — coming next.
+    {% endif %}
+    {% if data.has_override %}
+    <p class="subtle form-note" style="margin-bottom: 12px;">
+      ⚙ Custom override is active for this date.
     </p>
+    {% endif %}
+    <form action="/day/{{ data.date_iso }}" method="post">
+      <div class="form-grid">
+        <label>
+          <span class="form-label">Reason</span>
+          <select name="reason_code" {% if not data.editable %}disabled{% endif %}>
+            {% for opt in data.reason_options %}
+            <option value="{{ opt.value }}" {% if opt.selected %}selected{% endif %}>
+              {{ opt.label }}
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span class="form-label">Premium</span>
+          <select name="premium_category" {% if not data.editable %}disabled{% endif %}>
+            {% for opt in data.premium_options %}
+            <option value="{{ opt.value }}" {% if opt.selected %}selected{% endif %}>
+              {{ opt.label }}
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span class="form-label">Entry mode</span>
+          <select name="entry_mode" {% if not data.editable %}disabled{% endif %}>
+            {% for opt in data.entry_mode_options %}
+            <option value="{{ opt.value }}" {% if opt.selected %}selected{% endif %}>
+              {{ opt.label }}
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      {% if data.editable %}
+      <div class="form-actions" style="margin-top: 16px;">
+        <a href="/day/{{ data.date_iso }}" class="btn btn--secondary">Cancel</a>
+        <button type="submit" class="btn btn--primary">Save override</button>
+      </div>
+      {% else %}
+      <p class="subtle form-note">Off days don't carry a reason/premium.</p>
+      {% endif %}
+    </form>
   </div>
 
   {# ── Callout summary ─────────────────────────────────────────── #}
