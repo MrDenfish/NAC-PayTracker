@@ -22,20 +22,30 @@ def _isolated_storage_dir():
 
 @pytest.fixture(autouse=True)
 def _reset_persisted_state(_isolated_storage_dir):
-    """Per-test reset: wipe stored profile + overrides + pipeline cache.
+    """Per-test reset: wipe ALL persisted state (every user) + pipeline cache.
 
     Keeps each test hermetic — a Settings POST in one test doesn't bleed
-    into another test's load_day().
+    into another test's load_day(), and multi-user tests don't leave
+    synthetic users lying around for the bundled DFI pipeline to choke on.
     """
-    from nac_pay.app.services import (
-        invalidate_caches,
-        override_store,
-        profile_store,
-    )
-    profile_store().reset()
-    override_store().reset()
-    invalidate_caches()
+    import shutil
+    from pathlib import Path
+
+    from nac_pay.app.services import invalidate_caches
+
+    def _wipe():
+        data_dir = Path(_isolated_storage_dir)
+        if data_dir.exists():
+            for entry in data_dir.iterdir():
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    try:
+                        entry.unlink()
+                    except OSError:
+                        pass
+        invalidate_caches()
+
+    _wipe()
     yield
-    profile_store().reset()
-    override_store().reset()
-    invalidate_caches()
+    _wipe()

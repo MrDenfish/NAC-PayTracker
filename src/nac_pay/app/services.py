@@ -16,7 +16,7 @@ Pipeline:
 
 The expensive part — parsing PDFs / iCal, running reconciliation, applying
 events — happens in ``_pipeline``. It returns a ``PipelineResult`` cached
-per (year, month, pilot_code). Each screen-specific loader
+per (year, month, user_id). Each screen-specific loader
 (``load_dashboard``, ``load_calendar``, ...) is a thin projection over
 that shared result.
 """
@@ -60,10 +60,14 @@ from nac_pay.schedule import (
     month_from_master_schedule,
 )
 from nac_pay.storage import (
+    DEFAULT_USER_ID,
     DayOverride,
     DayOverrideStore,
     PersistedPilotProfile,
     PilotProfileStore,
+    User,
+    UserStore,
+    default_user,
     get_data_dir,
 )
 
@@ -76,21 +80,34 @@ DEFAULT_PILOT = PilotProfile(
 DEFAULT_PERSISTED = PersistedPilotProfile(profile=DEFAULT_PILOT)
 
 
-def profile_store() -> PilotProfileStore:
-    return PilotProfileStore(get_data_dir())
+def current_user() -> User:
+    """Placeholder — returns the bundled default user. When auth lands,
+    this reads from the request's session / JWT and the routes don't
+    need to change."""
+    return default_user()
 
 
-def override_store() -> DayOverrideStore:
-    return DayOverrideStore(get_data_dir())
+def user_store() -> UserStore:
+    return UserStore(get_data_dir())
 
 
-def load_persisted_profile() -> PersistedPilotProfile:
-    return profile_store().load(DEFAULT_PERSISTED)
+def profile_store(user_id: str | None = None) -> PilotProfileStore:
+    return PilotProfileStore(get_data_dir(), user_id or current_user().user_id)
+
+
+def override_store(user_id: str | None = None) -> DayOverrideStore:
+    return DayOverrideStore(get_data_dir(), user_id or current_user().user_id)
+
+
+def load_persisted_profile(user_id: str | None = None) -> PersistedPilotProfile:
+    return profile_store(user_id).load(DEFAULT_PERSISTED)
 
 
 def invalidate_caches() -> None:
     """Clear pipeline cache — called after any pilot save so subsequent
-    requests re-run with the new profile / overrides."""
+    requests re-run with the new profile / overrides. Global for now;
+    Phase 2 will add per-user invalidation when the cache key change
+    is mechanical (DB-backed stores own this concern differently)."""
     _pipeline.cache_clear()
 
 DOCS_ROOT = Path(__file__).resolve().parents[3] / "docs"
@@ -154,11 +171,11 @@ def available_months() -> tuple[tuple[int, int, str], ...]:
     )
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=64)
 def _pipeline(
     year: int,
     month: int,
-    pilot_code: str = "DFI",
+    user_id: str = DEFAULT_USER_ID,
 ) -> PipelineResult:
     paths = _DOC_INDEX.get((year, month))
     if paths is None:
@@ -167,7 +184,9 @@ def _pipeline(
 
     # Resolved per call so a Settings save (which triggers invalidate_caches())
     # picks up changes on the next request.
-    pilot = load_persisted_profile().profile
+    persisted = load_persisted_profile(user_id)
+    pilot = persisted.profile
+    pilot_code = pilot.pilot_id
 
     fa_grids = parse_master_schedule(str(fa_path))
     sched = fa_grids.get(pilot_code)
@@ -193,7 +212,7 @@ def _pipeline(
         updated, applied = baseline, ()
 
     # Apply pilot overrides last so they trump iCal-derived events.
-    overrides = override_store().load_all()
+    overrides = override_store(user_id).load_all()
     updated = apply_overrides_to_month(updated, overrides)
 
     engine_result = compute_pay(lower_month(updated))
@@ -250,9 +269,9 @@ class DashboardData:
 def load_dashboard(
     year: int,
     month: int,
-    pilot_code: str = "DFI",
+    user_id: str = DEFAULT_USER_ID,
 ) -> DashboardData:
-    pr = _pipeline(year, month, pilot_code)
+    pr = _pipeline(year, month, user_id)
     r = pr.engine_result
     feed = pr.feed
     return DashboardData(
@@ -350,9 +369,9 @@ _WEEKDAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 def load_calendar(
     year: int,
     month: int,
-    pilot_code: str = "DFI",
+    user_id: str = DEFAULT_USER_ID,
 ) -> CalendarData:
-    pr = _pipeline(year, month, pilot_code)
+    pr = _pipeline(year, month, user_id)
     updated = pr.updated_month
 
     # Index trips and days by date for O(1) cell lookup.
@@ -594,7 +613,7 @@ def load_day(
     year: int,
     month: int,
     day: int,
-    pilot_code: str = "DFI",
+    user_id: str = DEFAULT_USER_ID,
     *,
     saved: bool = False,
 ) -> DayDetailData:
@@ -605,7 +624,7 @@ def load_day(
             f"Invalid date {year}-{month}-{day}: {exc}"
         ) from exc
 
-    pr = _pipeline(year, month, pilot_code)
+    pr = _pipeline(year, month, user_id)
     updated = pr.updated_month
 
     # Find the Trip or Day for this date.
@@ -1114,9 +1133,9 @@ _STUB_LABEL_BY_TRACKER: dict[str, str] = {
 def load_compare(
     year: int,
     month: int,
-    pilot_code: str = "DFI",
+    user_id: str = DEFAULT_USER_ID,
 ) -> CompareData:
-    pb = load_pay_breakdown(year, month, pilot_code)
+    pb = load_pay_breakdown(year, month, user_id)
 
     stub_paths = _STUB_INDEX.get((year, month), ())
     if not stub_paths:
@@ -1312,9 +1331,9 @@ class DiscrepanciesData:
 def load_discrepancies(
     year: int,
     month: int,
-    pilot_code: str = "DFI",
+    user_id: str = DEFAULT_USER_ID,
 ) -> DiscrepanciesData:
-    pr = _pipeline(year, month, pilot_code)
+    pr = _pipeline(year, month, user_id)
     items: list[DiscrepancyItem] = []
     ym = f"{year}-{month}"
 
@@ -1339,7 +1358,7 @@ def load_discrepancies(
 
     # 2. Compare mismatches (only when stubs exist)
     if _STUB_INDEX.get((year, month)):
-        compare = load_compare(year, month, pilot_code)
+        compare = load_compare(year, month, user_id)
         if compare.verdict is not CompareVerdict.NO_STUBS:
             for row in compare.rows:
                 if row.matches:
@@ -1423,9 +1442,9 @@ def load_discrepancies(
 def load_pay_breakdown(
     year: int,
     month: int,
-    pilot_code: str = "DFI",
+    user_id: str = DEFAULT_USER_ID,
 ) -> PayBreakdownData:
-    pr = _pipeline(year, month, pilot_code)
+    pr = _pipeline(year, month, user_id)
     r = pr.engine_result
     base_rate = pr.pilot.hourly_rate
 

@@ -41,9 +41,21 @@ class DayOverride:
 class DayOverrideStore:
     FILENAME = "day_overrides.json"
 
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, user_id: str | None = None):
         from . import JsonStore
-        self._store = JsonStore(base_dir / self.FILENAME)
+        from .users import DEFAULT_USER_ID, user_dir
+        self._user_id = user_id or DEFAULT_USER_ID
+        self._path = user_dir(base_dir, self._user_id) / self.FILENAME
+        legacy = base_dir / self.FILENAME
+        if (
+            self._user_id == DEFAULT_USER_ID
+            and legacy.exists()
+            and not self._path.exists()
+        ):
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_bytes(legacy.read_bytes())
+            legacy.unlink()
+        self._store = JsonStore(self._path)
 
     def load_all(self) -> dict[str, DayOverride]:
         raw = self._store.read()

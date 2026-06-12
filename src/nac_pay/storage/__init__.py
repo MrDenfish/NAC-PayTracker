@@ -64,13 +64,25 @@ class JsonStore:
 
 from .overrides import DayOverride, DayOverrideStore  # noqa: E402
 from .profile import PersistedPilotProfile, PilotProfileStore  # noqa: E402
+from .users import (  # noqa: E402
+    DEFAULT_USER_ID,
+    User,
+    UserStore,
+    default_user,
+    user_dir,
+)
 
 __all__ = [
     "DEFAULT_DATA_DIR",
+    "DEFAULT_USER_ID",
     "DayOverride",
     "DayOverrideStore",
     "JsonStore",
     "PersistedPilotProfile",
     "PilotProfileStore",
+    "User",
+    "UserStore",
+    "default_user",
     "get_data_dir",
+    "user_dir",
 ]
