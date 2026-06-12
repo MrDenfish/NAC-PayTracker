@@ -3,6 +3,9 @@
 Sets ``NAC_PAY_DATA_DIR`` to a fresh per-session temp directory so tests
 never touch the user's real ``~/.nac-pay/data/`` and never see leftover
 state from a previous run.
+
+Phase 2 backend is SQL: per-test fixture drops + recreates every table
+so each test starts with an empty database.
 """
 
 from __future__ import annotations
@@ -17,35 +20,24 @@ import pytest
 def _isolated_storage_dir():
     with tempfile.TemporaryDirectory(prefix="nac-pay-test-") as tmp:
         os.environ["NAC_PAY_DATA_DIR"] = tmp
+        # Explicitly clear any DATABASE_URL override that might be set in
+        # the developer's shell — tests always use SQLite under the temp dir.
+        os.environ.pop("NAC_PAY_DATABASE_URL", None)
         yield tmp
 
 
 @pytest.fixture(autouse=True)
 def _reset_persisted_state(_isolated_storage_dir):
-    """Per-test reset: wipe ALL persisted state (every user) + pipeline cache.
+    """Per-test reset: drop + recreate every table, clear pipeline cache.
 
     Keeps each test hermetic — a Settings POST in one test doesn't bleed
-    into another test's load_day(), and multi-user tests don't leave
-    synthetic users lying around for the bundled DFI pipeline to choke on.
+    into another test's load_day().
     """
-    import shutil
-    from pathlib import Path
-
     from nac_pay.app.services import invalidate_caches
+    from nac_pay.storage import dispose_engine, reset_tables
 
-    def _wipe():
-        data_dir = Path(_isolated_storage_dir)
-        if data_dir.exists():
-            for entry in data_dir.iterdir():
-                if entry.is_dir():
-                    shutil.rmtree(entry, ignore_errors=True)
-                else:
-                    try:
-                        entry.unlink()
-                    except OSError:
-                        pass
-        invalidate_caches()
-
-    _wipe()
+    dispose_engine()
+    reset_tables()
+    invalidate_caches()
     yield
-    _wipe()
+    invalidate_caches()

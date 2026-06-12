@@ -1,26 +1,16 @@
-"""User identity layer.
+"""User identity layer — SQL-backed.
 
-Phase 1 of the multi-tenant refactor. Currently a placeholder — the
-default user is the only one that exists, and ``current_user()`` always
-returns it. When auth lands in a later milestone, ``current_user()``
-will read from a session cookie / JWT and routes won't need to change.
-
-User-keyed storage layout::
-
-    {data_dir}/
-        users.json                              # registry
-        users/{user_id}/
-            pilot_profile.json
-            day_overrides.json
-
-For the default user we use the literal id ``"default"`` so the path is
-``users/default/...`` — readable and avoids UUID churn during dev.
+Phase 2 of the multi-tenant refactor. ``UserStore`` now reads/writes the
+``users`` table via SQLAlchemy. The default user resolves even when the
+table is empty.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from sqlalchemy import select
 
 DEFAULT_USER_ID = "default"
 
@@ -29,8 +19,8 @@ DEFAULT_USER_ID = "default"
 class User:
     user_id: str
     email: str = ""
-    created_at: str = ""        # ISO-8601 string; populated when auth lands
-    is_default: bool = False    # bundled-dev-user flag
+    created_at: str = ""
+    is_default: bool = False
 
 
 _DEFAULT_USER = User(
@@ -41,59 +31,78 @@ _DEFAULT_USER = User(
 
 
 def default_user() -> User:
-    """The bundled dev/test user. Owns the docs/ corpus."""
     return _DEFAULT_USER
 
 
 def user_dir(base_dir: Path, user_id: str) -> Path:
-    """Per-user data directory under ``{base_dir}/users/{user_id}/``."""
+    """Legacy helper kept for the Phase 1 storage tests (path namespacing
+    test). The SQL backend uses a single DB file; this function only
+    returns the conceptual per-user dir under base_dir."""
     return base_dir / "users" / user_id
 
 
 class UserStore:
-    """Persisted user registry. Wired but minimal — the registry exists so
-    we have somewhere to land sign-up flow when it ships."""
-
-    FILENAME = "users.json"
-
-    def __init__(self, base_dir: Path):
-        from . import JsonStore
-        self._store = JsonStore(base_dir / self.FILENAME)
+    def __init__(self, base_dir: Path | None = None):
+        # base_dir is accepted for API compatibility but not used —
+        # the DB URL is resolved by db.database_url().
+        pass
 
     def list_users(self) -> list[User]:
-        data = self._store.read()
-        users_dict = data.get("users", {})
-        out: list[User] = []
-        for uid, fields in users_dict.items():
-            out.append(
+        from .db import session_scope
+        from .db_models import UserRow
+
+        with session_scope() as sess:
+            rows = sess.execute(select(UserRow)).scalars().all()
+            out = [
                 User(
-                    user_id=uid,
-                    email=fields.get("email", ""),
-                    created_at=fields.get("created_at", ""),
-                    is_default=bool(fields.get("is_default", False)),
+                    user_id=r.user_id, email=r.email,
+                    created_at=r.created_at, is_default=r.is_default,
                 )
-            )
-        # If the registry doesn't yet exist, the default user still resolves.
+                for r in rows
+            ]
+        # Default user always resolves, even if not persisted yet.
         if not any(u.user_id == DEFAULT_USER_ID for u in out):
             out.append(default_user())
         return out
 
     def get(self, user_id: str) -> User | None:
-        for u in self.list_users():
-            if u.user_id == user_id:
-                return u
-        return None
+        from .db import session_scope
+        from .db_models import UserRow
+
+        with session_scope() as sess:
+            row = sess.execute(
+                select(UserRow).where(UserRow.user_id == user_id)
+            ).scalar_one_or_none()
+            if row is None:
+                # Default user resolves even if not in the table.
+                if user_id == DEFAULT_USER_ID:
+                    return default_user()
+                return None
+            return User(
+                user_id=row.user_id, email=row.email,
+                created_at=row.created_at, is_default=row.is_default,
+            )
 
     def upsert(self, user: User) -> None:
-        data = self._store.read()
-        users_dict = data.get("users", {})
-        users_dict[user.user_id] = {
-            "email": user.email,
-            "created_at": user.created_at,
-            "is_default": user.is_default,
-        }
-        data["users"] = users_dict
-        self._store.write(data)
+        from .db import session_scope
+        from .db_models import UserRow
+
+        with session_scope() as sess:
+            row = sess.execute(
+                select(UserRow).where(UserRow.user_id == user.user_id)
+            ).scalar_one_or_none()
+            if row is None:
+                row = UserRow(user_id=user.user_id)
+                sess.add(row)
+            row.email = user.email
+            row.created_at = user.created_at
+            row.is_default = user.is_default
 
     def reset(self) -> None:
-        self._store.clear()
+        """Clear all users (and cascade-delete their profiles + overrides)."""
+        from .db import session_scope
+        from .db_models import UserRow
+        from sqlalchemy import delete as sa_delete
+
+        with session_scope() as sess:
+            sess.execute(sa_delete(UserRow))

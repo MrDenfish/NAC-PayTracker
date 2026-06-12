@@ -1,12 +1,6 @@
-"""Per-date pilot overrides — what the pilot changed via the GUI.
+"""Per-date pilot overrides — SQL-backed store.
 
-Stored as ``{date_iso: {field: value}}`` in ``day_overrides.json``. Fields
-with value ``None`` are omitted so an override that resets back to
-default removes itself from the file.
-
-The schema deliberately accepts strings for enum values so the JSON file
-remains human-readable. Validation happens at load_all() time when the
-strings are coerced to enums.
+Same public API as the Phase 1 JSON store.
 """
 
 from __future__ import annotations
@@ -15,14 +9,16 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+from sqlalchemy import delete, select
+
 
 @dataclass(frozen=True)
 class DayOverride:
     date_iso: str
-    reason_code: str | None = None         # ReasonCode enum value
-    premium_category: str | None = None    # PremiumCategory enum value
-    custom_multiplier: str | None = None   # Decimal as string for round-trip
-    entry_mode: str | None = None          # EntryMode enum value
+    reason_code: str | None = None
+    premium_category: str | None = None
+    custom_multiplier: str | None = None
+    entry_mode: str | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -39,60 +35,96 @@ class DayOverride:
 
 
 class DayOverrideStore:
-    FILENAME = "day_overrides.json"
-
-    def __init__(self, base_dir: Path, user_id: str | None = None):
-        from . import JsonStore
-        from .users import DEFAULT_USER_ID, user_dir
+    def __init__(self, base_dir: Path | None = None, user_id: str | None = None):
+        from .users import DEFAULT_USER_ID
         self._user_id = user_id or DEFAULT_USER_ID
-        self._path = user_dir(base_dir, self._user_id) / self.FILENAME
-        legacy = base_dir / self.FILENAME
-        if (
-            self._user_id == DEFAULT_USER_ID
-            and legacy.exists()
-            and not self._path.exists()
-        ):
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_bytes(legacy.read_bytes())
-            legacy.unlink()
-        self._store = JsonStore(self._path)
 
     def load_all(self) -> dict[str, DayOverride]:
-        raw = self._store.read()
-        out: dict[str, DayOverride] = {}
-        for date_iso, fields in raw.items():
-            if not isinstance(fields, dict):
-                continue
-            out[date_iso] = DayOverride(
-                date_iso=date_iso,
-                reason_code=fields.get("reason_code"),
-                premium_category=fields.get("premium_category"),
-                custom_multiplier=fields.get("custom_multiplier"),
-                entry_mode=fields.get("entry_mode"),
-            )
-        return out
+        from .db import session_scope
+        from .db_models import DayOverrideRow
+
+        with session_scope() as sess:
+            rows = sess.execute(
+                select(DayOverrideRow).where(
+                    DayOverrideRow.user_id == self._user_id
+                )
+            ).scalars().all()
+            return {
+                r.date_iso: DayOverride(
+                    date_iso=r.date_iso,
+                    reason_code=r.reason_code,
+                    premium_category=r.premium_category,
+                    custom_multiplier=(
+                        str(r.custom_multiplier)
+                        if r.custom_multiplier is not None
+                        else None
+                    ),
+                    entry_mode=r.entry_mode,
+                )
+                for r in rows
+            }
 
     def save_one(self, override: DayOverride) -> None:
-        raw = self._store.read()
-        if override.is_empty:
-            raw.pop(override.date_iso, None)
-        else:
-            raw[override.date_iso] = {
-                k: v for k, v in {
-                    "reason_code": override.reason_code,
-                    "premium_category": override.premium_category,
-                    "custom_multiplier": override.custom_multiplier,
-                    "entry_mode": override.entry_mode,
-                }.items()
-                if v is not None and v != ""
-            }
-        self._store.write(raw)
+        from .db import session_scope
+        from .db_models import DayOverrideRow, UserRow
+
+        with session_scope() as sess:
+            # Ensure user exists (the per-user PK FK requires it).
+            user = sess.execute(
+                select(UserRow).where(UserRow.user_id == self._user_id)
+            ).scalar_one_or_none()
+            if user is None:
+                sess.add(UserRow(user_id=self._user_id))
+                sess.flush()
+
+            if override.is_empty:
+                sess.execute(
+                    delete(DayOverrideRow).where(
+                        DayOverrideRow.user_id == self._user_id,
+                        DayOverrideRow.date_iso == override.date_iso,
+                    )
+                )
+                return
+
+            row = sess.execute(
+                select(DayOverrideRow).where(
+                    DayOverrideRow.user_id == self._user_id,
+                    DayOverrideRow.date_iso == override.date_iso,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                row = DayOverrideRow(
+                    user_id=self._user_id,
+                    date_iso=override.date_iso,
+                )
+                sess.add(row)
+            row.reason_code = override.reason_code
+            row.premium_category = override.premium_category
+            row.custom_multiplier = (
+                Decimal(override.custom_multiplier)
+                if override.custom_multiplier else None
+            )
+            row.entry_mode = override.entry_mode
 
     def delete_one(self, date_iso: str) -> None:
-        raw = self._store.read()
-        if date_iso in raw:
-            raw.pop(date_iso)
-            self._store.write(raw)
+        from .db import session_scope
+        from .db_models import DayOverrideRow
+
+        with session_scope() as sess:
+            sess.execute(
+                delete(DayOverrideRow).where(
+                    DayOverrideRow.user_id == self._user_id,
+                    DayOverrideRow.date_iso == date_iso,
+                )
+            )
 
     def reset(self) -> None:
-        self._store.clear()
+        from .db import session_scope
+        from .db_models import DayOverrideRow
+
+        with session_scope() as sess:
+            sess.execute(
+                delete(DayOverrideRow).where(
+                    DayOverrideRow.user_id == self._user_id
+                )
+            )

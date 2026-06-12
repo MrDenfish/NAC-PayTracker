@@ -123,14 +123,12 @@ def test_override_store_save_and_reload():
         )
     )
     loaded = store.load_all()
-    assert loaded == {
-        "2026-06-12": DayOverride(date_iso="2026-06-12", reason_code="SICK"),
-        "2026-06-17": DayOverride(
-            date_iso="2026-06-17",
-            premium_category="OPEN_TIME_MID_MONTH",
-            custom_multiplier="1.5",
-        ),
-    }
+    assert loaded["2026-06-12"] == DayOverride(date_iso="2026-06-12", reason_code="SICK")
+    # Numeric(4,2) normalizes "1.5" → "1.50"; the semantic Decimal value is
+    # identical, the string representation just gets two fractional digits.
+    row = loaded["2026-06-17"]
+    assert row.premium_category == "OPEN_TIME_MID_MONTH"
+    assert row.custom_multiplier_decimal == D("1.5")
 
 
 def test_override_store_empty_override_removes_record():

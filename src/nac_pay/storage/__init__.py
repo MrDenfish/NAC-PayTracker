@@ -1,11 +1,12 @@
-"""Persistence layer — JSON file backing store.
+"""Persistence layer — SQL backing store (Phase 2).
 
-Single-user MVP. Stores live under ``~/.nac-pay/data/`` by default; set
-``NAC_PAY_DATA_DIR`` to redirect (used by tests for isolation).
+Per-user data lives in three tables: ``users``, ``pilot_profiles``,
+``day_overrides``. Database URL resolves from ``NAC_PAY_DATABASE_URL``
+(prod) or falls back to ``sqlite:///{NAC_PAY_DATA_DIR}/nac_pay.db`` (dev).
 
-Schema is intentionally minimal — pilot profile + per-date overrides.
-Trip-pairing data is still re-parsed from docs/ on each pipeline run
-because it's source-of-truth (the PDF). Overrides are layered on top.
+The Phase 1 JSON store is no longer used — ``JsonStore`` remains as a
+compatibility export so any out-of-tree code that imported it for tests
+still gets a working class, but the production stores all hit SQL now.
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ def get_data_dir() -> Path:
 
 @dataclass(frozen=True)
 class JsonStore:
-    """Atomic JSON file: temp-then-rename so a crashed write never half-writes."""
+    """Legacy JSON-file backing store. Kept as an export for back-compat
+    only — production stores in Phase 2 use SQLAlchemy via ``db.py``."""
 
     path: Path
 
@@ -40,7 +42,6 @@ class JsonStore:
 
     def write(self, data: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Same-filesystem temp file → atomic rename.
         fd, tmp_path = tempfile.mkstemp(
             prefix=self.path.name + ".",
             suffix=".tmp",
@@ -62,6 +63,15 @@ class JsonStore:
             self.path.unlink()
 
 
+from .db import (  # noqa: E402
+    Base,
+    database_url,
+    dispose_engine,
+    get_engine,
+    reset_tables,
+    session_factory,
+    session_scope,
+)
 from .overrides import DayOverride, DayOverrideStore  # noqa: E402
 from .profile import PersistedPilotProfile, PilotProfileStore  # noqa: E402
 from .users import (  # noqa: E402
@@ -73,6 +83,7 @@ from .users import (  # noqa: E402
 )
 
 __all__ = [
+    "Base",
     "DEFAULT_DATA_DIR",
     "DEFAULT_USER_ID",
     "DayOverride",
@@ -82,7 +93,13 @@ __all__ = [
     "PilotProfileStore",
     "User",
     "UserStore",
+    "database_url",
     "default_user",
+    "dispose_engine",
     "get_data_dir",
+    "get_engine",
+    "reset_tables",
+    "session_factory",
+    "session_scope",
     "user_dir",
 ]

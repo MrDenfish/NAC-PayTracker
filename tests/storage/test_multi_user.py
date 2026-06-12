@@ -65,7 +65,8 @@ def test_user_dir_paths_are_isolated():
     assert a.parent.name == "users"
 
 
-def test_profile_store_writes_under_user_dir():
+def test_profile_store_writes_user_scoped_row():
+    """Phase 2: profiles live in the pilot_profiles table keyed by user_id."""
     store = PilotProfileStore(get_data_dir(), user_id="alice")
     persisted = PersistedPilotProfile(
         profile=PilotProfile(
@@ -74,8 +75,20 @@ def test_profile_store_writes_under_user_dir():
         ),
     )
     store.save(persisted)
-    expected = user_dir(get_data_dir(), "alice") / "pilot_profile.json"
-    assert expected.exists()
+
+    # Round-trip via a fresh store proves the row was persisted under "alice".
+    fresh = PilotProfileStore(get_data_dir(), user_id="alice")
+    fallback = PersistedPilotProfile(
+        profile=PilotProfile(
+            pilot_id="zzz", name="not-alice", position=Position.CPT,
+            hourly_rate=D("1"),
+        ),
+    )
+    loaded = fresh.load(fallback)
+    assert loaded.profile.name == "Alice"
+    # Bob doesn't see Alice's row.
+    bob_view = PilotProfileStore(get_data_dir(), user_id="bob").load(fallback)
+    assert bob_view == fallback
 
 
 # ── Isolation ─────────────────────────────────────────────────────────
