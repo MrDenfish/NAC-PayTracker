@@ -7,13 +7,18 @@ from pathlib import Path
 
 from decimal import Decimal, InvalidOperation
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
+from nac_pay.auth import AuthRequiredMiddleware, current_user, session_secret
+from nac_pay.auth import auth_required as _auth_required_flag
 from nac_pay.schedule import PilotProfile, Position
-from nac_pay.storage import DayOverride, PersistedPilotProfile
+from nac_pay.storage import DayOverride, PersistedPilotProfile, User
+
+from .auth_routes import router as auth_router
 
 from .services import (
     DEFAULT_PERSISTED,
@@ -34,7 +39,15 @@ _HERE = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 
 app = FastAPI(title="NAC Pay Tracker", version="0.1.0")
+
+# Starlette middleware order: LAST add_middleware is OUTERMOST and runs
+# first on the request path. AuthRequiredMiddleware needs request.session,
+# so SessionMiddleware must wrap it (outermost) → add it LAST.
+app.add_middleware(AuthRequiredMiddleware)
+app.add_middleware(SessionMiddleware, secret_key=session_secret())
+
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
+app.include_router(auth_router)
 
 
 @app.get("/api/health")

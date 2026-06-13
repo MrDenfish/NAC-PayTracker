@@ -1,0 +1,23 @@
+{% extends "auth/_base_auth.html" %}
+{% block title %}Reset password — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  {% if sent %}
+  <h1>Check your email</h1>
+  <p class="subtle">If an account exists for that email, you'll find a reset link in the inbox. The link expires in 1 hour.</p>
+  <p class="subtle"><a href="/login">Back to sign in</a></p>
+  {% else %}
+  <h1>Reset your password</h1>
+  <p class="subtle">Enter your email and we'll send a reset link.</p>
+  <form action="/forgot" method="post" class="auth-form">
+    <label>
+      <span class="form-label">Email</span>
+      <input type="email" name="email" required autofocus>
+    </label>
+    <button type="submit" class="btn btn--primary">Send reset link</button>
+  </form>
+  <p class="subtle auth-foot"><a href="/login">Back to sign in</a></p>
+  {% endif %}
+</div>
+{% endblock %}

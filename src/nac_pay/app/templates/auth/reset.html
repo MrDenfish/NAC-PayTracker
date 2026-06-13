@@ -1,0 +1,23 @@
+{% extends "auth/_base_auth.html" %}
+{% block title %}Set new password — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  <h1>Set a new password</h1>
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+  <form action="/reset/{{ token }}" method="post" class="auth-form">
+    <label>
+      <span class="form-label">New password</span>
+      <input type="password" name="password" required minlength="10" autofocus>
+      <span class="form-hint">At least 10 characters.</span>
+    </label>
+    <label>
+      <span class="form-label">Confirm new password</span>
+      <input type="password" name="confirm" required minlength="10">
+    </label>
+    <button type="submit" class="btn btn--primary">Update password</button>
+  </form>
+</div>
+{% endblock %}

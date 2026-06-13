@@ -25,10 +25,20 @@ class UserRow(Base):
     created_at: Mapped[str] = mapped_column(String(40), default="", nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Auth fields (nullable for back-compat with the bundled default user).
+    password_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    email_verified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
     profile: Mapped["PilotProfileRow | None"] = relationship(
         back_populates="user", uselist=False, cascade="all, delete-orphan",
     )
     overrides: Mapped[list["DayOverrideRow"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan",
+    )
+    email_verifications: Mapped[list["EmailVerificationRow"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan",
+    )
+    password_resets: Mapped[list["PasswordResetRow"]] = relationship(
         back_populates="user", cascade="all, delete-orphan",
     )
 
@@ -70,3 +80,35 @@ class DayOverrideRow(Base):
     entry_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     user: Mapped[UserRow] = relationship(back_populates="overrides")
+
+
+class EmailVerificationRow(Base):
+    """Single-use, 24h-expiry tokens for the signup → activate flow."""
+
+    __tablename__ = "email_verifications"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    expires_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    used_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    user: Mapped[UserRow] = relationship(back_populates="email_verifications")
+
+
+class PasswordResetRow(Base):
+    """Single-use, 1h-expiry tokens for /forgot → email → /reset/{token}."""
+
+    __tablename__ = "password_resets"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    expires_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    used_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    user: Mapped[UserRow] = relationship(back_populates="password_resets")

@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}NAC Pay Tracker{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <div class="auth-brand">NAC Pay Tracker</div>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

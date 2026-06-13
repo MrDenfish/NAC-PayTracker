@@ -1,0 +1,31 @@
+{% extends "auth/_base_auth.html" %}
+{% block title %}Sign in — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  <h1>Sign in</h1>
+
+  {% if reset %}
+  <div class="banner banner--ok"><strong>Password updated.</strong><p>Sign in with your new password.</p></div>
+  {% endif %}
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+
+  <form action="/login" method="post" class="auth-form">
+    <label>
+      <span class="form-label">Email</span>
+      <input type="email" name="email" required autofocus>
+    </label>
+    <label>
+      <span class="form-label">Password</span>
+      <input type="password" name="password" required>
+    </label>
+    <button type="submit" class="btn btn--primary">Sign in</button>
+  </form>
+  <p class="subtle auth-foot">
+    <a href="/forgot">Forgot password?</a>
+    · No account? <a href="/signup">Sign up</a>.
+  </p>
+</div>
+{% endblock %}

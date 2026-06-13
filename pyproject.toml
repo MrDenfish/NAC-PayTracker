@@ -8,6 +8,8 @@ dependencies = [
     "pdfplumber>=0.11",
     "icalendar>=5.0",
     "sqlalchemy>=2.0",
+    "argon2-cffi>=23.0",
+    "itsdangerous>=2.0",
 ]
 
 [project.optional-dependencies]

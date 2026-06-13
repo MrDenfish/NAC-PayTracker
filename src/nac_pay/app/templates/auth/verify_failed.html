@@ -1,0 +1,22 @@
+{% extends "auth/_base_auth.html" %}
+{% block title %}Verification failed — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  <div class="banner banner--warn">
+    <strong>This verification link is no longer valid.</strong>
+    <p>
+      {% if reason == 'expired' %}
+      It expired (links last 24 hours). Sign up again to get a fresh link.
+      {% elif reason == 'already_used' %}
+      It was already used. Try signing in.
+      {% else %}
+      It wasn't found.
+      {% endif %}
+    </p>
+  </div>
+  <p class="subtle" style="margin-top:18px;">
+    <a href="/signup">Sign up</a> · <a href="/login">Sign in</a>
+  </p>
+</div>
+{% endblock %}

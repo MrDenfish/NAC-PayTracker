@@ -1,0 +1,39 @@
+{% extends "auth/_base_auth.html" %}
+{% block title %}Sign up — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  {% if sent %}
+  <h1>Check your email</h1>
+  <p class="subtle">We sent a verification link to your inbox. It expires in 24 hours.</p>
+  <p class="subtle"><a href="/login">Already verified? Sign in.</a></p>
+  {% else %}
+  <h1>Create your account</h1>
+  <p class="subtle">90 days free, no card required.</p>
+
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+
+  <form action="/signup" method="post" class="auth-form">
+    <label>
+      <span class="form-label">Email</span>
+      <input type="email" name="email" required autofocus>
+    </label>
+    <label>
+      <span class="form-label">Password</span>
+      <input type="password" name="password" required minlength="10">
+      <span class="form-hint">At least 10 characters.</span>
+    </label>
+    <label>
+      <span class="form-label">Confirm password</span>
+      <input type="password" name="confirm" required minlength="10">
+    </label>
+    <button type="submit" class="btn btn--primary">Create account</button>
+  </form>
+  <p class="subtle auth-foot">
+    Already have an account? <a href="/login">Sign in</a>.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}
