@@ -5,10 +5,16 @@
 <div class="auth-card">
   <h1>Billing</h1>
 
-  {% if request.query_params.get('stripe_coming_soon') %}
+  {% if request.query_params.get('success') %}
+  <div class="banner banner--ok">
+    <strong>Payment received.</strong>
+    <p>Your subscription is active. Stripe will email a receipt.</p>
+  </div>
+  {% endif %}
+  {% if request.query_params.get('dev_mode') %}
   <div class="banner banner--info">
-    <strong>Stripe wiring is the next commit.</strong>
-    <p>This button will open Stripe Checkout once Phase B2 lands.</p>
+    <strong>Dev mode — Stripe Checkout skipped.</strong>
+    <p>Set <code>AUTH_REQUIRED=true</code> and <code>STRIPE_BACKEND=real</code> in production.</p>
   </div>
   {% endif %}
 

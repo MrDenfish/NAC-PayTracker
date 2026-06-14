@@ -10,6 +10,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "argon2-cffi>=23.0",
     "itsdangerous>=2.0",
+    "stripe>=7.0",
 ]
 
 [project.optional-dependencies]

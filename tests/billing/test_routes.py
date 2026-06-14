@@ -135,10 +135,15 @@ def test_billing_shows_trial_remaining_for_active_trial(monkeypatch):
     assert "day" in r.text
 
 
-def test_billing_upgrade_stub_redirects_back_with_coming_soon(monkeypatch):
+def test_billing_upgrade_redirects_to_stripe_checkout(monkeypatch):
+    """Real /billing/upgrade now hits Stripe via the FakeStripeAdapter and
+    redirects to the returned Checkout URL — covered exhaustively in
+    tests/billing/test_stripe.py."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
+    from nac_pay.billing import reset_stripe_adapter
+    reset_stripe_adapter()
     isolated = TestClient(app)
     _signup_and_verify(isolated, "hank@example.com")
     r = isolated.post("/billing/upgrade", follow_redirects=False)
     assert r.status_code == 303
-    assert "stripe_coming_soon=1" in r.headers["location"]
+    assert r.headers["location"].startswith("https://fake-stripe.test/checkout/")
