@@ -1,0 +1,83 @@
+{% extends "auth/_base_auth.html" %}
+{% block title %}Billing — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  <h1>Billing</h1>
+
+  {% if request.query_params.get('stripe_coming_soon') %}
+  <div class="banner banner--info">
+    <strong>Stripe wiring is the next commit.</strong>
+    <p>This button will open Stripe Checkout once Phase B2 lands.</p>
+  </div>
+  {% endif %}
+
+  {% if not snapshot %}
+  <p class="subtle">
+    You're on the bundled dev account. No subscription required in
+    development mode (<code>AUTH_REQUIRED=false</code>).
+  </p>
+
+  {% elif snapshot.status == 'TRIALING' %}
+  <div class="banner banner--ok">
+    <strong>Free trial active.</strong>
+    <p>
+      {{ snapshot.days_left_in_trial }} day{{ '' if snapshot.days_left_in_trial == 1 else 's' }} left
+      {% if snapshot.trial_ends_at %}· trial ends {{ snapshot.trial_ends_at.date().isoformat() }}{% endif %}
+    </p>
+  </div>
+  {% if snapshot.nudge_active %}
+  <p>Add payment now so you don't lose access when your trial ends.</p>
+  {% else %}
+  <p class="subtle">No card required during the trial. Add payment whenever you're ready.</p>
+  {% endif %}
+
+  {% elif snapshot.status == 'TRIAL_EXPIRED' %}
+  <div class="banner banner--warn">
+    <strong>Your free trial has ended.</strong>
+    <p>Add payment to keep using NAC Pay Tracker. Your data is saved.</p>
+  </div>
+
+  {% elif snapshot.status == 'ACTIVE' %}
+  <div class="banner banner--ok">
+    <strong>Subscription active.</strong>
+    <p>
+      {% if snapshot.trial_ends_at %}Renews next on {{ snapshot.trial_ends_at.date().isoformat() }}.{% endif %}
+    </p>
+  </div>
+
+  {% elif snapshot.status == 'PAST_DUE' %}
+  <div class="banner banner--warn">
+    <strong>Last payment didn't go through.</strong>
+    <p>Update your card to keep your subscription active.</p>
+  </div>
+
+  {% elif snapshot.status == 'CANCELED' %}
+  <div class="banner banner--warn">
+    <strong>Subscription canceled.</strong>
+    <p>Re-subscribe any time. Your data is preserved.</p>
+  </div>
+
+  {% else %}
+  <p class="subtle">No subscription on file.</p>
+  {% endif %}
+
+  {% if snapshot and snapshot.status != 'ACTIVE' %}
+  <form action="/billing/upgrade" method="post" class="auth-form" style="margin-top: 18px;">
+    <button type="submit" class="btn btn--primary">
+      {% if snapshot.status == 'TRIALING' %}Add payment{% else %}Subscribe{% endif %}
+    </button>
+  </form>
+  {% endif %}
+
+  <p class="subtle auth-foot">
+    {% if snapshot and snapshot.status in ('TRIALING', 'ACTIVE', 'PAST_DUE') %}
+    <a href="/">Back to dashboard</a>
+    {% else %}
+    <form action="/logout" method="post" style="display:inline;">
+      <button type="submit" class="link-button">Sign out</button>
+    </form>
+    {% endif %}
+  </p>
+</div>
+{% endblock %}

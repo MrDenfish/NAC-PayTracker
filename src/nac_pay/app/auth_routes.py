@@ -30,6 +30,7 @@ from nac_pay.auth import (
     set_session_user,
     update_password,
 )
+from nac_pay.billing import start_trial
 
 _HERE = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
@@ -97,6 +98,7 @@ def verify_get(request: Request, token: str) -> HTMLResponse:
             status_code=410,
         )
     mark_email_verified(lookup.user_id)
+    start_trial(lookup.user_id)        # 90-day no-card trial begins now
     set_session_user(request, lookup.user_id)
     return _TEMPLATES.TemplateResponse(
         request,

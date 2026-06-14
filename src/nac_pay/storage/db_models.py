@@ -29,6 +29,17 @@ class UserRow(Base):
     password_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     email_verified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
+    # Subscription state (Phase B). subscription_status is the SaaS access
+    # gate; trial_ends_at is the computed-expiry anchor for TRIALING.
+    # NONE / TRIALING / TRIAL_EXPIRED / ACTIVE / PAST_DUE / CANCELED.
+    subscription_status: Mapped[str] = mapped_column(
+        String(24), default="NONE", nullable=False,
+    )
+    trial_ends_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    current_period_end: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     profile: Mapped["PilotProfileRow | None"] = relationship(
         back_populates="user", uselist=False, cascade="all, delete-orphan",
     )

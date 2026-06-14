@@ -15,10 +15,12 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from nac_pay.auth import AuthRequiredMiddleware, current_user, session_secret
 from nac_pay.auth import auth_required as _auth_required_flag
+from nac_pay.billing import SubscriptionRequiredMiddleware
 from nac_pay.schedule import PilotProfile, Position
 from nac_pay.storage import DayOverride, PersistedPilotProfile, User
 
 from .auth_routes import router as auth_router
+from .billing_routes import router as billing_router
 
 from .services import (
     DEFAULT_PERSISTED,
@@ -41,13 +43,19 @@ _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 app = FastAPI(title="NAC Pay Tracker", version="0.1.0")
 
 # Starlette middleware order: LAST add_middleware is OUTERMOST and runs
-# first on the request path. AuthRequiredMiddleware needs request.session,
-# so SessionMiddleware must wrap it (outermost) → add it LAST.
+# first on the request path. Desired request-time order:
+#   1. SessionMiddleware  (sets up request.session)
+#   2. AuthRequiredMiddleware  (redirect to /login if no session)
+#   3. SubscriptionRequiredMiddleware  (redirect to /billing if expired)
+#   4. Route handler
+# add_middleware is registered in REVERSE order to achieve this stack.
+app.add_middleware(SubscriptionRequiredMiddleware)
 app.add_middleware(AuthRequiredMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=session_secret())
 
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
 app.include_router(auth_router)
+app.include_router(billing_router)
 
 
 @app.get("/api/health")
