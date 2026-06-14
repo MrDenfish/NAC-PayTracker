@@ -63,9 +63,11 @@ from nac_pay.storage import (
     DEFAULT_USER_ID,
     DayOverride,
     DayOverrideStore,
+    DocumentKind,
     PersistedPilotProfile,
     PilotProfileStore,
     User,
+    UserDocumentsStore,
     UserStore,
     default_user,
     get_data_dir,
@@ -160,15 +162,43 @@ class PipelineResult:
     packet_loaded: bool
 
 
-def available_months() -> tuple[tuple[int, int, str], ...]:
-    """Months with bundled data, newest first."""
+def available_months(user_id: str | None = None) -> tuple[tuple[int, int, str], ...]:
+    """Months a user has data for, newest first.
+
+    The default (dev) user gets the bundled ``_DOC_INDEX`` months. A real
+    SaaS user gets whatever they've uploaded via UserDocumentsStore.
+    Falls back to bundled months when no user_id is supplied.
+    """
+    uid = user_id or current_user().user_id
+    if uid == DEFAULT_USER_ID:
+        months = sorted(_DOC_INDEX.keys(), reverse=True)
+    else:
+        months = UserDocumentsStore(get_data_dir(), uid).available_months()
     return tuple(
-        sorted(
-            ((y, m, f"{_MONTH_NAMES[m]} {y}") for (y, m) in _DOC_INDEX),
-            key=lambda t: (t[0], t[1]),
-            reverse=True,
-        )
+        (y, m, f"{_MONTH_NAMES[m]} {y}")
+        for (y, m) in months
     )
+
+
+def documents_for_user(
+    user_id: str, year: int, month: int,
+) -> tuple[Path, Path, Path | None] | None:
+    """Resolve (final_award, packet, ical_or_None) paths for a (user, month).
+
+    Returns None when the user has neither uploaded docs nor a bundled
+    entry for that month. The pipeline raises a meaningful error in that
+    case so the UI can prompt for uploads.
+    """
+    if user_id == DEFAULT_USER_ID and (year, month) in _DOC_INDEX:
+        return _DOC_INDEX[(year, month)]
+
+    store = UserDocumentsStore(get_data_dir(), user_id)
+    fa = store.get(year, month, DocumentKind.FINAL_AWARD)
+    packet = store.get(year, month, DocumentKind.TRIP_PACKET)
+    ical = store.get(year, month, DocumentKind.ICAL_FEED)
+    if fa is None or packet is None:
+        return None
+    return (fa.path, packet.path, ical.path if ical is not None else None)
 
 
 @lru_cache(maxsize=64)
@@ -177,9 +207,12 @@ def _pipeline(
     month: int,
     user_id: str = DEFAULT_USER_ID,
 ) -> PipelineResult:
-    paths = _DOC_INDEX.get((year, month))
+    paths = documents_for_user(user_id, year, month)
     if paths is None:
-        raise ValueError(f"No data bundled for {_MONTH_NAMES[month]} {year}")
+        raise ValueError(
+            f"No documents uploaded for {_MONTH_NAMES[month]} {year}. "
+            "Upload your Final Award + Trip Pairing Packet via the Documents page."
+        )
     fa_path, packet_path, feed_path = paths
 
     # Resolved per call so a Settings save (which triggers invalidate_caches())

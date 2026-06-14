@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Documents — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="documents-view">
+
+  <div class="identity-row">
+    <div class="identity">
+      <h1>Documents</h1>
+      <p class="subtle">
+        Upload your monthly Final Award + Trip Pairing Packet (PDFs)
+        and your iCal schedule feed (.ics) to drive your pay tracker.
+        Files are scoped to your account only.
+      </p>
+    </div>
+  </div>
+
+  {% if is_default_user %}
+  <div class="banner banner--info">
+    <strong>Default dev user.</strong>
+    <p>
+      The bundled <code>docs/</code> corpus is used for the default user;
+      uploads are disabled. Sign in as a real account to upload your own
+      months.
+    </p>
+  </div>
+  {% else %}
+
+  {% if uploaded %}
+  <div class="banner banner--ok"><strong>Uploaded.</strong></div>
+  {% endif %}
+  {% if deleted %}
+  <div class="banner banner--ok"><strong>Deleted.</strong></div>
+  {% endif %}
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+
+  {# ── Add new month / file ─────────────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Upload a document</h2>
+    <form action="/documents/upload" method="post" enctype="multipart/form-data" class="form-grid">
+      <label>
+        <span class="form-label">Year</span>
+        <input type="number" name="year" min="2020" max="2099" required value="2026">
+      </label>
+      <label>
+        <span class="form-label">Month</span>
+        <input type="number" name="month" min="1" max="12" required>
+      </label>
+      <label>
+        <span class="form-label">Kind</span>
+        <select name="kind" required>
+          {% for k in kinds %}
+          <option value="{{ k.value }}">{{ k.value.replace("_", " ")|title }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="form-grid--wide">
+        <span class="form-label">File</span>
+        <input type="file" name="upload" required accept=".pdf,.ics">
+        <span class="form-hint">PDF for Final Award + Packet; .ics for iCal feed. Max 25MB.</span>
+      </label>
+      <div class="form-grid--wide">
+        <button type="submit" class="btn btn--primary">Upload</button>
+      </div>
+    </form>
+  </div>
+
+  {# ── Existing uploads ─────────────────────────────────────────── #}
+  {% if documents_by_month %}
+  <div class="card">
+    <h2 class="card-title">Uploaded ({{ documents_by_month|length }} month{{ '' if documents_by_month|length == 1 else 's' }})</h2>
+    <div class="documents-list">
+      {% for month_row in documents_by_month %}
+      <div class="month-block">
+        <h3 class="month-block-title">{{ month_row.month_label }}</h3>
+        <ul class="doc-rows">
+          {% for kind in kinds %}
+          {% set slot = month_row.slots.get(kind.value) %}
+          <li class="doc-row {% if not slot %}doc-row--missing{% endif %}">
+            <span class="doc-kind">{{ kind.value.replace('_', ' ')|title }}</span>
+            {% if slot %}
+            <span class="doc-name">{{ slot.original_filename }}</span>
+            <span class="doc-uploaded subtle">uploaded {{ slot.uploaded_at[:10] }}</span>
+            <form action="/documents/delete" method="post" class="doc-delete">
+              <input type="hidden" name="year" value="{{ month_row.year }}">
+              <input type="hidden" name="month" value="{{ month_row.month }}">
+              <input type="hidden" name="kind" value="{{ kind.value }}">
+              <button type="submit" class="link-button" title="Delete this upload">remove</button>
+            </form>
+            {% else %}
+            <span class="doc-status subtle">not uploaded</span>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="card">
+    <p class="subtle">
+      No documents uploaded yet. Start with your Final Award + Trip
+      Pairing Packet for the current month — the iCal feed is optional.
+    </p>
+  </div>
+  {% endif %}
+
+  {% endif %}{# end !is_default_user #}
+</section>
+{% endblock %}

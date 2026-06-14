@@ -72,6 +72,12 @@ from .db import (  # noqa: E402
     session_factory,
     session_scope,
 )
+from .documents import (  # noqa: E402
+    DocumentKind,
+    DocumentRecord,
+    UserDocumentsStore,
+    expected_extension,
+)
 from .overrides import DayOverride, DayOverrideStore  # noqa: E402
 from .profile import PersistedPilotProfile, PilotProfileStore  # noqa: E402
 from .users import (  # noqa: E402
@@ -88,14 +94,18 @@ __all__ = [
     "DEFAULT_USER_ID",
     "DayOverride",
     "DayOverrideStore",
+    "DocumentKind",
+    "DocumentRecord",
     "JsonStore",
     "PersistedPilotProfile",
     "PilotProfileStore",
     "User",
+    "UserDocumentsStore",
     "UserStore",
     "database_url",
     "default_user",
     "dispose_engine",
+    "expected_extension",
     "get_data_dir",
     "get_engine",
     "reset_tables",

@@ -52,6 +52,9 @@ class UserRow(Base):
     password_resets: Mapped[list["PasswordResetRow"]] = relationship(
         back_populates="user", cascade="all, delete-orphan",
     )
+    documents: Mapped[list["UserDocumentRow"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan",
+    )
 
 
 class PilotProfileRow(Base):
@@ -123,3 +126,24 @@ class PasswordResetRow(Base):
     used_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     user: Mapped[UserRow] = relationship(back_populates="password_resets")
+
+
+class UserDocumentRow(Base):
+    """Metadata for a user-uploaded document. Bytes live on disk at a
+    deterministic path under ``{data_dir}/users/{user_id}/docs/{year}-{month:02}/``.
+    Composite PK ``(user_id, year, month, kind)`` means each (month, kind)
+    slot holds one current document — re-uploading replaces it."""
+
+    __tablename__ = "user_documents"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    month: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(24), primary_key=True)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    uploaded_at: Mapped[str] = mapped_column(String(40), nullable=False)
+
+    user: Mapped[UserRow] = relationship(back_populates="documents")

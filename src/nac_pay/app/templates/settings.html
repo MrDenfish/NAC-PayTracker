@@ -47,6 +47,17 @@
           <span class="form-hint">737 only — NAC retired the 767.</span>
         </label>
         <label>
+          <span class="form-label">Pilot code (3-letter MS)</span>
+          <input type="text" name="pilot_id"
+                 value="{{ persisted.profile.pilot_id }}"
+                 maxlength="4" required>
+          <span class="form-hint">
+            The 3-letter code at the left of your row on the Final Award
+            (e.g. DFI for FISHER). Used to find your row when parsing
+            the FA PDF.
+          </span>
+        </label>
+        <label>
           <span class="form-label">Hourly rate (USD)</span>
           <input type="text" name="hourly_rate"
                  value="{{ '%.2f'|format(persisted.profile.hourly_rate) }}"

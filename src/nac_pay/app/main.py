@@ -21,6 +21,7 @@ from nac_pay.storage import DayOverride, PersistedPilotProfile, User
 
 from .auth_routes import router as auth_router
 from .billing_routes import router as billing_router
+from .document_routes import router as document_router
 
 from .services import (
     DEFAULT_PERSISTED,
@@ -56,6 +57,7 @@ app.add_middleware(SessionMiddleware, secret_key=session_secret())
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
 app.include_router(auth_router)
 app.include_router(billing_router)
+app.include_router(document_router)
 
 
 @app.get("/api/health")
@@ -127,6 +129,7 @@ def settings_save(
     name: str = Form(...),
     position: str = Form(...),
     hourly_rate: str = Form(...),
+    pilot_id: str = Form(""),
     sick_bank_days: int = Form(0),
     pto_bank_days: int = Form(0),
     feed_url: str = Form(""),
@@ -145,9 +148,14 @@ def settings_save(
     if sick_bank_days < 0 or pto_bank_days < 0:
         raise HTTPException(400, "bank days cannot be negative")
 
+    # Pilot 3-letter code: normalize to uppercase; default to existing
+    # value when the form submits empty so the bundled docs/ lookup still
+    # works for the dev/default user.
     current = load_persisted_profile()
+    pilot_id_clean = (pilot_id or "").strip().upper() or current.profile.pilot_id
+
     new_profile = PilotProfile(
-        pilot_id=current.profile.pilot_id,
+        pilot_id=pilot_id_clean,
         name=name,
         position=position_enum,
         hourly_rate=rate,

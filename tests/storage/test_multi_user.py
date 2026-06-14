@@ -162,28 +162,51 @@ def test_default_user_unaffected_by_other_user_edits():
 
 def test_pipeline_runs_per_user_with_distinct_overrides():
     """End-to-end: each user gets their own engine result through the
-    same _pipeline cache, namespaced by user_id."""
+    same _pipeline cache, namespaced by user_id.
+
+    Non-default users must have their own uploaded documents — bundled
+    docs are no longer a silent fallback (avoids leaking the default
+    user's data to a real SaaS user). We grant alice the same on-disk
+    bytes for the test."""
+    from pathlib import Path
     from nac_pay.app.services import _pipeline, invalidate_caches
     from nac_pay.schedule import ReasonCode
+    from nac_pay.storage import DocumentKind, UserDocumentsStore
 
     invalidate_caches()
-    # Default user gets normal June baseline ($8,195.53 baseline pay).
     default_pr = _pipeline(2026, 6, DEFAULT_USER_ID)
     assert default_pr.engine_result.total_pay == D("8195.53")
 
-    # Synthetic user "alice": save an SICK override on June 12 — the
-    # FLT 768 chunk moves into the Sick category. Engine total stays
-    # the same (still 1.0× rate) but the chunk *kind* differs, proving
-    # her pipeline result is distinct from default's.
+    # Grant alice copies of June's bundled FA + packet + iCal so her
+    # pipeline can run against the same source data.
+    src_docs = Path(__file__).resolve().parents[2] / "docs"
+    alice_docs = UserDocumentsStore(get_data_dir(), user_id="alice")
+    alice_docs.save(
+        2026, 6, DocumentKind.FINAL_AWARD,
+        "fa.pdf",
+        (src_docs / "JUNE 2026 ANC 737 - FIRST OFFICER FINAL AWARDS.pdf").read_bytes(),
+    )
+    alice_docs.save(
+        2026, 6, DocumentKind.TRIP_PACKET,
+        "packet.pdf",
+        (src_docs / "JUNE 2026 Trip Pairing Packet.pdf").read_bytes(),
+    )
+    alice_docs.save(
+        2026, 6, DocumentKind.ICAL_FEED,
+        "feed.ics",
+        (src_docs / "iCal_schedule_feed.ics").read_bytes(),
+    )
+
+    # Alice also gets a SICK override on June 12 — the FLT 768 chunk
+    # moves into the Sick category. Engine total stays the same (still
+    # 1.0× rate) but the chunk *kind* differs.
     alice_overrides = DayOverrideStore(get_data_dir(), user_id="alice")
     alice_overrides.save_one(
         DayOverride(date_iso="2026-06-12", reason_code=ReasonCode.SICK.value)
     )
-    # Alice has no profile saved → falls back to default profile
-    # (pilot_code "DFI" so the FA lookup still works).
     invalidate_caches()
     alice_pr = _pipeline(2026, 6, "alice")
-    # Same engine total (sick still pays 1.0×) but different Month state.
+
     sick_chunks = [
         c for c in alice_pr.engine_result.per_chunk
         if c.kind.value == "SICK"
