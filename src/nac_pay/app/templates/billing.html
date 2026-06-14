@@ -13,8 +13,14 @@
   {% endif %}
   {% if request.query_params.get('dev_mode') %}
   <div class="banner banner--info">
-    <strong>Dev mode — Stripe Checkout skipped.</strong>
+    <strong>Dev mode — Stripe skipped.</strong>
     <p>Set <code>AUTH_REQUIRED=true</code> and <code>STRIPE_BACKEND=real</code> in production.</p>
+  </div>
+  {% endif %}
+  {% if request.query_params.get('no_customer') %}
+  <div class="banner banner--info">
+    <strong>No Stripe customer on file yet.</strong>
+    <p>Add payment below to start a subscription — the Manage button opens after that.</p>
   </div>
   {% endif %}
 
@@ -68,12 +74,31 @@
   <p class="subtle">No subscription on file.</p>
   {% endif %}
 
-  {% if snapshot and snapshot.status != 'ACTIVE' %}
-  <form action="/billing/upgrade" method="post" class="auth-form" style="margin-top: 18px;">
-    <button type="submit" class="btn btn--primary">
-      {% if snapshot.status == 'TRIALING' %}Add payment{% else %}Subscribe{% endif %}
-    </button>
-  </form>
+  {% if snapshot %}
+  <div class="auth-form" style="margin-top: 18px; gap: 10px;">
+    {% if snapshot.can_open_portal %}
+    {# Customer exists in Stripe → portal handles management, including
+       cancel + update card + invoice download. #}
+    <form action="/billing/portal" method="post">
+      <button type="submit" class="btn btn--primary">Manage subscription</button>
+    </form>
+    {% if snapshot.status == 'CANCELED' %}
+    {# After full cancellation Stripe deletes the subscription —
+       Customer Portal can still re-subscribe but Checkout is the
+       cleaner path back. Offer both. #}
+    <form action="/billing/upgrade" method="post">
+      <button type="submit" class="btn btn--secondary">Re-subscribe</button>
+    </form>
+    {% endif %}
+    {% elif snapshot.status != 'ACTIVE' %}
+    {# No Stripe customer yet → run Checkout first. #}
+    <form action="/billing/upgrade" method="post">
+      <button type="submit" class="btn btn--primary">
+        {% if snapshot.status == 'TRIALING' %}Add payment{% else %}Subscribe{% endif %}
+      </button>
+    </form>
+    {% endif %}
+  </div>
   {% endif %}
 
   <p class="subtle auth-foot">

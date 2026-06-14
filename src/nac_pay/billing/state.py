@@ -64,6 +64,15 @@ class SubscriptionSnapshot:
     days_left_in_trial: int    # 0 if not trialing or expired
     nudge_active: bool         # show "add payment" banner
     is_default_user: bool      # the bundled dev user — never gated
+    stripe_customer_id: str | None = None
+    current_period_end: datetime | None = None
+
+    @property
+    def can_open_portal(self) -> bool:
+        """Customer Portal is reachable iff there's a Stripe Customer
+        to manage — i.e., the user has been through Checkout at least
+        once. Drives the Manage-subscription vs Add-payment button switch."""
+        return bool(self.stripe_customer_id)
 
 
 def start_trial(user_id: str) -> None:
@@ -102,10 +111,16 @@ def snapshot(user_id: str) -> SubscriptionSnapshot:
             days_left_in_trial=0,
             nudge_active=False,
             is_default_user=is_default,
+            stripe_customer_id=None,
+            current_period_end=None,
         )
 
     persisted = row.subscription_status
     trial_end_dt = _parse_iso(row.trial_ends_at) if row.trial_ends_at else None
+    period_end_dt = (
+        _parse_iso(row.current_period_end) if row.current_period_end else None
+    )
+    stripe_customer_id = row.stripe_customer_id
 
     effective = persisted
     days_left = 0
@@ -132,6 +147,8 @@ def snapshot(user_id: str) -> SubscriptionSnapshot:
         days_left_in_trial=days_left,
         nudge_active=nudge,
         is_default_user=is_default,
+        stripe_customer_id=stripe_customer_id,
+        current_period_end=period_end_dt,
     )
 
 

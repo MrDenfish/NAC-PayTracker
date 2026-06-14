@@ -100,6 +100,34 @@ def billing_upgrade(request: Request) -> RedirectResponse:
     return RedirectResponse(checkout_url, status_code=303)
 
 
+@router.post("/billing/portal")
+def billing_portal(request: Request) -> RedirectResponse:
+    """Open Stripe's hosted Customer Portal so the user can cancel,
+    update card, or view invoices. Requires a stripe_customer_id —
+    users who never reached Checkout get bounced back to /billing
+    where the "Add payment" button is shown instead."""
+    if not auth_required():
+        return RedirectResponse("/billing?dev_mode=1", status_code=303)
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return RedirectResponse("/login", status_code=303)
+
+    with session_scope() as sess:
+        customer_id = sess.execute(
+            select(UserRow.stripe_customer_id).where(UserRow.user_id == user_id)
+        ).scalar_one_or_none()
+    if not customer_id:
+        # No Stripe customer yet — they should run Checkout first.
+        return RedirectResponse("/billing?no_customer=1", status_code=303)
+
+    adapter = get_stripe_adapter()
+    base = _base_url()
+    portal_url = adapter.create_portal_session(
+        customer_id=customer_id, return_url=f"{base}/billing",
+    )
+    return RedirectResponse(portal_url, status_code=303)
+
+
 @router.post("/webhooks/stripe")
 async def stripe_webhook(
     request: Request,
