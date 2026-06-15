@@ -48,16 +48,28 @@ def documents_list(request: Request) -> HTMLResponse:
     is_default = user_id == DEFAULT_USER_ID
     store = UserDocumentsStore(get_data_dir(), user_id) if not is_default else None
 
-    documents: dict[tuple[int, int], dict[str, dict]] = {}
+    # slots[(year,month)][kind] = {filename, uploaded_at} for FA/Packet/iCal
+    # stubs[(year,month)] = [ {slot, filename, uploaded_at}, ... ] for PAY_STUB
+    slots: dict[tuple[int, int], dict[str, dict]] = {}
+    stubs: dict[tuple[int, int], list[dict]] = {}
     if store is not None:
         for rec in store.list_all():
-            month_key = (rec.year, rec.month)
-            documents.setdefault(month_key, {})[rec.kind.value] = {
-                "original_filename": rec.original_filename,
-                "uploaded_at": rec.uploaded_at,
-            }
+            key = (rec.year, rec.month)
+            if rec.kind is DocumentKind.PAY_STUB:
+                stubs.setdefault(key, []).append({
+                    "slot": rec.slot,
+                    "original_filename": rec.original_filename,
+                    "uploaded_at": rec.uploaded_at,
+                })
+            else:
+                slots.setdefault(key, {})[rec.kind.value] = {
+                    "original_filename": rec.original_filename,
+                    "uploaded_at": rec.uploaded_at,
+                }
+        for lst in stubs.values():
+            lst.sort(key=lambda s: s["slot"])
 
-    sorted_months = sorted(documents.keys(), reverse=True)
+    sorted_months = sorted(set(slots) | set(stubs), reverse=True)
 
     return _TEMPLATES.TemplateResponse(
         request,
@@ -70,12 +82,15 @@ def documents_list(request: Request) -> HTMLResponse:
                     "month": m,
                     "month_label": _month_label(y, m),
                     "ym": f"{y}-{m}",
-                    "slots": documents.get((y, m), {}),
+                    "slots": slots.get((y, m), {}),
+                    "pay_stubs": stubs.get((y, m), []),
                 }
                 for (y, m) in sorted_months
             ],
             "active_screen": "documents",
-            "kinds": list(DocumentKind),
+            "single_kinds": [
+                k for k in DocumentKind if k is not DocumentKind.PAY_STUB
+            ],
             "uploaded": request.query_params.get("uploaded"),
             "deleted": request.query_params.get("deleted"),
             "error": request.query_params.get("error", ""),
@@ -127,7 +142,10 @@ async def documents_upload(
         )
 
     store = UserDocumentsStore(get_data_dir(), user_id)
-    store.save(year, month, kind_enum, name, data)
+    if kind_enum is DocumentKind.PAY_STUB:
+        store.save_stub(year, month, name, data)
+    else:
+        store.save(year, month, kind_enum, name, data)
 
     # Invalidate pipeline cache so the next render picks up the new doc.
     from .services import invalidate_caches
@@ -144,6 +162,7 @@ def documents_delete(
     year: int = Form(...),
     month: int = Form(...),
     kind: str = Form(...),
+    slot: int = Form(0),
 ) -> RedirectResponse:
     user_id = _user_id_for(request)
     if user_id == DEFAULT_USER_ID:
@@ -152,7 +171,11 @@ def documents_delete(
         kind_enum = DocumentKind(kind)
     except ValueError:
         raise HTTPException(400, f"Unknown kind {kind!r}")
-    UserDocumentsStore(get_data_dir(), user_id).delete(year, month, kind_enum)
+    store = UserDocumentsStore(get_data_dir(), user_id)
+    if kind_enum is DocumentKind.PAY_STUB:
+        store.delete_stub(year, month, slot)
+    else:
+        store.delete(year, month, kind_enum)
     from .services import invalidate_caches
     invalidate_caches()
     return RedirectResponse(

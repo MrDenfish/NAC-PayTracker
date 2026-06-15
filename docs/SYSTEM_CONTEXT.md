@@ -268,7 +268,9 @@ This gives two independent safety nets: it catches packet errors and bugs in our
 
 ### How the program acquires each input
 
-The program never scrapes BlueOne or any company system. Every user supplies their own three artifacts (Final Award PDF, Trip Pairing Packet PDF, iCal feed `.ics`) through the **`/documents` page** (Phase D) or during the **onboarding wizard's step 2** (Phase E). Files are stored per-user under `data/users/<user_id>/documents/<year>-<month>/<kind>.{pdf,ics}` and re-parsed on the next request via `UserDocumentsStore`. The pay engine is unchanged whether documents come from upload or the bundled dev fallback — the parsing rules below apply identically.
+The program never scrapes BlueOne or any company system. Every user supplies their own artifacts (Final Award PDF, Trip Pairing Packet PDF, iCal feed `.ics`, and pay stub PDFs) through the **`/documents` page** (Phase D) or during the **onboarding wizard's step 2** (Phase E). Files are stored per-user under `data/users/<user_id>/documents/<year>-<month>/<kind>.{pdf,ics}` and re-parsed on the next request via `UserDocumentsStore`. The pay engine is unchanged whether documents come from upload or the bundled dev fallback — the parsing rules below apply identically.
+
+**Single-instance vs. multi-instance kinds.** Final Award / Trip Pairing Packet / iCal are single-per-month — re-uploading replaces. Pay stubs are **multi-per-month** (Phase F): the semi-monthly stubs accumulate by slot (`stub_0.pdf`, `stub_1.pdf`, …) so a pilot can upload both halves of a month as they receive them without one overwriting the other. The storage row uses `(user_id, year, month, kind, slot)` as the composite PK.
 
 A **bundled-docs fallback** in `docs/` is used only by the default user in local development (`AUTH_REQUIRED=false`); real users always go through upload. See §14 for the user-isolated storage layout.
 
@@ -348,9 +350,9 @@ Event types are distinguished by a **summary prefix**. Known formats:
 | Trip/Day detail & edit | Dual-entry (value vs. times), reason-code + premium-category dropdowns, assignment history. | — |
 | Pay breakdown | Per-category ledger; raw PCH × multiplied rate; guarantee top-up. | Pay stub |
 | Discrepancies | Monthly validation flags (trips that don't match the packet). | — |
-| Compare to pay stub | Pilot enters the two monthly checks; program nets the fixed advance and compares by category. | Pay stub |
+| Compare to pay stub | Pilot enters the two monthly checks; program nets the fixed advance and compares by category. Includes a collapsible **Raw stub data** inspector (Phase F) that dumps every parsed `PayStubLine` (pay_type, hours, rate, current, YTD) verbatim per stub — for cross-month study while a stub corpus is being accumulated. The inspector is intentionally *not* part of the verdict logic. | Pay stub |
 | Settings | Hourly rate, fleet/position, sick/PTO banks, feed URL. | — |
-| **Documents** *(Phase D)* | Upload / delete the three source artifacts (Final Award PDF, Trip Pairing Packet PDF, iCal feed `.ics`) per year-month; user-isolated. Drives every other screen for non-default users. | — |
+| **Documents** *(Phases D, F)* | Upload / delete the source artifacts per year-month; user-isolated. **Single-instance kinds** (FA, Packet, iCal): re-upload replaces. **Multi-instance kind** (PAY_STUB): uploads accumulate as separate slots, semi-monthly stubs sit side by side. Drives every other screen for non-default users. | — |
 | **Onboarding wizard** *(Phase E)* | Three-step funnel for fresh signups: profile (name, 3-letter pilot code, position, hourly rate) → documents (current-month FA + Packet + optional iCal) → done. "Skip for now" lands on the dashboard without trapping the user. | — |
 | **Billing** *(Phase B)* | Subscription status, 90-day trial countdown, Stripe Checkout entry, Customer Portal entry (cancel/update/invoices). | — |
 | **Auth screens** *(Phase A)* | Sign-up, login, email verification, forgot/reset password. Centered-card layout, no main nav. | — |
@@ -413,11 +415,13 @@ The pay engine (§§2–12) is *headless* — it knows nothing about users, sess
 - **Webhook handler** at `/webhooks/stripe` keeps `subscription_status` in sync with Stripe's lifecycle events. Signature verification on every event.
 - **Toggle:** `STRIPE_BACKEND=fake` (in-memory, deterministic IDs) for tests; `STRIPE_BACKEND=live` reads `STRIPE_SECRET_KEY` + `STRIPE_PRICE_ID` and hits the real API.
 
-### 14.4 Per-user documents (Phase D)
+### 14.4 Per-user documents (Phases D, F)
 
 - `/documents` is the upload surface. The fresh-user funnel from `/onboarding` also lands here for step 2.
 - Storage: `data/users/<user_id>/documents/<year>-<month>/<kind>.{pdf,ics}` with original-filename metadata in the DB. `DocumentKind` enum: `FINAL_AWARD`, `TRIP_PACKET`, `ICAL_FEED`, `PAY_STUB`.
-- Default user cannot upload (it reads the bundled `docs/` directory). All other users must upload before any pay computation works.
+- **Slot dimension (Phase F).** Composite PK is `(user_id, year, month, kind, slot)`. FA/Packet/iCal always use `slot=0` (re-upload replaces). PAY_STUB uses an auto-incrementing slot so semi-monthly stubs accumulate side by side (`stub_0.pdf`, `stub_1.pdf`, …). Delete is slot-targeted; slot numbers never renumber so existing handles stay valid.
+- Default user cannot upload (it reads the bundled `docs/` directory, including the May 2026 stub pair). All other users must upload before any pay computation works.
+- The Compare screen resolves stubs via `stubs_for_user(user_id, year, month)` — default user reads the bundled corpus, real users read `UserDocumentsStore.list_stubs()`. The hardcoded `_STUB_INDEX` from earlier phases is gone.
 
 ### 14.5 Onboarding wizard (Phase E)
 
@@ -471,6 +475,7 @@ Each middleware short-circuits on its own exempt path list (auth pages exempt th
 
 | Date | Change |
 |------|--------|
+| 2026-06-15 | **Phase F: Pay-stub uploads + Compare inspector.** Multi-slot pay stubs land — `DocumentKind.PAY_STUB` joins the enum, `UserDocumentRow` gets a `slot` column, the composite PK becomes `(user_id, year, month, kind, slot)`. `UserDocumentsStore.save_stub` / `list_stubs` / `delete_stub` manage semi-monthly accumulation; FA/Packet/iCal stay at `slot=0` (re-upload replaces). `_STUB_INDEX` hardcode in `services.py` retired in favor of a unified `stubs_for_user(user_id, year, month)` resolver (default user falls back to bundled May 2026 stubs). `/compare` gains a collapsible **Raw stub data (parsed)** inspector that dumps every parsed `PayStubLine` per stub — pay_type, hours, rate, current, YTD — for cross-month study. **Deliberately not** redesigning compare semantics yet: the company has a non-obvious way of reporting pay credit hours, and the right model will emerge after several months of stub examples accumulate. The inspector is the data-collection enabler; the verdict-based view is unchanged. Localhost-first stance — no deployment in this phase. 21 new tests; full suite 327 → 348 green. |
 | 2026-06-15 | **SaaS wrapper documented (§§1, 10, 13, 14).** Surgical update to reflect Phases 1–E: SaaS positioning + liability framing in §1; per-user uploads as the primary input acquisition path in §10 (bundled `docs/` now explicitly dev-only fallback); four new screens added to §13 (Documents, Onboarding, Billing, Auth) plus dashboard empty-state note; new §14 covers multi-tenant storage, auth, subscriptions, onboarding, middleware stack, production email, and the env-var configuration matrix. Pay engine sections (§§2–9, 11–12) untouched — the wrapper does not change the engine. |
 | 2026-06-15 | **Phase E: Onboarding wizard + dashboard empty state + multi-tenant route fix.** Three-step wizard (profile → documents → done) with skip; `OnboardingMiddleware` redirects fresh users without trapping them (Settings/Documents/Billing remain reachable). `onboarding_completed_at` column. Dashboard renders a friendly empty-state card pointing to `/documents` instead of a 404 when a month has no docs. Threaded session `user_id` through every dashboard/calendar/day/pay/compare/discrepancies/settings route — previously authenticated users were silently rendering the default user's data because the loaders defaulted to `DEFAULT_USER_ID`. Test count 311 → 327. |
 | 2026-06-15 | **Phase D: Per-user document uploads.** `/documents` page + `UserDocumentsStore` writes uploads under `data/users/<user_id>/documents/<year>-<month>/<kind>.{pdf,ics}`. `DocumentKind` enum. Default user remains read-only against bundled `docs/`. All non-default users must upload to compute pay. |

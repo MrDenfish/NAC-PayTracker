@@ -128,13 +128,31 @@ _DOC_INDEX: dict[tuple[int, int], tuple[Path, Path, Path | None]] = {
     ),
 }
 
-# (year, month) → list of semi-monthly stub PDFs (ordered, may be 0–N).
-_STUB_INDEX: dict[tuple[int, int], tuple[Path, ...]] = {
+# Default-user bundled pay stubs — dev fallback only. Real users upload
+# stubs via /documents, which writes to UserDocumentsStore. See
+# ``stubs_for_user`` below for the unified resolver.
+_BUNDLED_STUBS: dict[tuple[int, int], tuple[Path, ...]] = {
     (2026, 5): (
         DOCS_ROOT / "pay Stubs" / "May_ Base_payStub.pdf",
         DOCS_ROOT / "pay Stubs" / "May_payStub.pdf",
     ),
 }
+
+
+def stubs_for_user(
+    user_id: str, year: int, month: int,
+) -> tuple[Path, ...]:
+    """Resolve pay-stub PDFs for a (user, month).
+
+    Default user gets the bundled corpus; real users get whatever they've
+    uploaded via ``UserDocumentsStore.save_stub``. Order is upload-order
+    (slot ascending), so semi-monthly chronological order is preserved
+    when stubs are uploaded as they're received.
+    """
+    if user_id == DEFAULT_USER_ID:
+        return _BUNDLED_STUBS.get((year, month), ())
+    store = UserDocumentsStore(get_data_dir(), user_id)
+    return tuple(rec.path for rec in store.list_stubs(year, month))
 
 _MONTH_NAMES = [
     "", "January", "February", "March", "April", "May", "June",
@@ -1128,6 +1146,39 @@ class StubChip:
 
 
 @dataclass(frozen=True)
+class InspectorStubLine:
+    """One row of a stub's Earnings table, raw from the PDF parser."""
+
+    pay_type: str
+    hours: Decimal | None
+    rate: Decimal | None
+    current_amount: Decimal
+    ytd_amount: Decimal | None
+
+
+@dataclass(frozen=True)
+class InspectorStub:
+    """One parsed pay-stub with everything verbatim from the PDF.
+
+    Surfaced under a collapsible "raw stub data" section on the Compare
+    screen so the pilot can study how the company actually itemizes pay
+    credit hours across multiple months. The verdict-based compare logic
+    is intentionally NOT informed by this — it's a data-collection
+    enabler for designing better compare semantics later.
+    """
+
+    label: str                        # "05/16/2026 → 05/31/2026"
+    period_start_iso: str
+    period_end_iso: str
+    pay_date_iso: str
+    net_pay: Decimal
+    total_hours_worked: Decimal | None
+    total_hours: Decimal | None
+    earnings: tuple[InspectorStubLine, ...]
+    source_filename: str              # PDF basename, for cross-reference
+
+
+@dataclass(frozen=True)
 class CompareData:
     pilot: PilotProfile
     year: int
@@ -1143,6 +1194,7 @@ class CompareData:
     stub_chips: tuple[StubChip, ...]
     note: str                          # optional contextual note
     mpg_advance_netted: bool           # True when the +/-32.50 cancels
+    inspector_stubs: tuple[InspectorStub, ...] = ()    # raw per-stub data
 
 
 # Mapping our internal pay-stub category labels (used by _categorize) to the
@@ -1170,7 +1222,7 @@ def load_compare(
 ) -> CompareData:
     pb = load_pay_breakdown(year, month, user_id)
 
-    stub_paths = _STUB_INDEX.get((year, month), ())
+    stub_paths = stubs_for_user(user_id, year, month)
     if not stub_paths:
         return CompareData(
             pilot=pb.pilot,
@@ -1184,8 +1236,9 @@ def load_compare(
             total_delta=Decimal("0"),
             rows=(),
             stub_chips=(),
-            note="No company pay stubs bundled for this month — upload/entry coming with the persistence layer.",
+            note="No pay stubs uploaded for this month — add them on the Documents page so this screen can compare.",
             mpg_advance_netted=False,
+            inspector_stubs=(),
         )
 
     stubs = tuple(parse_pay_stub(p) for p in stub_paths)
@@ -1294,6 +1347,33 @@ def load_compare(
         for stub in stubs
     )
 
+    # Raw per-stub data for the inspector view (collapsible section on
+    # /compare). Verbatim from the parser — no normalization, no merging
+    # — so the pilot can study how the company actually itemizes pay.
+    inspector_stubs = tuple(
+        InspectorStub(
+            label=stub.label,
+            period_start_iso=stub.period_start.isoformat(),
+            period_end_iso=stub.period_end.isoformat(),
+            pay_date_iso=stub.pay_date.isoformat(),
+            net_pay=stub.net_pay,
+            total_hours_worked=stub.total_hours_worked,
+            total_hours=stub.total_hours,
+            earnings=tuple(
+                InspectorStubLine(
+                    pay_type=line.pay_type,
+                    hours=line.hours,
+                    rate=line.rate,
+                    current_amount=line.current_amount,
+                    ytd_amount=line.ytd_amount,
+                )
+                for line in stub.earnings
+            ),
+            source_filename=Path(stub.source_path).name,
+        )
+        for stub in stubs
+    )
+
     return CompareData(
         pilot=pb.pilot,
         year=year,
@@ -1308,6 +1388,7 @@ def load_compare(
         stub_chips=chips,
         note=note,
         mpg_advance_netted=mpg_netted,
+        inspector_stubs=inspector_stubs,
     )
 
 
@@ -1390,7 +1471,7 @@ def load_discrepancies(
         )
 
     # 2. Compare mismatches (only when stubs exist)
-    if _STUB_INDEX.get((year, month)):
+    if stubs_for_user(user_id, year, month):
         compare = load_compare(year, month, user_id)
         if compare.verdict is not CompareVerdict.NO_STUBS:
             for row in compare.rows:

@@ -795,6 +795,57 @@ a.day-cell:hover {
 }
 .source-note { margin-top: 12px; }
 
+/* ── Compare: raw stub inspector ───────────────────────────────── */
+
+.inspector-details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.inspector-details > summary::-webkit-details-marker { display: none; }
+.inspector-details > summary > h2 { display: inline; }
+.inspector-details > summary::after {
+  content: " ▾";
+  color: var(--muted);
+  font-size: 0.9em;
+}
+.inspector-details[open] > summary::after { content: " ▴"; }
+
+.inspector-stub {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.inspector-stub:first-of-type {
+  margin-top: 18px;
+  padding-top: 0;
+  border-top: none;
+}
+.inspector-stub-title {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+.inspector-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 13px;
+}
+.inspector-table th, .inspector-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px dashed var(--border);
+}
+.inspector-table thead th {
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--muted);
+}
+.inspector-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
 /* ── Discrepancies queue ───────────────────────────────────────── */
 
 .discrepancies-view { display: flex; flex-direction: column; gap: 18px; }

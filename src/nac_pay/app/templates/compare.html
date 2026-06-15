@@ -115,5 +115,69 @@
     {% endif %}
   </div>
   {% endif %}
+
+  {# ── Inspector: raw parsed stub data ─────────────────────────────
+       Collapsible. Verbatim per-stub Earnings tables. No verdict —
+       just data, for cross-month study while accumulating a corpus. #}
+  {% if data.inspector_stubs %}
+  <div class="card">
+    <details class="inspector-details">
+      <summary>
+        <h2 class="card-title">Raw stub data (parsed)</h2>
+        <p class="subtle">
+          Verbatim from the company's PDF. Use this to compare how
+          categories itemize across months.
+        </p>
+      </summary>
+
+      {% for stub in data.inspector_stubs %}
+      <div class="inspector-stub">
+        <h3 class="inspector-stub-title">
+          {{ stub.label }}
+          <span class="subtle"> · pay date {{ stub.pay_date_iso }}</span>
+        </h3>
+        <p class="subtle">
+          {{ stub.source_filename }}
+          {% if stub.total_hours_worked is not none %}
+          · Total Hours Worked {{ stub.total_hours_worked }}
+          {% endif %}
+          {% if stub.total_hours is not none %}
+          · Total Hours {{ stub.total_hours }}
+          {% endif %}
+          · Net pay ${{ "{:,.2f}".format(stub.net_pay) }}
+        </p>
+        <table class="inspector-table">
+          <thead>
+            <tr>
+              <th>Pay Type</th>
+              <th class="num">Hours</th>
+              <th class="num">Rate</th>
+              <th class="num">Current</th>
+              <th class="num">YTD</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for line in stub.earnings %}
+            <tr>
+              <td>{{ line.pay_type }}</td>
+              <td class="num">
+                {% if line.hours is not none %}{{ line.hours }}{% else %}—{% endif %}
+              </td>
+              <td class="num">
+                {% if line.rate is not none %}${{ line.rate }}{% else %}—{% endif %}
+              </td>
+              <td class="num">${{ "{:,.2f}".format(line.current_amount) }}</td>
+              <td class="num">
+                {% if line.ytd_amount is not none %}${{ "{:,.2f}".format(line.ytd_amount) }}{% else %}—{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endfor %}
+    </details>
+  </div>
+  {% endif %}
 </section>
 {% endblock %}

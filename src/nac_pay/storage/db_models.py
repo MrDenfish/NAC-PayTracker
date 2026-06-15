@@ -132,8 +132,10 @@ class PasswordResetRow(Base):
 class UserDocumentRow(Base):
     """Metadata for a user-uploaded document. Bytes live on disk at a
     deterministic path under ``{data_dir}/users/{user_id}/docs/{year}-{month:02}/``.
-    Composite PK ``(user_id, year, month, kind)`` means each (month, kind)
-    slot holds one current document — re-uploading replaces it."""
+
+    Composite PK ``(user_id, year, month, kind, slot)`` lets PAY_STUB
+    accumulate multiple files per month (semi-monthly stubs) while
+    FA/Packet/iCal stay at the canonical slot=0 (re-upload replaces)."""
 
     __tablename__ = "user_documents"
 
@@ -144,6 +146,7 @@ class UserDocumentRow(Base):
     year: Mapped[int] = mapped_column(Integer, primary_key=True)
     month: Mapped[int] = mapped_column(Integer, primary_key=True)
     kind: Mapped[str] = mapped_column(String(24), primary_key=True)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True, default=0)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     uploaded_at: Mapped[str] = mapped_column(String(40), nullable=False)
 

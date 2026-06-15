@@ -51,15 +51,20 @@
       <label>
         <span class="form-label">Kind</span>
         <select name="kind" required>
-          {% for k in kinds %}
+          {% for k in single_kinds %}
           <option value="{{ k.value }}">{{ k.value.replace("_", " ")|title }}</option>
           {% endfor %}
+          <option value="PAY_STUB">Pay Stub (appends — multiple allowed)</option>
         </select>
       </label>
       <label class="form-grid--wide">
         <span class="form-label">File</span>
         <input type="file" name="upload" required accept=".pdf,.ics">
-        <span class="form-hint">PDF for Final Award + Packet; .ics for iCal feed. Max 25MB.</span>
+        <span class="form-hint">
+          PDF for Final Award / Packet / Pay Stub; .ics for iCal feed.
+          Pay stubs accumulate (semi-monthly — upload both); other kinds
+          replace. Max 25MB.
+        </span>
       </label>
       <div class="form-grid--wide">
         <button type="submit" class="btn btn--primary">Upload</button>
@@ -76,7 +81,7 @@
       <div class="month-block">
         <h3 class="month-block-title">{{ month_row.month_label }}</h3>
         <ul class="doc-rows">
-          {% for kind in kinds %}
+          {% for kind in single_kinds %}
           {% set slot = month_row.slots.get(kind.value) %}
           <li class="doc-row {% if not slot %}doc-row--missing{% endif %}">
             <span class="doc-kind">{{ kind.value.replace('_', ' ')|title }}</span>
@@ -94,6 +99,30 @@
             {% endif %}
           </li>
           {% endfor %}
+
+          {# Pay stubs — multiple per month. Render every stub as its
+             own row; show a "(none yet)" line when empty. #}
+          {% if month_row.pay_stubs %}
+            {% for stub in month_row.pay_stubs %}
+            <li class="doc-row">
+              <span class="doc-kind">Pay Stub <span class="subtle">#{{ stub.slot + 1 }}</span></span>
+              <span class="doc-name">{{ stub.original_filename }}</span>
+              <span class="doc-uploaded subtle">uploaded {{ stub.uploaded_at[:10] }}</span>
+              <form action="/documents/delete" method="post" class="doc-delete">
+                <input type="hidden" name="year" value="{{ month_row.year }}">
+                <input type="hidden" name="month" value="{{ month_row.month }}">
+                <input type="hidden" name="kind" value="PAY_STUB">
+                <input type="hidden" name="slot" value="{{ stub.slot }}">
+                <button type="submit" class="link-button" title="Delete this stub">remove</button>
+              </form>
+            </li>
+            {% endfor %}
+          {% else %}
+            <li class="doc-row doc-row--missing">
+              <span class="doc-kind">Pay Stub</span>
+              <span class="doc-status subtle">not uploaded (semi-monthly — upload both halves)</span>
+            </li>
+          {% endif %}
         </ul>
       </div>
       {% endfor %}
