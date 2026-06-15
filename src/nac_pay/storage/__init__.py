@@ -78,6 +78,13 @@ from .documents import (  # noqa: E402
     UserDocumentsStore,
     expected_extension,
 )
+from .assignment_versions import (  # noqa: E402
+    UserAssignmentVersion,
+    UserAssignmentVersionStore,
+    VersionEntryMode,
+    VersionType,
+    active_versions,
+)
 from .overrides import DayOverride, DayOverrideStore  # noqa: E402
 from .profile import PersistedPilotProfile, PilotProfileStore  # noqa: E402
 from .users import (  # noqa: E402
@@ -100,8 +107,13 @@ __all__ = [
     "PersistedPilotProfile",
     "PilotProfileStore",
     "User",
+    "UserAssignmentVersion",
+    "UserAssignmentVersionStore",
     "UserDocumentsStore",
     "UserStore",
+    "VersionEntryMode",
+    "VersionType",
+    "active_versions",
     "database_url",
     "default_user",
     "dispose_engine",

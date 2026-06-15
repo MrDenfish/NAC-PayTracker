@@ -42,6 +42,29 @@ def components_from_times(
     )
 
 
+def recompute_pch_from_times(
+    block_hours: Decimal,
+    duty_hours: Decimal,
+    tafb_hours: Decimal,
+    workdays: int = 1,
+    deadhead: Decimal = Decimal("0"),
+) -> Decimal:
+    """Detailed-mode entry helper: compute a single trip's PCH from raw
+    times via §3.E. Used by the pilot reassignment form (Phase G) and
+    anywhere else that needs a quick trip-level recompute without
+    constructing the full ``TripPchComponents``.
+
+    ``workdays`` defaults to 1 because most pilot-driven reassignments
+    are entered one day at a time."""
+    return components_from_times(
+        block_hours=block_hours,
+        duty_hours=duty_hours,
+        tafb_hours=tafb_hours,
+        workdays=workdays,
+        deadhead=deadhead,
+    ).trip_pch
+
+
 def effective_trip_pch_after_reassignment(
     original_published: Decimal,
     *recomputed_candidates: Decimal,

@@ -151,3 +151,53 @@ class UserDocumentRow(Base):
     uploaded_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
     user: Mapped[UserRow] = relationship(back_populates="documents")
+
+
+class UserAssignmentVersionRow(Base):
+    """Pilot-recorded reassignment / correction for a calendar day.
+
+    Append-only — no row is ever deleted or edited after save. Composite
+    PK ``(user_id, date_iso, seq)`` with seq monotonic per (user, date).
+
+    `version_type=REASSIGNMENT` stacks on top of the trip's published
+    value; `version_type=CORRECTION` references a prior seq via
+    `correction_of` and marks it superseded. The engine considers only
+    non-superseded versions in the §3.E.1.b max-PCH comparison, but the
+    full history is preserved for audit. Phase G."""
+
+    __tablename__ = "user_assignment_versions"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    date_iso: Mapped[str] = mapped_column(String(10), primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    version_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    """REASSIGNMENT or CORRECTION."""
+
+    correction_of: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    """For CORRECTION rows, the prior seq this supersedes."""
+
+    assignment_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    entry_mode: Mapped[str] = mapped_column(String(16), default="SIMPLE", nullable=False)
+    """SIMPLE = pilot entered pch_value directly. DETAILED = pch_value
+    was computed from times via §3.E."""
+
+    pch_value: Mapped[float] = mapped_column(Numeric(8, 4), nullable=False)
+    """The effective PCH for this version. Populated in both modes — in
+    DETAILED it's the recompute result so the engine path stays uniform."""
+
+    # DETAILED inputs (nullable when SIMPLE). Stored verbatim so the
+    # form can re-render them if the pilot opens a correction.
+    block_hours: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    duty_hours: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    tafb_hours: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    deadhead_pch: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    workdays: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    reason_code: Mapped[str] = mapped_column(String(32), default="FLOWN", nullable=False)
+    premium_category: Mapped[str] = mapped_column(String(32), default="NONE", nullable=False)
+    notes: Mapped[str] = mapped_column(String(500), default="", nullable=False)
+    created_at: Mapped[str] = mapped_column(String(40), nullable=False)

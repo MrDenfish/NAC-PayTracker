@@ -347,7 +347,7 @@ Event types are distinguished by a **summary prefix**. Known formats:
 |--------|---------|---------|
 | Dashboard | Headline: month-to-date PCH and $ vs. guarantee. The "am I paid right?" glance. Renders a friendly empty-state card pointing to `/documents` when no docs exist for the month. | — |
 | Calendar (month) | Per-day assignment, duty type, PCH; tap to drill in. | Master Schedule |
-| Trip/Day detail & edit | Dual-entry (value vs. times), reason-code + premium-category dropdowns, assignment history. | — |
+| Trip/Day detail & edit | Dual-entry (value vs. times), reason-code + premium-category dropdowns, assignment history. **Inline pilot reassignment form (Phase G)** — Simple/Detailed toggle, append-only with explicit "correction" supersession for typo fixes. | — |
 | Pay breakdown | Per-category ledger; raw PCH × multiplied rate; guarantee top-up. | Pay stub |
 | Discrepancies | Monthly validation flags (trips that don't match the packet). | — |
 | Compare to pay stub | Pilot enters the two monthly checks; program nets the fixed advance and compares by category. Includes a collapsible **Raw stub data** inspector (Phase F) that dumps every parsed `PayStubLine` (pay_type, hours, rate, current, YTD) verbatim per stub — for cross-month study while a stub corpus is being accumulated. The inspector is intentionally *not* part of the verdict logic. | Pay stub |
@@ -373,6 +373,12 @@ Each day holds a stack of assignment versions:
 - The **most current** assignment is primary — what the pilot sees.
 - Prior versions are **stored and viewable** for reference.
 - The day's **PCH = max(original, current)**. Example: 720/772 (5.33) → 720/1780 (6.08) shows *and* pays 6.08. If a revision were worth *less* than 5.33, the pilot still sees the current assignment, but PCH stays **protected at 5.33**, and the GUI shows the protection explicitly (e.g., "current 720/X (4.00) — protected at 5.33 from original 720/772").
+
+**Pilot-driven entry (Phase G).** Beyond iCal-derived versions, the pilot can record reassignments directly via an inline form on the day-detail screen. Two version types:
+- **Reassignment** — the common case. Stacks on top; engine considers it in the max-PCH comparison.
+- **Correction** — references a prior pilot version and supersedes it. The superseded row stays in the history (rendered with strike-through and a `superseded by vN` badge) but is **excluded** from the max-PCH comparison. This resolves the typo-inflation problem with strict append-only + max: e.g. `v1=5.0` → `v2=5.3 (typo)` → `v3=5.2 (correction of v2)` results in `effective = max(5.0, 5.2) = 5.2`, not 5.3.
+
+The append-only log preserves the full audit trail; supersession is resolved at read time. The form supports both **Simple** (pilot types a PCH value) and **Detailed** (block + duty + TAFB + workdays + deadhead → recompute via §3.E) entry modes via a single radio toggle — the same dual-entry model as §3 inputs.
 
 ### Compare-to-pay-stub (monthly level)
 Pay is issued twice a month, each check carrying a **fixed 32.50 PCH MPG advance** (half the 65 guarantee, never varies). Comparison is done at the **monthly** level: sum both checks' per-category "Current" amounts, net the fixed +32.50 / −32.50 advance and reversal (they cancel within a month), and compare the category sums against the program's computed monthly figures. Because the advance is fixed and the periods align to month halves, this is exact.
@@ -414,6 +420,24 @@ The pay engine (§§2–12) is *headless* — it knows nothing about users, sess
 - **Stripe Checkout** (B2) creates the paid subscription. **Customer Portal** (B3) handles self-service cancel / payment-method update / invoice download.
 - **Webhook handler** at `/webhooks/stripe` keeps `subscription_status` in sync with Stripe's lifecycle events. Signature verification on every event.
 - **Toggle:** `STRIPE_BACKEND=fake` (in-memory, deterministic IDs) for tests; `STRIPE_BACKEND=live` reads `STRIPE_SECRET_KEY` + `STRIPE_PRICE_ID` and hits the real API.
+
+### 14.X Pilot-recorded assignment versions (Phase G)
+
+New table `user_assignment_versions` keyed by `(user_id, date_iso, seq)`. Append-only — no row is ever edited or deleted. Each row carries:
+- `version_type` — `REASSIGNMENT` or `CORRECTION`.
+- `correction_of` — for `CORRECTION`, the seq this supersedes.
+- `entry_mode` — `SIMPLE` (pilot typed a PCH) or `DETAILED` (block/duty/TAFB/workdays/deadhead, recomputed via §3.E).
+- `pch_value` — the engine-relevant number, populated in both modes.
+- Reason code, premium category, free-text notes, and the §3.E raw inputs (preserved for "Correct this" pre-fill on the form).
+
+The pipeline (`services._pipeline`) loads all rows for the month, runs the active-versions resolver (`storage.active_versions`), and appends only the **active** versions onto each matching trip's `versions` tuple before `compute_pay`. The engine path is unchanged — `Trip.effective_pch = max(published, *versions)` does the work.
+
+`UserAssignmentVersionStore` API:
+- `save(**fields)` — append a new row, auto-assigns `seq = max(existing) + 1`.
+- `list_for_date(date_iso)` — all versions for a date, ordered by seq.
+- `list_for_month(year, month)` — grouped by date_iso, each list ordered by seq.
+
+`active_versions(versions) → (active, superseded_seqs)` is the supersession resolver. A `CORRECTION` row marks its `correction_of` seq as superseded. The function is pure — no DB access — so tests can exercise it with hand-built lists. The route validates "no correcting a correction" at write time (chain-of-corrections is allowed in the resolver but disallowed in the UI to keep the audit log understandable).
 
 ### 14.4 Per-user documents (Phases D, F)
 
@@ -475,6 +499,7 @@ Each middleware short-circuits on its own exempt path list (auth pages exempt th
 
 | Date | Change |
 |------|--------|
+| 2026-06-15 | **Phase G: Pilot-driven reassignment entry (inline, append-only, typo-resilient).** New `user_assignment_versions` table (composite PK `(user_id, date_iso, seq)`). Inline reassignment form on `/day/<date>` with Simple/Detailed toggle (CSS-only via `:has()`). Two version types: `REASSIGNMENT` (stacks; engine considers in max-PCH) and `CORRECTION` (references a prior seq via `correction_of`; supersedes it). The supersession resolver (`storage.active_versions`) excludes superseded rows from the engine's max comparison but the row stays in the audit log with strike-through and a `superseded by vN` badge. Closes the typo-inflation hole that strict append-only + max would otherwise have: `v1=5.0 → v2=5.3 (typo) → v3=5.2 (correction)` gives `effective = max(5.0, 5.2) = 5.2`. Engine integration is purely additive — `apply_user_versions_to_month` appends each active version onto its matching trip's `versions` tuple, then existing `Trip.effective_pch` does the work. Detailed mode uses the new `recompute_pch_from_times` helper (§3.E). Day-detail screen now renders a unified history (Original + every pilot version) with a "Correct this" link per non-superseded reassignment. 28 new tests across storage / engine / route / end-to-end (including the explicit typo-correction scenario). Full suite 348 → 376 green. |
 | 2026-06-15 | **Phase F: Pay-stub uploads + Compare inspector.** Multi-slot pay stubs land — `DocumentKind.PAY_STUB` joins the enum, `UserDocumentRow` gets a `slot` column, the composite PK becomes `(user_id, year, month, kind, slot)`. `UserDocumentsStore.save_stub` / `list_stubs` / `delete_stub` manage semi-monthly accumulation; FA/Packet/iCal stay at `slot=0` (re-upload replaces). `_STUB_INDEX` hardcode in `services.py` retired in favor of a unified `stubs_for_user(user_id, year, month)` resolver (default user falls back to bundled May 2026 stubs). `/compare` gains a collapsible **Raw stub data (parsed)** inspector that dumps every parsed `PayStubLine` per stub — pay_type, hours, rate, current, YTD — for cross-month study. **Deliberately not** redesigning compare semantics yet: the company has a non-obvious way of reporting pay credit hours, and the right model will emerge after several months of stub examples accumulate. The inspector is the data-collection enabler; the verdict-based view is unchanged. Localhost-first stance — no deployment in this phase. 21 new tests; full suite 327 → 348 green. |
 | 2026-06-15 | **SaaS wrapper documented (§§1, 10, 13, 14).** Surgical update to reflect Phases 1–E: SaaS positioning + liability framing in §1; per-user uploads as the primary input acquisition path in §10 (bundled `docs/` now explicitly dev-only fallback); four new screens added to §13 (Documents, Onboarding, Billing, Auth) plus dashboard empty-state note; new §14 covers multi-tenant storage, auth, subscriptions, onboarding, middleware stack, production email, and the env-var configuration matrix. Pay engine sections (§§2–9, 11–12) untouched — the wrapper does not change the engine. |
 | 2026-06-15 | **Phase E: Onboarding wizard + dashboard empty state + multi-tenant route fix.** Three-step wizard (profile → documents → done) with skip; `OnboardingMiddleware` redirects fresh users without trapping them (Settings/Documents/Billing remain reachable). `onboarding_completed_at` column. Dashboard renders a friendly empty-state card pointing to `/documents` instead of a 404 when a month has no docs. Threaded session `user_id` through every dashboard/calendar/day/pay/compare/discrepancies/settings route — previously authenticated users were silently rendering the default user's data because the loaders defaulted to `DEFAULT_USER_ID`. Test count 311 → 327. |

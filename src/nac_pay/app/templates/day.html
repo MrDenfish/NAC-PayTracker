@@ -233,16 +233,186 @@
   {% if data.versions %}
   <div class="card">
     <h2 class="card-title">Assignment history (§3.E.1.b)</h2>
+    <p class="subtle" style="margin-bottom: 12px;">
+      Effective PCH is the max across non-superseded versions.
+      Corrections preserve the audit trail without inflating pay.
+    </p>
     <ul class="version-list">
       {% for v in data.versions %}
-      <li class="{% if v.is_effective %}version--effective{% endif %}">
+      <li class="version-row
+                 {% if v.is_effective %}version--effective{% endif %}
+                 {% if v.is_superseded %}version--superseded{% endif %}">
         <span class="version-seq">v{{ v.seq }}</span>
         <span class="version-pch">{{ "%.2f"|format(v.pch_value) }} PCH</span>
-        <span class="version-label">{{ v.label }}</span>
-        {% if v.is_effective %}<span class="badge badge--ok">paid the greater</span>{% endif %}
+        <span class="version-label">
+          {{ v.label }}
+          <span class="subtle version-source">· {{ v.source }}</span>
+          {% if v.correction_of is not none %}
+          <span class="subtle">· supersedes v{{ v.correction_of }}</span>
+          {% endif %}
+        </span>
+        <span class="version-flags">
+          {% if v.is_effective %}<span class="badge badge--ok">effective</span>{% endif %}
+          {% if v.is_superseded %}
+            <span class="badge badge--muted">superseded
+              {% if v.superseded_by_user_seq is not none %}by v{{ v.superseded_by_user_seq }}{% endif %}
+            </span>
+          {% endif %}
+          {% if v.user_seq is not none and v.user_version_type == 'REASSIGNMENT' and not v.is_superseded %}
+            <a class="correct-link" href="/day/{{ data.date_iso }}?correct={{ v.user_seq }}#reassign-form">Correct this</a>
+          {% endif %}
+        </span>
+        {% if v.notes %}
+        <span class="version-notes subtle">{{ v.notes }}</span>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
+  </div>
+  {% endif %}
+
+  {# ── Reassignment form (Phase G) ─────────────────────────────── #}
+  {% if data.kind == 'trip' %}
+  <div class="card" id="reassign-form">
+    {% if data.saved_reassign %}
+    <div class="banner banner--ok" style="margin-bottom: 12px;">
+      <strong>Reassignment recorded.</strong>
+      <p>It now appears in the assignment history above.</p>
+    </div>
+    {% endif %}
+    {% if data.reassign_error %}
+    <div class="banner banner--warn" style="margin-bottom: 12px;">
+      <strong>{{ data.reassign_error }}</strong>
+    </div>
+    {% endif %}
+
+    {% set defaults = data.reassign_form_defaults %}
+    {% set is_correction = defaults.correction_of is not none %}
+
+    <details class="reassign-details" {% if is_correction or data.reassign_error %}open{% endif %}>
+      <summary class="reassign-summary">
+        {% if is_correction %}
+          ✎ Correcting {{ defaults.correcting_seq_label }}
+        {% else %}
+          + Reassign / record a new version
+        {% endif %}
+      </summary>
+
+      <form action="/day/{{ data.date_iso }}/reassign" method="post" class="reassign-form">
+        <input type="hidden" name="version_type"
+               value="{% if is_correction %}CORRECTION{% else %}REASSIGNMENT{% endif %}">
+        {% if is_correction %}
+        <input type="hidden" name="correction_of" value="{{ defaults.correction_of }}">
+        <p class="subtle reassign-correction-note">
+          This will be saved as a new row that supersedes
+          {{ defaults.correcting_seq_label }}. The original entry stays in the
+          history (struck through) for audit.
+        </p>
+        {% endif %}
+
+        <fieldset class="reassign-mode-group">
+          <legend class="form-label">Entry mode</legend>
+          <label class="radio-inline">
+            <input type="radio" name="entry_mode" value="SIMPLE"
+                   {% if defaults.entry_mode == 'SIMPLE' %}checked{% endif %}>
+            Simple — enter PCH value
+          </label>
+          <label class="radio-inline">
+            <input type="radio" name="entry_mode" value="DETAILED"
+                   {% if defaults.entry_mode == 'DETAILED' %}checked{% endif %}>
+            Detailed — compute from times
+          </label>
+        </fieldset>
+
+        <label>
+          <span class="form-label">New trip ID</span>
+          <input type="text" name="assignment_id" maxlength="64"
+                 value="{{ defaults.assignment_id }}" placeholder="e.g. 722/754">
+        </label>
+
+        <div class="reassign-simple-group">
+          <label>
+            <span class="form-label">PCH value</span>
+            <input type="text" name="pch_value" inputmode="decimal"
+                   value="{{ defaults.pch_value }}" placeholder="e.g. 6.08">
+            <span class="form-hint">Entered directly. Engine uses this verbatim.</span>
+          </label>
+        </div>
+
+        <div class="reassign-detailed-group">
+          <div class="reassign-grid">
+            <label>
+              <span class="form-label">Block hours</span>
+              <input type="text" name="block_hours" inputmode="decimal"
+                     value="{{ defaults.block_hours }}" placeholder="5.50">
+            </label>
+            <label>
+              <span class="form-label">Duty hours</span>
+              <input type="text" name="duty_hours" inputmode="decimal"
+                     value="{{ defaults.duty_hours }}" placeholder="10.25">
+            </label>
+            <label>
+              <span class="form-label">TAFB hours</span>
+              <input type="text" name="tafb_hours" inputmode="decimal"
+                     value="{{ defaults.tafb_hours }}" placeholder="14.00">
+            </label>
+            <label>
+              <span class="form-label">Deadhead PCH</span>
+              <input type="text" name="deadhead_pch" inputmode="decimal"
+                     value="{{ defaults.deadhead_pch }}" placeholder="0.00">
+            </label>
+            <label>
+              <span class="form-label">Workdays</span>
+              <input type="number" name="workdays" min="1"
+                     value="{{ defaults.workdays }}">
+            </label>
+          </div>
+          <p class="form-hint">
+            PCH = max(block, duty/2, TAFB/4.90, workdays×3.82) + deadhead. §3.E.
+          </p>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            <span class="form-label">Reason</span>
+            <select name="reason_code">
+              {% for opt in data.reason_options %}
+              <option value="{{ opt.value }}"
+                      {% if opt.value == defaults.reason_code %}selected{% endif %}>
+                {{ opt.label }}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            <span class="form-label">Premium</span>
+            <select name="premium_category">
+              {% for opt in data.premium_options %}
+              <option value="{{ opt.value }}"
+                      {% if opt.value == defaults.premium_category %}selected{% endif %}>
+                {{ opt.label }}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+
+        <label>
+          <span class="form-label">Notes (optional, ≤ 500 chars)</span>
+          <textarea name="notes" maxlength="500" rows="2"
+                    placeholder="e.g. CS sent reassignment 14:32, new pairing 722/754">{{ defaults.notes }}</textarea>
+        </label>
+
+        <div class="form-actions" style="margin-top: 16px;">
+          {% if is_correction %}
+          <a href="/day/{{ data.date_iso }}" class="btn btn--secondary">Cancel correction</a>
+          {% endif %}
+          <button type="submit" class="btn btn--primary">
+            {% if is_correction %}Save correction{% else %}Save reassignment{% endif %}
+          </button>
+        </div>
+      </form>
+    </details>
   </div>
   {% endif %}
 

@@ -56,6 +56,7 @@ from nac_pay.schedule import (
     Trip,
     apply_actuals_to_month,
     apply_overrides_to_month,
+    apply_user_versions_to_month,
     lower_month,
     month_from_master_schedule,
 )
@@ -67,8 +68,10 @@ from nac_pay.storage import (
     PersistedPilotProfile,
     PilotProfileStore,
     User,
+    UserAssignmentVersionStore,
     UserDocumentsStore,
     UserStore,
+    active_versions,
     default_user,
     get_data_dir,
 )
@@ -265,6 +268,19 @@ def _pipeline(
     # Apply pilot overrides last so they trump iCal-derived events.
     overrides = override_store(user_id).load_all()
     updated = apply_overrides_to_month(updated, overrides)
+
+    # Phase G: fold pilot-recorded assignment versions onto matching
+    # trips (reassignments + corrections). The store keeps the full
+    # history; we resolve supersession here and pass only ACTIVE versions
+    # to the engine so a corrected typo doesn't inflate effective_pch.
+    user_versions = UserAssignmentVersionStore(user_id=user_id).list_for_month(year, month)
+    active_by_date: dict[str, list] = {}
+    for date_iso, vs in user_versions.items():
+        active, _superseded = active_versions(vs)
+        if active:
+            active_by_date[date_iso] = active
+    if active_by_date:
+        updated = apply_user_versions_to_month(updated, active_by_date)
 
     engine_result = compute_pay(lower_month(updated))
 
@@ -494,10 +510,52 @@ class DayLeg:
 
 @dataclass(frozen=True)
 class DayVersion:
-    seq: int
+    """One row of the assignment history (Phase G).
+
+    Display-only — combines the trip's original (always present), any
+    iCal-derived versions, and any pilot-entered versions (active or
+    superseded) into a single ordered list."""
+
+    seq: int                  # display seq (0 = original published)
     pch_value: Decimal
     label: str
-    is_effective: bool        # this version is what currently pays
+    is_effective: bool        # winning the max-PCH comparison
+    source: str = "Original"
+    """One of: 'Original', 'iCal reconciliation', 'Pilot reassignment',
+    'Pilot correction'."""
+
+    # User-version metadata (populated only when source starts with 'Pilot').
+    user_seq: int | None = None
+    user_version_type: str | None = None
+    correction_of: int | None = None
+    is_superseded: bool = False
+    superseded_by_user_seq: int | None = None
+    notes: str = ""
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class ReassignFormDefaults:
+    """Pre-filled values when the form is opened via ?correct=<seq>.
+
+    When the pilot clicks "Correct this" on a prior pilot version, the
+    form re-renders with that version's values + a hidden field carrying
+    the correction_of seq. Saves them from retyping everything."""
+
+    version_type: str = "REASSIGNMENT"
+    correction_of: int | None = None
+    correcting_seq_label: str = ""    # "v3" — for the form header
+    entry_mode: str = "SIMPLE"
+    assignment_id: str = ""
+    pch_value: str = ""
+    block_hours: str = ""
+    duty_hours: str = ""
+    tafb_hours: str = ""
+    deadhead_pch: str = "0"
+    workdays: str = "1"
+    reason_code: str = "FLOWN"
+    premium_category: str = "NONE"
+    notes: str = ""
 
 
 @dataclass(frozen=True)
@@ -570,6 +628,11 @@ class DayDetailData:
     has_override: bool = False
     editable: bool = True
     saved: bool = False
+
+    # Phase G — pilot reassignment form
+    reassign_form_defaults: ReassignFormDefaults = ReassignFormDefaults()
+    saved_reassign: bool = False
+    reassign_error: str = ""
 
 
 _WEEKDAY_FULL = (
@@ -667,6 +730,9 @@ def load_day(
     user_id: str = DEFAULT_USER_ID,
     *,
     saved: bool = False,
+    saved_reassign: bool = False,
+    reassign_error: str = "",
+    correct_seq: int | None = None,
 ) -> DayDetailData:
     try:
         target = date_t(year, month, day)
@@ -730,7 +796,24 @@ def load_day(
     events_today = tuple(e for e in pr.applied_events if e.date == target)
 
     # Check for an existing pilot override on this date.
-    override = override_store().load_all().get(target.isoformat())
+    override = override_store(user_id).load_all().get(target.isoformat())
+
+    # Phase G: load all user-recorded versions for this date (active +
+    # superseded) so the history block can show the full audit trail.
+    user_versions = UserAssignmentVersionStore(
+        user_id=user_id,
+    ).list_for_date(target.isoformat())
+    active, superseded_seqs = active_versions(user_versions)
+
+    # Build the "who supersedes whom" backref map for display.
+    superseded_by: dict[int, int] = {}
+    for uv in user_versions:
+        from nac_pay.storage import VersionType as _VT
+        if uv.version_type is _VT.CORRECTION and uv.correction_of is not None:
+            superseded_by[uv.correction_of] = uv.seq
+
+    # Pre-fill form when ?correct=<seq> is in the URL.
+    reassign_defaults = _build_reassign_defaults(user_versions, correct_seq)
 
     return _build_day_detail(
         target=target,
@@ -743,6 +826,45 @@ def load_day(
         events_today=events_today,
         has_override=override is not None,
         saved=saved,
+        user_versions=user_versions,
+        superseded_seqs=superseded_seqs,
+        superseded_by_seq=superseded_by,
+        reassign_defaults=reassign_defaults,
+        saved_reassign=saved_reassign,
+        reassign_error=reassign_error,
+    )
+
+
+def _build_reassign_defaults(
+    user_versions: list,
+    correct_seq: int | None,
+) -> ReassignFormDefaults:
+    """Pre-fill the form when correcting a prior version."""
+    if correct_seq is None:
+        return ReassignFormDefaults()
+    target = next((uv for uv in user_versions if uv.seq == correct_seq), None)
+    if target is None:
+        return ReassignFormDefaults()
+    from nac_pay.storage import VersionType as _VT
+    if target.version_type is _VT.CORRECTION:
+        # The route also rejects this, but defensively skip the pre-fill
+        # so the UI doesn't suggest an impossible action.
+        return ReassignFormDefaults()
+    return ReassignFormDefaults(
+        version_type="CORRECTION",
+        correction_of=target.seq,
+        correcting_seq_label=f"v{target.seq}",
+        entry_mode=target.entry_mode.value,
+        assignment_id=target.assignment_id,
+        pch_value=str(target.pch_value) if target.entry_mode.value == "SIMPLE" else "",
+        block_hours=str(target.block_hours) if target.block_hours is not None else "",
+        duty_hours=str(target.duty_hours) if target.duty_hours is not None else "",
+        tafb_hours=str(target.tafb_hours) if target.tafb_hours is not None else "",
+        deadhead_pch=str(target.deadhead_pch) if target.deadhead_pch is not None else "0",
+        workdays=str(target.workdays) if target.workdays is not None else "1",
+        reason_code=target.reason_code,
+        premium_category=target.premium_category,
+        notes=target.notes,
     )
 
 
@@ -757,7 +879,17 @@ def _build_day_detail(
     events_today: tuple[AppliedEvent, ...],
     has_override: bool = False,
     saved: bool = False,
+    user_versions: list | None = None,
+    superseded_seqs: set | None = None,
+    superseded_by_seq: dict | None = None,
+    reassign_defaults: ReassignFormDefaults | None = None,
+    saved_reassign: bool = False,
+    reassign_error: str = "",
 ) -> DayDetailData:
+    user_versions = user_versions or []
+    superseded_seqs = superseded_seqs or set()
+    superseded_by_seq = superseded_by_seq or {}
+    reassign_defaults = reassign_defaults or ReassignFormDefaults()
     weekday_idx = target.weekday()
     date_label = (
         f"{_WEEKDAY_FULL[weekday_idx]}, "
@@ -811,16 +943,13 @@ def _build_day_detail(
         )
         in_packet = packet_trip is not None
         packet_trip_id = packet_trip.trip_id if packet_trip else None
-        versions = (
-            (DayVersion(seq=0, pch_value=published, label="Original published",
-                        is_effective=(effective == published)),)
-            + tuple(
-                DayVersion(seq=v.seq, pch_value=v.pch_value,
-                           label=v.label or f"Revision #{v.seq}",
-                           is_effective=(effective == v.pch_value))
-                for v in trip.versions
-            )
-        ) if trip.versions else ()
+        versions = _build_history(
+            published=published,
+            effective=effective,
+            user_versions=user_versions,
+            superseded_seqs=superseded_seqs,
+            superseded_by_seq=superseded_by_seq,
+        )
     elif day_entry is not None:
         kind = "reserve" if day_entry.duty_type is DutyType.RSV else "other"
         is_callout = day_entry.callout_trip_pch is not None
@@ -912,7 +1041,82 @@ def _build_day_detail(
         has_override=has_override,
         editable=(kind != "off"),
         saved=saved,
+        reassign_form_defaults=reassign_defaults,
+        saved_reassign=saved_reassign,
+        reassign_error=reassign_error,
     )
+
+
+def _build_history(
+    *,
+    published: Decimal,
+    effective: Decimal,
+    user_versions: list,
+    superseded_seqs: set,
+    superseded_by_seq: dict,
+) -> tuple[DayVersion, ...]:
+    """Unified assignment-history list — original + every pilot version.
+
+    Always shows the original (display_seq=0) when any user version
+    exists, so the audit context is visible. Each user version appears
+    once, with its supersede status. Exactly one row gets is_effective=True
+    (the highest non-superseded PCH, with ties going to the earliest seq).
+    """
+    if not user_versions:
+        return ()
+
+    from nac_pay.storage import VersionType as _VT
+
+    rows: list[DayVersion] = [
+        DayVersion(
+            seq=0, pch_value=published, label="Original published",
+            is_effective=False, source="Original",
+        )
+    ]
+    for uv in user_versions:
+        is_sup = uv.seq in superseded_seqs
+        source = (
+            "Pilot correction"
+            if uv.version_type is _VT.CORRECTION
+            else "Pilot reassignment"
+        )
+        rows.append(
+            DayVersion(
+                seq=uv.seq,
+                pch_value=uv.pch_value,
+                label=uv.assignment_id or "—",
+                is_effective=False,
+                source=source,
+                user_seq=uv.seq,
+                user_version_type=uv.version_type.value,
+                correction_of=uv.correction_of,
+                is_superseded=is_sup,
+                superseded_by_user_seq=superseded_by_seq.get(uv.seq),
+                notes=uv.notes,
+                created_at=uv.created_at,
+            )
+        )
+
+    # Mark the effective row — highest non-superseded PCH; earliest seq breaks ties.
+    candidates = [r for r in rows if not r.is_superseded]
+    if candidates:
+        winner = max(candidates, key=lambda r: (r.pch_value, -r.seq))
+        rows = [
+            DayVersion(
+                seq=r.seq, pch_value=r.pch_value, label=r.label,
+                is_effective=(r is winner),
+                source=r.source,
+                user_seq=r.user_seq,
+                user_version_type=r.user_version_type,
+                correction_of=r.correction_of,
+                is_superseded=r.is_superseded,
+                superseded_by_user_seq=r.superseded_by_user_seq,
+                notes=r.notes,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
+    return tuple(rows)
 
 
 def _packet_components(packet: TripPairing) -> tuple[PchComponent, ...]:

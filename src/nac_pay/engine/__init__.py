@@ -18,6 +18,7 @@ from .trip_pch import (
     TripPchComponents,
     components_from_times,
     effective_trip_pch_after_reassignment,
+    recompute_pch_from_times,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "components_from_times",
     "compute_pay",
     "effective_trip_pch_after_reassignment",
+    "recompute_pch_from_times",
 ]

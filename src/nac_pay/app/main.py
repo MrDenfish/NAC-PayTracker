@@ -18,7 +18,15 @@ from nac_pay.auth import auth_required as _auth_required_flag
 from nac_pay.billing import SubscriptionRequiredMiddleware
 from nac_pay.onboarding import OnboardingMiddleware
 from nac_pay.schedule import PilotProfile, Position
-from nac_pay.storage import DEFAULT_USER_ID, DayOverride, PersistedPilotProfile, User
+from nac_pay.storage import (
+    DEFAULT_USER_ID,
+    DayOverride,
+    PersistedPilotProfile,
+    User,
+    UserAssignmentVersionStore,
+    VersionEntryMode,
+    VersionType,
+)
 
 from .auth_routes import router as auth_router
 from .billing_routes import router as billing_router
@@ -228,6 +236,130 @@ def day_save(
     return RedirectResponse(f"/day/{date_iso}?saved=1", status_code=303)
 
 
+# ── Phase G: reassignment / correction entry ───────────────────────
+
+
+@app.post("/day/{date_iso}/reassign")
+def day_reassign(
+    request: Request,
+    date_iso: str,
+    version_type: str = Form("REASSIGNMENT"),
+    correction_of: str = Form(""),
+    assignment_id: str = Form(""),
+    entry_mode: str = Form("SIMPLE"),
+    # Simple mode
+    pch_value: str = Form(""),
+    # Detailed mode
+    block_hours: str = Form(""),
+    duty_hours: str = Form(""),
+    tafb_hours: str = Form(""),
+    deadhead_pch: str = Form("0"),
+    workdays: str = Form("1"),
+    # Labels
+    reason_code: str = Form("FLOWN"),
+    premium_category: str = Form("NONE"),
+    notes: str = Form(""),
+) -> RedirectResponse:
+    """Append a pilot-recorded version (reassignment or correction).
+
+    Append-only — never edits or deletes an existing row. A CORRECTION
+    must reference an existing seq; that seq is then treated as
+    superseded by the engine's active-versions resolver, but the row
+    survives in the audit history."""
+
+    def _bail(err: str) -> RedirectResponse:
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"/day/{date_iso}?reassign_error={quote(err)}",
+            status_code=303,
+        )
+
+    try:
+        date.fromisoformat(date_iso)
+    except ValueError:
+        raise HTTPException(400, f"Invalid date {date_iso!r}")
+
+    try:
+        vt = VersionType(version_type)
+    except ValueError:
+        return _bail(f"Invalid version_type {version_type!r}")
+    try:
+        em = VersionEntryMode(entry_mode)
+    except ValueError:
+        return _bail(f"Invalid entry_mode {entry_mode!r}")
+
+    uid = _user_id(request)
+    if uid == DEFAULT_USER_ID:
+        return _bail("Default user cannot record reassignments — use a real account.")
+
+    store = UserAssignmentVersionStore(user_id=uid)
+
+    correction_of_int: int | None = None
+    if vt is VersionType.CORRECTION:
+        if not correction_of:
+            return _bail("Correction needs a version to supersede.")
+        try:
+            correction_of_int = int(correction_of)
+        except ValueError:
+            return _bail(f"Invalid correction_of {correction_of!r}")
+        # Validate target exists and is itself not a CORRECTION
+        # (chain-of-corrections is supported by the resolver, but disallowed
+        # at write time — keeps the audit log understandable).
+        existing = {v.seq: v for v in store.list_for_date(date_iso)}
+        target = existing.get(correction_of_int)
+        if target is None:
+            return _bail(f"No version seq={correction_of_int} on {date_iso}.")
+        if target.version_type is VersionType.CORRECTION:
+            return _bail("Can't correct a correction — submit a fresh one against the original.")
+
+    if em is VersionEntryMode.SIMPLE:
+        try:
+            pch_dec = Decimal(pch_value)
+        except InvalidOperation:
+            return _bail("Enter a valid PCH value.")
+        block_dec = duty_dec = tafb_dec = dh_dec = None
+        workdays_int = None
+    else:
+        try:
+            block_dec = Decimal(block_hours)
+            duty_dec = Decimal(duty_hours)
+            tafb_dec = Decimal(tafb_hours)
+            dh_dec = Decimal(deadhead_pch) if deadhead_pch else Decimal("0")
+            workdays_int = int(workdays) if workdays else 1
+        except (InvalidOperation, ValueError):
+            return _bail("Detailed mode needs valid numeric block/duty/TAFB/workdays.")
+        if min(block_dec, duty_dec, tafb_dec) < 0 or workdays_int < 1:
+            return _bail("Detailed-mode inputs must be non-negative; workdays ≥ 1.")
+        from nac_pay.engine import recompute_pch_from_times
+        pch_dec = recompute_pch_from_times(
+            block_hours=block_dec, duty_hours=duty_dec,
+            tafb_hours=tafb_dec, workdays=workdays_int,
+            deadhead=dh_dec,
+        )
+
+    if pch_dec <= 0:
+        return _bail("PCH must be positive.")
+
+    store.save(
+        date_iso=date_iso,
+        version_type=vt,
+        correction_of=correction_of_int,
+        assignment_id=assignment_id.strip(),
+        entry_mode=em,
+        pch_value=pch_dec,
+        block_hours=block_dec, duty_hours=duty_dec,
+        tafb_hours=tafb_dec, deadhead_pch=dh_dec,
+        workdays=workdays_int,
+        reason_code=reason_code.strip() or "FLOWN",
+        premium_category=premium_category.strip() or "NONE",
+        notes=notes.strip()[:500],
+    )
+    invalidate_caches()
+    return RedirectResponse(
+        f"/day/{date_iso}?saved=reassign", status_code=303,
+    )
+
+
 @app.get("/discrepancies", response_class=HTMLResponse)
 def discrepancies_view(
     request: Request,
@@ -334,11 +466,20 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
         raise HTTPException(
             status_code=400, detail=f"Invalid date {date_iso!r}: expected YYYY-MM-DD"
         ) from exc
+    saved_q = request.query_params.get("saved", "")
+    correct_q = request.query_params.get("correct", "")
+    try:
+        correct_seq = int(correct_q) if correct_q else None
+    except ValueError:
+        correct_seq = None
     try:
         data = load_day(
             target.year, target.month, target.day,
             user_id=_user_id(request),
-            saved=(request.query_params.get("saved") == "1"),
+            saved=(saved_q == "1"),
+            saved_reassign=(saved_q == "reassign"),
+            reassign_error=request.query_params.get("reassign_error", ""),
+            correct_seq=correct_seq,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -11,6 +11,7 @@ from .apply_actuals import (
     apply_actuals_to_month,
 )
 from .apply_overrides import apply_overrides_to_month
+from .apply_user_versions import apply_user_versions_to_month
 from .from_master_schedule import ConversionWarning, month_from_master_schedule
 from .labels import (
     DutyType,
@@ -48,6 +49,7 @@ __all__ = [
     "Trip",
     "apply_actuals_to_month",
     "apply_overrides_to_month",
+    "apply_user_versions_to_month",
     "lower_month",
     "month_from_master_schedule",
 ]
