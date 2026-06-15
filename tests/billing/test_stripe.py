@@ -38,6 +38,9 @@ def _verify_token(body: str) -> str:
 
 
 def _signup_and_verify(client: TestClient, email: str) -> str:
+    """Sign up, verify email, mark onboarding done (so we test the
+    subscription gate, not the wizard redirect)."""
+    from nac_pay.onboarding import mark_completed
     client.post(
         "/signup",
         data={"email": email, "password": "long enough password", "confirm": "long enough password"},
@@ -46,9 +49,11 @@ def _signup_and_verify(client: TestClient, email: str) -> str:
     token = _verify_token(get_email_sender().sent[-1].body)
     client.get(f"/verify/{token}", follow_redirects=False)
     with session_scope() as sess:
-        return sess.execute(
+        uid = sess.execute(
             select(UserRow.user_id).where(UserRow.email == email.lower())
         ).scalar_one()
+    mark_completed(uid)
+    return uid
 
 
 def _set_customer_id(user_id: str, customer_id: str) -> None:

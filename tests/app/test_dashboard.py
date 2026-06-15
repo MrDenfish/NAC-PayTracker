@@ -54,15 +54,13 @@ def test_invalid_ym_returns_400():
     assert r.status_code == 400
 
 
-def test_unknown_month_returns_404():
-    """Default-dev-user only has the bundled months; January 2030 isn't
-    bundled and the default user can't upload (in this test mode) →
-    pipeline raises and route renders 404 with an upload-prompt detail."""
+def test_unknown_month_renders_empty_state():
+    """An unbundled month for the default user renders the friendly
+    empty-state card pointing to /documents — not a 404 dead-end."""
     r = client.get("/?year=2030&month=1")
-    assert r.status_code == 404
-    detail = r.json()["detail"]
-    assert "January 2030" in detail
-    assert "Upload" in detail
+    assert r.status_code == 200
+    assert "No data for this month yet" in r.text
+    assert "/documents" in r.text
 
 
 def test_dashboard_renders_winning_option_label():

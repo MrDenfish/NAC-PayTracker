@@ -1,0 +1,47 @@
+{% extends "onboarding/_step.html" %}
+{% block title %}Your profile — Setup — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  <h1>Tell us about you</h1>
+  <p class="subtle">
+    Just the basics — we use these to map you to the Final Award and
+    compute pay. You can edit any of this later in Settings.
+  </p>
+
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+
+  <form action="/onboarding/profile" method="post" class="auth-form">
+    <label>
+      <span class="form-label">Display name</span>
+      <input type="text" name="name" value="{{ persisted.profile.name }}" required>
+    </label>
+    <label>
+      <span class="form-label">Pilot code (3-letter on Final Award)</span>
+      <input type="text" name="pilot_id" value="{{ persisted.profile.pilot_id }}"
+             maxlength="4" required>
+      <span class="form-hint">
+        Look at the leftmost column of your row on the Final Award (e.g.
+        DFI for FISHER). Used to find your row when parsing the FA PDF.
+      </span>
+    </label>
+    <label>
+      <span class="form-label">Position</span>
+      <select name="position">
+        <option value="FO" {% if persisted.profile.position.value == 'FO' %}selected{% endif %}>First Officer</option>
+        <option value="CPT" {% if persisted.profile.position.value == 'CPT' %}selected{% endif %}>Captain</option>
+      </select>
+    </label>
+    <label>
+      <span class="form-label">Hourly rate (USD)</span>
+      <input type="text" name="hourly_rate"
+             value="{{ '%.2f'|format(persisted.profile.hourly_rate) }}"
+             inputmode="decimal" required>
+      <span class="form-hint">From your Appendix A row. Excludes premiums.</span>
+    </label>
+    <button type="submit" class="btn btn--primary">Continue → Upload month</button>
+  </form>
+</div>
+{% endblock %}

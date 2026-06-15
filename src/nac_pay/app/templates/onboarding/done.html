@@ -1,0 +1,25 @@
+{% extends "onboarding/_step.html" %}
+{% block title %}You're set — Setup — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  <div class="banner banner--ok">
+    <strong>You're all set.</strong>
+    <p>
+      Profile saved and documents uploaded. The dashboard now shows
+      your monthly PCH + total pay computed from your files.
+    </p>
+  </div>
+
+  <form action="/onboarding/done" method="post" style="margin-top: 18px;">
+    <button type="submit" class="btn btn--primary" style="width: 100%; padding: 12px 0;">
+      Open dashboard
+    </button>
+  </form>
+
+  <p class="subtle auth-foot" style="margin-top: 14px;">
+    Next month you can drop new docs at any time via
+    <a href="/documents">Documents</a>.
+  </p>
+</div>
+{% endblock %}

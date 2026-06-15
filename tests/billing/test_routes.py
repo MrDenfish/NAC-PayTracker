@@ -23,7 +23,12 @@ def _extract_verify_token(body: str) -> str:
 
 
 def _signup_and_verify(client: TestClient, email: str, password: str = "long enough password") -> str:
-    """Helper: complete the full signup+verify flow and return the user_id."""
+    """Helper: complete the full signup+verify flow and return the user_id.
+
+    Also marks onboarding completed so the dashboard isn't gated by the
+    wizard — billing tests are testing the subscription gate, not the
+    onboarding redirect."""
+    from nac_pay.onboarding import mark_completed
     client.post(
         "/signup",
         data={"email": email, "password": password, "confirm": password},
@@ -36,7 +41,9 @@ def _signup_and_verify(client: TestClient, email: str, password: str = "long eno
         row = sess.execute(
             select(UserRow).where(UserRow.email == email.lower())
         ).scalar_one()
-        return row.user_id
+        user_id = row.user_id
+    mark_completed(user_id)
+    return user_id
 
 
 def _expire_trial(user_id: str) -> None:

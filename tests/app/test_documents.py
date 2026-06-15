@@ -40,14 +40,15 @@ def _signup_and_verify(client: TestClient, email: str) -> None:
 
 
 def _bootstrap_paid_user(monkeypatch, email: str) -> TestClient:
-    """Sign up, verify, and grant ACTIVE subscription so the user can
-    reach gated routes (documents is gated like the rest of the app)."""
+    """Sign up, verify, grant ACTIVE subscription, mark onboarding done.
+    These tests assert document-upload behavior; they're not testing the
+    onboarding redirect."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("STRIPE_BACKEND", "fake")
     isolated = TestClient(app)
     _signup_and_verify(isolated, email)
-    # Force ACTIVE so the subscription gate is satisfied.
     from sqlalchemy import select
+    from nac_pay.onboarding import mark_completed
     from nac_pay.storage.db import session_scope
     from nac_pay.storage.db_models import UserRow
     with session_scope() as sess:
@@ -55,6 +56,8 @@ def _bootstrap_paid_user(monkeypatch, email: str) -> TestClient:
             select(UserRow).where(UserRow.email == email.lower())
         ).scalar_one()
         row.subscription_status = "ACTIVE"
+        uid = row.user_id
+    mark_completed(uid)
     return isolated
 
 

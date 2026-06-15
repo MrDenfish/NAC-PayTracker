@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Setup — NAC Pay Tracker{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <div class="auth-brand">NAC Pay Tracker</div>
+
+    <div class="step-indicator">
+      {% for i in range(1, step_total + 1) %}
+      <span class="step-dot {% if i == step %}step-dot--active{% elif i < step %}step-dot--done{% endif %}"></span>
+      {% endfor %}
+      <span class="step-label">Step {{ step }} of {{ step_total }}</span>
+    </div>
+
+    {% block content %}{% endblock %}
+
+    <form action="/onboarding/skip" method="post" class="skip-link">
+      <button type="submit" class="link-button">Skip for now — I'll set this up later</button>
+    </form>
+  </main>
+</body>
+</html>

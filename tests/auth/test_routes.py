@@ -258,6 +258,10 @@ def test_logout_clears_session(monkeypatch):
     )
     token = _extract_token(get_email_sender().sent[0].body)
     isolated.get(f"/verify/{token}")  # session set
+    # Mark onboarding completed so dashboard isn't held hostage by the wizard.
+    from nac_pay.auth import find_by_email
+    from nac_pay.onboarding import mark_completed
+    mark_completed(find_by_email("leo@example.com"))
     # Dashboard should be reachable now.
     assert isolated.get("/", follow_redirects=False).status_code == 200
     # Log out.

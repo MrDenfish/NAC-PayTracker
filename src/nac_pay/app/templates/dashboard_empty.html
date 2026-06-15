@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="dashboard-empty">
+  <div class="card">
+    <h1>No data for this month yet</h1>
+    <p class="subtle">
+      Drop in your Final Award and Trip Pairing Packet for
+      {{ year }}-{{ '%02d' % month }} on the Documents page and we'll
+      compute your pay.
+    </p>
+    <p style="margin-top: 18px;">
+      <a href="/documents" class="btn btn--primary">Open Documents →</a>
+    </p>
+    <p class="subtle" style="margin-top: 18px;">
+      Want a guided setup instead?
+      <a href="/onboarding">Run the onboarding wizard</a>.
+    </p>
+  </div>
+</section>
+{% endblock %}

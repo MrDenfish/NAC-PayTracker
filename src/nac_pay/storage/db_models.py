@@ -28,6 +28,7 @@ class UserRow(Base):
     # Auth fields (nullable for back-compat with the bundled default user).
     password_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     email_verified_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    onboarding_completed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # Subscription state (Phase B). subscription_status is the SaaS access
     # gate; trial_ends_at is the computed-expiry anchor for TRIALING.

@@ -1,0 +1,49 @@
+{% extends "onboarding/_step.html" %}
+{% block title %}Upload your month — Setup — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  <h1>Upload your current month</h1>
+  <p class="subtle">
+    Drop in your Final Award and Trip Pairing Packet PDFs. iCal is
+    optional — without it we'll compute pay from your scheduled line
+    and you can fill in mid-month actuals later.
+  </p>
+
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+
+  <form action="/onboarding/documents" method="post" enctype="multipart/form-data" class="auth-form">
+    <div class="onboarding-month-row">
+      <label>
+        <span class="form-label">Year</span>
+        <input type="number" name="year" value="{{ default_year }}" min="2020" max="2099" required>
+      </label>
+      <label>
+        <span class="form-label">Month</span>
+        <input type="number" name="month" value="{{ default_month }}" min="1" max="12" required>
+      </label>
+    </div>
+
+    <label>
+      <span class="form-label">Final Award PDF <span class="required">*</span></span>
+      <input type="file" name="final_award" accept=".pdf">
+    </label>
+    <label>
+      <span class="form-label">Trip Pairing Packet PDF <span class="required">*</span></span>
+      <input type="file" name="packet" accept=".pdf">
+    </label>
+    <label>
+      <span class="form-label">iCal feed (optional)</span>
+      <input type="file" name="ical" accept=".ics">
+      <span class="form-hint">From BlueOne — export → calendar feed.</span>
+    </label>
+
+    <button type="submit" class="btn btn--primary">Upload → Done</button>
+    <p class="subtle form-note" style="margin-top: 6px;">
+      Each file is 25MB max. Files are stored to your account only.
+    </p>
+  </form>
+</div>
+{% endblock %}
