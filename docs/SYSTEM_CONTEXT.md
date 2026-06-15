@@ -12,11 +12,13 @@
 
 **What this program does:** It tracks a pilot's monthly pay per Section 3, using the company's own published values as the baseline and only recomputing when actual operations deviate. It also runs a one-time-per-month validation check that recomputes the contract's pay formulas from the packet's raw times and flags any discrepancy against the published values.
 
-**Target user:** Initially a single pilot (the author, an ANC 737 First Officer). Architected so it can later become a multi-pilot app for any NAC pilot with **no rewrite of the pay logic** — all pilot-specific facts live in a profile object.
+**Distribution model:** A **public-signup, subscription-funded SaaS** (NAC Pay Tracker). Anyone — initially the author, eventually any NAC pilot — creates an account with email + password and runs the tool against their own monthly schedule and pay. Account-isolated: each user uploads their own Final Award / Trip Pairing Packet / iCal feed, and their data is namespaced per-user; no operator-visible BlueOne credentials, no shared data. Local-development mode bundles the author's own May/June 2026 documents under a default user for offline iteration. See §14 for the SaaS wrapper architecture.
 
 **What it is NOT:**
+- **Not a system of record for actual pay.** It's an *independent informational tracker* the pilot uses to estimate and verify their own pay against the company's stub. The company's paycheck remains authoritative; this program does not determine, owe, or pay anything.
 - Not a crew-scheduling system. It does **not** track annual FAR flight-time limits, construct lines, or manage bids — those are crew scheduling's job.
 - It does **not** look up, verify, or assign pay rates. The pilot enters their hourly rate in preferences; the program uses it as given.
+- It does **not** ingest or store any company-side BlueOne credentials. Each user obtains their own iCal feed URL from BlueOne and pastes it into Settings (or uploads the .ics file directly); the operator never sees the credential.
 - It does **not** reproduce company/management administrative functions (paycheck timing, direct deposit, records — Section 3 subsections V–AA).
 
 ---
@@ -264,6 +266,12 @@ This gives two independent safety nets: it catches packet errors and bugs in our
 
 ## 10. Input Parsing
 
+### How the program acquires each input
+
+The program never scrapes BlueOne or any company system. Every user supplies their own three artifacts (Final Award PDF, Trip Pairing Packet PDF, iCal feed `.ics`) through the **`/documents` page** (Phase D) or during the **onboarding wizard's step 2** (Phase E). Files are stored per-user under `data/users/<user_id>/documents/<year>-<month>/<kind>.{pdf,ics}` and re-parsed on the next request via `UserDocumentsStore`. The pay engine is unchanged whether documents come from upload or the bundled dev fallback — the parsing rules below apply identically.
+
+A **bundled-docs fallback** in `docs/` is used only by the default user in local development (`AUTH_REQUIRED=false`); real users always go through upload. See §14 for the user-isolated storage layout.
+
 ### Master Schedule (Final Awards) — parsed first each month
 - One page per fleet/position/month grid. Columns = calendar days (+ greyed next-month spillover for boundary trips); a **WD** summary column.
 - Left columns: pilot 3-letter code + last name. One band per pilot.
@@ -335,13 +343,17 @@ Event types are distinguished by a **summary prefix**. Known formats:
 
 | Screen | Purpose | Mirrors |
 |--------|---------|---------|
-| Dashboard | Headline: month-to-date PCH and $ vs. guarantee. The "am I paid right?" glance. | — |
+| Dashboard | Headline: month-to-date PCH and $ vs. guarantee. The "am I paid right?" glance. Renders a friendly empty-state card pointing to `/documents` when no docs exist for the month. | — |
 | Calendar (month) | Per-day assignment, duty type, PCH; tap to drill in. | Master Schedule |
 | Trip/Day detail & edit | Dual-entry (value vs. times), reason-code + premium-category dropdowns, assignment history. | — |
 | Pay breakdown | Per-category ledger; raw PCH × multiplied rate; guarantee top-up. | Pay stub |
 | Discrepancies | Monthly validation flags (trips that don't match the packet). | — |
 | Compare to pay stub | Pilot enters the two monthly checks; program nets the fixed advance and compares by category. | Pay stub |
 | Settings | Hourly rate, fleet/position, sick/PTO banks, feed URL. | — |
+| **Documents** *(Phase D)* | Upload / delete the three source artifacts (Final Award PDF, Trip Pairing Packet PDF, iCal feed `.ics`) per year-month; user-isolated. Drives every other screen for non-default users. | — |
+| **Onboarding wizard** *(Phase E)* | Three-step funnel for fresh signups: profile (name, 3-letter pilot code, position, hourly rate) → documents (current-month FA + Packet + optional iCal) → done. "Skip for now" lands on the dashboard without trapping the user. | — |
+| **Billing** *(Phase B)* | Subscription status, 90-day trial countdown, Stripe Checkout entry, Customer Portal entry (cancel/update/invoices). | — |
+| **Auth screens** *(Phase A)* | Sign-up, login, email verification, forgot/reset password. Centered-card layout, no main nav. | — |
 
 ### Readability principles
 - Lead with the big number; progressively disclose detail on tap.
@@ -375,10 +387,98 @@ Pay is issued twice a month, each check carrying a **fixed 32.50 PCH MPG advance
 
 ---
 
+## 14. SaaS Wrapper Architecture
+
+The pay engine (§§2–12) is *headless* — it knows nothing about users, sessions, billing, or storage backends. Section 14 documents the wrapper that turns it into a multi-tenant SaaS: who can sign in, where their data lives, how they pay, and how a fresh signup gets to their first dashboard. Built incrementally across Phases 1–E (see Changelog).
+
+### 14.1 Multi-tenant storage
+
+- **Default-user pattern.** A single sentinel `DEFAULT_USER_ID` exists for local development. With `AUTH_REQUIRED=false`, every request resolves to the default user, who reads the author's bundled `docs/` (May & June 2026) as if uploaded — the engine code path is identical to a real user. With `AUTH_REQUIRED=true`, the default user is unreachable; only authenticated users access their own data.
+- **Per-user namespacing.** Every storage class (`PilotProfileStore`, `DayOverrideStore`, `UserDocumentsStore`) takes a `user_id` constructor argument and writes under `data/users/<user_id>/…`. Routes in `nac_pay/app/main.py` resolve the active user via `_user_id(request)` (session-backed in prod, default user in dev) and pass it explicitly to every loader — no implicit global current-user lookup.
+- **SQLAlchemy 2.0 backend** (Phase 2). Identity, subscription, and onboarding state live in a relational table (`UserRow`); per-month documents and pilot profiles are still on disk under the user's directory. `DATABASE_URL` selects SQLite for dev / Postgres for prod; tests force SQLite via the same env var.
+
+### 14.2 Authentication (Phase A)
+
+- **Email + password**, argon2-cffi hashed (`PasswordHasher` defaults).
+- **Email verification** required before login: 24h signed token, link `/verify/<token>`.
+- **Password reset** via the same token mechanism: `/forgot-password` → email link → `/reset/<token>`.
+- **Sessions** via Starlette `SessionMiddleware` (signed cookies, `SESSION_SECRET` env var). The session stores `user_id` only.
+- **Toggle:** `AUTH_REQUIRED` env flag flips the entire auth layer for dev convenience.
+
+### 14.3 Subscriptions (Phases B1–B3)
+
+- **90-day no-card trial.** New `UserRow` rows are created with `subscription_status='TRIALING'` and `trial_ends_at = now + 90d`. No payment method required to sign up.
+- **State machine** on `subscription_status`: `TRIALING → ACTIVE | CANCELED | EXPIRED`; `ACTIVE → PAST_DUE → ACTIVE | CANCELED`.
+- **Stripe Checkout** (B2) creates the paid subscription. **Customer Portal** (B3) handles self-service cancel / payment-method update / invoice download.
+- **Webhook handler** at `/webhooks/stripe` keeps `subscription_status` in sync with Stripe's lifecycle events. Signature verification on every event.
+- **Toggle:** `STRIPE_BACKEND=fake` (in-memory, deterministic IDs) for tests; `STRIPE_BACKEND=live` reads `STRIPE_SECRET_KEY` + `STRIPE_PRICE_ID` and hits the real API.
+
+### 14.4 Per-user documents (Phase D)
+
+- `/documents` is the upload surface. The fresh-user funnel from `/onboarding` also lands here for step 2.
+- Storage: `data/users/<user_id>/documents/<year>-<month>/<kind>.{pdf,ics}` with original-filename metadata in the DB. `DocumentKind` enum: `FINAL_AWARD`, `TRIP_PACKET`, `ICAL_FEED`, `PAY_STUB`.
+- Default user cannot upload (it reads the bundled `docs/` directory). All other users must upload before any pay computation works.
+
+### 14.5 Onboarding wizard (Phase E)
+
+- Three steps: **profile** (name, 3-letter pilot code, position, hourly rate) → **documents** (current-month FA + Packet + optional iCal) → **done**.
+- `OnboardingMiddleware` redirects fresh users (no `onboarding_completed_at` stamp) from any non-exempt path to `/onboarding`. Exempt paths: `/settings`, `/documents`, `/billing`, all auth routes, `/static`, `/webhooks`, and `/onboarding` itself — so the wizard never becomes a trap.
+- "Skip for now" stamps completion and lands on the dashboard; the user can populate Settings + Documents later via the regular pages.
+
+### 14.6 Middleware stack (request flow)
+
+Starlette's last-added middleware runs first on the request path. The desired order, request → response:
+
+```
+SessionMiddleware            (sets up request.session from signed cookie)
+  → AuthRequiredMiddleware       (redirect to /login if no session)
+    → SubscriptionRequiredMiddleware  (redirect to /billing if EXPIRED/CANCELED)
+      → OnboardingMiddleware           (redirect fresh users to /onboarding)
+        → Route handler
+```
+
+Each middleware short-circuits on its own exempt path list (auth pages exempt themselves, billing exempts itself, onboarding exempts itself + the pages a fresh user needs to *complete* onboarding).
+
+### 14.7 Production email (Phase C)
+
+- **Pluggable sender** abstraction: `get_email_sender()` returns either `ResendEmailSender` (HTTP API, prod) or `ConsoleEmailSender` (dev/tests — captures sent mail in a list).
+- Templates are plain-text; no HTML email yet.
+- Toggle: `EMAIL_BACKEND` env var; `RESEND_API_KEY` for the live sender.
+
+### 14.8 Configuration matrix
+
+| Env var | Dev default | Prod | Purpose |
+|---|---|---|---|
+| `AUTH_REQUIRED` | `false` | `true` | Off ⇒ default user only; On ⇒ real auth |
+| `SESSION_SECRET` | random per-process | persisted secret | Signs the session cookie |
+| `DATABASE_URL` | `sqlite:///./data/nac_pay.db` | `postgresql://…` | SQLAlchemy backend |
+| `EMAIL_BACKEND` | `console` | `resend` | Verification + reset email transport |
+| `RESEND_API_KEY` | unset | required for `resend` | Resend HTTP API key |
+| `STRIPE_BACKEND` | `fake` | `live` | Fake = deterministic in-memory; live = real API |
+| `STRIPE_SECRET_KEY` | unset | required for `live` | Stripe API key |
+| `STRIPE_PRICE_ID` | unset | required for `live` | Price the Checkout session subscribes to |
+| `STRIPE_WEBHOOK_SECRET` | unset | required for `live` | Signature on `/webhooks/stripe` |
+| `APP_BASE_URL` | `http://127.0.0.1:8000` | public URL | Used to build email + Stripe return links |
+
+### 14.9 What the wrapper does NOT change
+
+- The pay engine, parsers, label families, validation rules, and acceptance tests are **identical** between dev (default user, bundled docs) and prod (real users, uploaded docs). Multi-tenancy is purely an acquisition + isolation layer.
+- The pay engine never imports from `nac_pay.auth`, `nac_pay.billing`, or `nac_pay.onboarding`. The dependency arrow points one way: SaaS wrapper → engine.
+
+---
+
 ## Changelog
 
 | Date | Change |
 |------|--------|
+| 2026-06-15 | **SaaS wrapper documented (§§1, 10, 13, 14).** Surgical update to reflect Phases 1–E: SaaS positioning + liability framing in §1; per-user uploads as the primary input acquisition path in §10 (bundled `docs/` now explicitly dev-only fallback); four new screens added to §13 (Documents, Onboarding, Billing, Auth) plus dashboard empty-state note; new §14 covers multi-tenant storage, auth, subscriptions, onboarding, middleware stack, production email, and the env-var configuration matrix. Pay engine sections (§§2–9, 11–12) untouched — the wrapper does not change the engine. |
+| 2026-06-15 | **Phase E: Onboarding wizard + dashboard empty state + multi-tenant route fix.** Three-step wizard (profile → documents → done) with skip; `OnboardingMiddleware` redirects fresh users without trapping them (Settings/Documents/Billing remain reachable). `onboarding_completed_at` column. Dashboard renders a friendly empty-state card pointing to `/documents` instead of a 404 when a month has no docs. Threaded session `user_id` through every dashboard/calendar/day/pay/compare/discrepancies/settings route — previously authenticated users were silently rendering the default user's data because the loaders defaulted to `DEFAULT_USER_ID`. Test count 311 → 327. |
+| 2026-06-15 | **Phase D: Per-user document uploads.** `/documents` page + `UserDocumentsStore` writes uploads under `data/users/<user_id>/documents/<year>-<month>/<kind>.{pdf,ics}`. `DocumentKind` enum. Default user remains read-only against bundled `docs/`. All non-default users must upload to compute pay. |
+| 2026-06-15 | **Phase C: ResendEmailSender for production email.** Pluggable `get_email_sender()` abstraction with console sender for dev/tests and `ResendEmailSender` (HTTP API) for prod. `EMAIL_BACKEND` env toggle. |
+| 2026-06-15 | **Phases B1–B3: Subscription gate + Stripe Checkout + Customer Portal.** 90-day no-card trial via `subscription_status` column + `SubscriptionRequiredMiddleware`. Stripe Checkout for paid signup, Customer Portal for self-service cancel/update/invoices, webhook handler at `/webhooks/stripe`. `STRIPE_BACKEND=fake|live` toggle. |
+| 2026-06-15 | **Phase A: Email + password auth.** argon2-cffi password hashing, email verification (24h tokens), password reset, Starlette `SessionMiddleware`, `AuthRequiredMiddleware`. `AUTH_REQUIRED` env flag for the dev/prod split. |
+| 2026-06-15 | **Phase 2: SQLAlchemy backend.** SQLite dev / Postgres prod via `DATABASE_URL`. Identity + subscription + onboarding state in `UserRow`; per-month documents and pilot profiles still on disk under the user's directory. |
+| 2026-06-15 | **Phase 1: Multi-tenant storage refactor.** `UserStore`, per-user data directories, default-user sentinel for backwards-compat with bundled `docs/`. Storage classes now take a `user_id` constructor arg. Foundation for the SaaS pivot. |
 | 2026-06-09 | **iCal feed parser shipped — sample confirms three documented prefixes only.** Built `parsers.parse_ical_feed` returning typed `FlightLegEvent` / `ReserveEvent` / `OffEvent` records plus an `UnknownEvent` bucket so the parser fails open on undocumented formats. Sample at `docs/iCal_schedule_feed.ics` (Dennis FISHER's June 7–29 2026 roster) contains 7 FLT legs / 9 R/S reserves / 12 LEA OFF and **no other prefixes** — meaning the §10-deferred formats (CLASS/SIM training, DH deadhead, layover, R-1/R-2/R-4 reserve distinction) remain genuinely unsampled. Two cross-source matching keys established: `FlightLegEvent.flight_no_short` strips the iCal-only `NC` carrier prefix to match the Master Schedule / Packet form (`NC768 → 768`); `ReserveEvent.line_designator_short` strips the iCal-only trailing letter (`1021S → 1021`) to match the Master Schedule line. Block hours come from `DTEND - DTSTART` (UTC). |
 | 2026-06-07 | **Terminology + category-mapping clarified (§5).** Resolved a "base monthly PCH vs line value" mix-up surfaced during the May acceptance test: line value = the floor input; "monthly PCH" = the §6 greater-of result; a guarantee top-up only lifts you *up* to the floor (never adds above the line). Clarified that open time is 1.5× only when it qualifies (else 1.0×), reassignments are 1.0× `max(original, new)`, and that on the stub "Regular pay" aggregates line + reserve straight time + reassignments + non-qualifying open time, while "Open time" is only the qualifying 1.5× pickups. |
 | 2026-06-07 | **Per-screen detail added to §13; 737-only.** Folded the seven finalized screen designs (Dashboard, Calendar, Day detail & edit, Pay breakdown, Compare to pay stub, Discrepancies, Settings) into §13 with purpose, key elements, what each mirrors, and on-screen actions. Removed B767 references — NAC now operates the 737 only (767 retired), so fleet is effectively fixed and the tail→fleet check is dropped. |
