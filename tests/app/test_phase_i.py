@@ -264,3 +264,38 @@ def test_day_pay_card_for_regular_trip_day(monkeypatch):
     body = r.text
     assert "Day pay" in body
     assert "Regular Pay" in body
+
+
+def test_day_pay_scoped_to_single_trip_occurrence(monkeypatch):
+    """Regression: trip_id collisions across dates must not pool chunks.
+
+    The bundled June FA has trip_id '722/750' on BOTH June 2 and June 5
+    as separate Trip objects. Before the source_id fix, the Day Pay
+    card summed chunks from BOTH dates on each day (showing 11.0 PCH
+    instead of the per-day 4.92 / 6.08).
+    """
+    from nac_pay.app.services import load_day, invalidate_caches
+    client, uid = _bootstrap(monkeypatch, "trip-id-collision@x.test")
+
+    # Reassign June 2 to a higher PCH; June 5 is left alone.
+    _reassign(client, "2026-06-02", aid="722/754", pch="6.08",
+              premium="NONE", reason="REASSIGNMENT")
+
+    invalidate_caches()
+    # June 2 — should show ONLY the reassigned trip's PCH (6.08).
+    dd2 = load_day(2026, 6, 2, user_id=uid)
+    assert dd2.day_pay_total is not None
+    # The reassignment wins (6.08 > 4.92), so the day shows ~6.08 × $124.59.
+    expected_2 = Decimal("6.08") * Decimal("124.59")
+    assert abs(dd2.day_pay_total - expected_2) < Decimal("0.10"), \
+        f"June 2 should pay ~${expected_2}, got ${dd2.day_pay_total}"
+
+    # June 5 — unmodified, should show the original 4.92 PCH × rate.
+    dd5 = load_day(2026, 6, 5, user_id=uid)
+    assert dd5.day_pay_total is not None
+    expected_5 = Decimal("4.92") * Decimal("124.59")
+    assert abs(dd5.day_pay_total - expected_5) < Decimal("0.10"), \
+        f"June 5 should pay ~${expected_5}, got ${dd5.day_pay_total}"
+
+    # And critically: the two days should NOT sum to the same total.
+    assert dd2.day_pay_total != dd5.day_pay_total

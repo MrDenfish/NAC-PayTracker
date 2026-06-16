@@ -1005,9 +1005,14 @@ def _build_day_pay_rows(
     base_rate = pr.pilot.hourly_rate
 
     # Compute the set of source_ids that credit this date.
+    # Trips with the same trip_id on different dates would otherwise
+    # blend together — see _trip_source_id docstring in lower.py.
     target_source_ids: set[str] = set()
     if trip is not None:
-        target_source_ids.add(trip.trip_id)
+        if trip.dates:
+            target_source_ids.add(f"{trip.trip_id}@{trip.dates[0].isoformat()}")
+        else:
+            target_source_ids.add(trip.trip_id)
     if day_entry is not None:
         # Mirror _day_source_id in lower.py
         sid = day_entry.label or f"{day_entry.duty_type.value}-{target.isoformat()}"

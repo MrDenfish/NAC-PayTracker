@@ -109,7 +109,7 @@ def _lower_trip(
     kind = _chunk_kind_for_trip(trip)
     chunks.append(
         Chunk(
-            source_id=trip.trip_id,
+            source_id=_trip_source_id(trip),
             kind=kind,
             raw_pch=raw_pch,
             multiplier=multiplier,
@@ -292,6 +292,23 @@ _CHUNK_KIND_BY_DUTY_TYPE: dict[DutyType, ChunkKind] = {
     DutyType.HOME_STUDY: ChunkKind.HOME_STUDY,
     # DH, VX, OFF, FMLA, TAXI fall through to OTHER.
 }
+
+
+def _trip_source_id(trip: Trip) -> str:
+    """Unique chunk source_id per trip OCCURRENCE.
+
+    A trip_id like "722/750" can appear on multiple non-contiguous dates
+    in the same month (different trip pairings carrying the same label).
+    Without date qualification, every chunk for "722/750" matches every
+    "722/750" date — Day Pay then sums all of them per day.
+
+    Tests build synthetic Trips without ``dates`` for engine-only unit
+    tests; in that case the source_id stays as ``trip.trip_id`` for
+    backward compat.
+    """
+    if trip.dates:
+        return f"{trip.trip_id}@{trip.dates[0].isoformat()}"
+    return trip.trip_id
 
 
 def _day_source_id(day: Day) -> str:
