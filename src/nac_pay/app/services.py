@@ -24,7 +24,7 @@ that shared result.
 from __future__ import annotations
 
 import calendar as _cal
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date as date_t
 from decimal import Decimal
 from enum import StrEnum
@@ -181,6 +181,9 @@ class PipelineResult:
     packet_trip_count: int
     fa_loaded: bool
     packet_loaded: bool
+    # Phase H — date_iso → count of active (non-superseded) pilot
+    # reassignment versions. Drives the calendar badge.
+    user_version_counts: dict[str, int] = field(default_factory=dict)
 
 
 def available_months(user_id: str | None = None) -> tuple[tuple[int, int, str], ...]:
@@ -275,10 +278,12 @@ def _pipeline(
     # to the engine so a corrected typo doesn't inflate effective_pch.
     user_versions = UserAssignmentVersionStore(user_id=user_id).list_for_month(year, month)
     active_by_date: dict[str, list] = {}
+    user_version_counts: dict[str, int] = {}
     for date_iso, vs in user_versions.items():
         active, _superseded = active_versions(vs)
         if active:
             active_by_date[date_iso] = active
+            user_version_counts[date_iso] = len(active)
     if active_by_date:
         updated = apply_user_versions_to_month(updated, active_by_date)
 
@@ -298,6 +303,7 @@ def _pipeline(
         packet_trip_count=len(packet),
         fa_loaded=True,
         packet_loaded=True,
+        user_version_counts=user_version_counts,
     )
 
 
@@ -406,6 +412,9 @@ class CalendarCell:
     pch: Decimal | None
     has_callout: bool
     is_reassigned: bool
+    # Phase H: count of active pilot reassignment versions on this date
+    # (0 = no pilot reassignment; drives the ↻N badge + tint).
+    user_reassignment_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -454,7 +463,8 @@ def load_calendar(
     weeks: list[tuple[CalendarCell, ...]] = []
     for week_dates in cal.monthdatescalendar(year, month):
         cells = tuple(
-            _build_cell(d, month, trip_by_date, day_by_date)
+            _build_cell(d, month, trip_by_date, day_by_date,
+                        pr.user_version_counts.get(d.isoformat(), 0))
             for d in week_dates
         )
         weeks.append(cells)
@@ -532,6 +542,37 @@ class DayVersion:
     superseded_by_user_seq: int | None = None
     notes: str = ""
     created_at: str = ""
+
+    # Phase H — per-version trip structure for the expandable detail view.
+    # All optional; the template skips missing data.
+    entry_mode: str | None = None        # "SIMPLE" or "DETAILED"
+    block_hours: Decimal | None = None
+    duty_hours: Decimal | None = None
+    tafb_hours: Decimal | None = None
+    deadhead_pch: Decimal | None = None
+    workdays: int | None = None
+    # When the version's assignment_id matches a trip in this month's
+    # packet, this carries the packet's structural data so the row can
+    # show component PCHs even for SIMPLE-mode entries.
+    packet_match: PacketTripOption | None = None
+    reason_code: str = ""
+    premium_category: str = ""
+
+
+@dataclass(frozen=True)
+class PacketTripOption:
+    """One row of the trip catalog exposed to the reassignment form.
+
+    Used to populate the assignment_id `<datalist>` so the pilot gets
+    autocomplete + auto-fill of PCH value. Off-packet entries (assignment
+    IDs not in this list) still work — the input is free-text."""
+
+    trip_id: str
+    pch_value: Decimal
+    sch_block_hours: Decimal
+    duty_hours: Decimal
+    tafb_hours: Decimal
+    workdays: int
 
 
 @dataclass(frozen=True)
@@ -633,6 +674,10 @@ class DayDetailData:
     reassign_form_defaults: ReassignFormDefaults = ReassignFormDefaults()
     saved_reassign: bool = False
     reassign_error: str = ""
+
+    # Phase H — packet trip catalog for the assignment_id datalist
+    # (autocomplete + PCH auto-fill via tiny JS).
+    packet_trip_options: tuple[PacketTripOption, ...] = ()
 
 
 _WEEKDAY_FULL = (
@@ -815,6 +860,20 @@ def load_day(
     # Pre-fill form when ?correct=<seq> is in the URL.
     reassign_defaults = _build_reassign_defaults(user_versions, correct_seq)
 
+    # Packet trip catalog for the assignment_id <datalist>. Sorted by id
+    # so the dropdown is scannable.
+    packet_options = tuple(
+        PacketTripOption(
+            trip_id=tp.trip_id,
+            pch_value=tp.trip_pch_value,
+            sch_block_hours=tp.sch_block_hours,
+            duty_hours=tp.duty_hours,
+            tafb_hours=tp.tafb_hours,
+            workdays=tp.workdays,
+        )
+        for tp in sorted(pr.packet.values(), key=lambda t: t.trip_id)
+    )
+
     return _build_day_detail(
         target=target,
         pr=pr,
@@ -832,6 +891,7 @@ def load_day(
         reassign_defaults=reassign_defaults,
         saved_reassign=saved_reassign,
         reassign_error=reassign_error,
+        packet_options=packet_options,
     )
 
 
@@ -885,6 +945,7 @@ def _build_day_detail(
     reassign_defaults: ReassignFormDefaults | None = None,
     saved_reassign: bool = False,
     reassign_error: str = "",
+    packet_options: tuple = (),
 ) -> DayDetailData:
     user_versions = user_versions or []
     superseded_seqs = superseded_seqs or set()
@@ -949,6 +1010,8 @@ def _build_day_detail(
             user_versions=user_versions,
             superseded_seqs=superseded_seqs,
             superseded_by_seq=superseded_by_seq,
+            packet_by_trip_id=pr.packet,
+            original_assignment_id=assignment_id or "",
         )
     elif day_entry is not None:
         kind = "reserve" if day_entry.duty_type is DutyType.RSV else "other"
@@ -1044,6 +1107,7 @@ def _build_day_detail(
         reassign_form_defaults=reassign_defaults,
         saved_reassign=saved_reassign,
         reassign_error=reassign_error,
+        packet_trip_options=packet_options,
     )
 
 
@@ -1054,6 +1118,8 @@ def _build_history(
     user_versions: list,
     superseded_seqs: set,
     superseded_by_seq: dict,
+    packet_by_trip_id: dict | None = None,
+    original_assignment_id: str = "",
 ) -> tuple[DayVersion, ...]:
     """Unified assignment-history list — original + every pilot version.
 
@@ -1061,16 +1127,39 @@ def _build_history(
     exists, so the audit context is visible. Each user version appears
     once, with its supersede status. Exactly one row gets is_effective=True
     (the highest non-superseded PCH, with ties going to the earliest seq).
+
+    Phase H: each row also carries any structural data we know about its
+    underlying trip — DETAILED-mode inputs from the user version, plus a
+    `packet_match` lookup for any assignment_id present in this month's
+    packet. The template renders that data inside an expandable details
+    section per row.
     """
     if not user_versions:
         return ()
 
     from nac_pay.storage import VersionType as _VT
+    packet_by_trip_id = packet_by_trip_id or {}
+
+    def _packet_lookup(trip_id: str) -> "PacketTripOption | None":
+        if not trip_id:
+            return None
+        tp = packet_by_trip_id.get(trip_id)
+        if tp is None:
+            return None
+        return PacketTripOption(
+            trip_id=tp.trip_id,
+            pch_value=tp.trip_pch_value,
+            sch_block_hours=tp.sch_block_hours,
+            duty_hours=tp.duty_hours,
+            tafb_hours=tp.tafb_hours,
+            workdays=tp.workdays,
+        )
 
     rows: list[DayVersion] = [
         DayVersion(
             seq=0, pch_value=published, label="Original published",
             is_effective=False, source="Original",
+            packet_match=_packet_lookup(original_assignment_id),
         )
     ]
     for uv in user_versions:
@@ -1094,6 +1183,15 @@ def _build_history(
                 superseded_by_user_seq=superseded_by_seq.get(uv.seq),
                 notes=uv.notes,
                 created_at=uv.created_at,
+                entry_mode=uv.entry_mode.value,
+                block_hours=uv.block_hours,
+                duty_hours=uv.duty_hours,
+                tafb_hours=uv.tafb_hours,
+                deadhead_pch=uv.deadhead_pch,
+                workdays=uv.workdays,
+                packet_match=_packet_lookup(uv.assignment_id),
+                reason_code=uv.reason_code,
+                premium_category=uv.premium_category,
             )
         )
 
@@ -1101,21 +1199,7 @@ def _build_history(
     candidates = [r for r in rows if not r.is_superseded]
     if candidates:
         winner = max(candidates, key=lambda r: (r.pch_value, -r.seq))
-        rows = [
-            DayVersion(
-                seq=r.seq, pch_value=r.pch_value, label=r.label,
-                is_effective=(r is winner),
-                source=r.source,
-                user_seq=r.user_seq,
-                user_version_type=r.user_version_type,
-                correction_of=r.correction_of,
-                is_superseded=r.is_superseded,
-                superseded_by_user_seq=r.superseded_by_user_seq,
-                notes=r.notes,
-                created_at=r.created_at,
-            )
-            for r in rows
-        ]
+        rows = [replace(r, is_effective=(r is winner)) for r in rows]
     return tuple(rows)
 
 
@@ -1804,6 +1888,7 @@ def _build_cell(
     month: int,
     trip_by_date: dict[date_t, Trip],
     day_by_date: dict[date_t, Day],
+    user_reassignment_count: int = 0,
 ) -> CalendarCell:
     in_month = d.month == month
     is_weekend = d.weekday() >= 5
@@ -1822,6 +1907,7 @@ def _build_cell(
             pch=trip.effective_pch,
             has_callout=False,
             is_reassigned=len(trip.versions) > 0,
+            user_reassignment_count=user_reassignment_count,
         )
 
     if day is not None:
@@ -1847,6 +1933,7 @@ def _build_cell(
             pch=pch_display,
             has_callout=is_callout,
             is_reassigned=False,
+            user_reassignment_count=user_reassignment_count,
         )
 
     # Off day (no scheduled activity)
@@ -1860,4 +1947,5 @@ def _build_cell(
         pch=None,
         has_callout=False,
         is_reassigned=False,
+        user_reassignment_count=user_reassignment_count,
     )

@@ -265,14 +265,62 @@
         {% if v.notes %}
         <span class="version-notes subtle">{{ v.notes }}</span>
         {% endif %}
+
+        {# Phase H — per-version trip structure (legs / §3.E inputs). #}
+        {% if v.packet_match or v.entry_mode == 'DETAILED' or v.created_at %}
+        <details class="version-detail">
+          <summary>trip structure</summary>
+          <div class="version-detail-body">
+            {% if v.packet_match %}
+            <div class="vd-section">
+              <div class="vd-section-title">Packet match — {{ v.packet_match.trip_id }}</div>
+              <table class="vd-kv">
+                <tr><th>Scheduled block</th><td>{{ "%.2f"|format(v.packet_match.sch_block_hours) }} h</td></tr>
+                <tr><th>Duty</th><td>{{ "%.2f"|format(v.packet_match.duty_hours) }} h</td></tr>
+                <tr><th>TAFB</th><td>{{ "%.2f"|format(v.packet_match.tafb_hours) }} h</td></tr>
+                <tr><th>Workdays</th><td>{{ v.packet_match.workdays }}</td></tr>
+                <tr><th>Packet PCH</th><td>{{ "%.2f"|format(v.packet_match.pch_value) }}</td></tr>
+              </table>
+            </div>
+            {% endif %}
+
+            {% if v.entry_mode == 'DETAILED' %}
+            <div class="vd-section">
+              <div class="vd-section-title">Pilot entry — Detailed (§3.E recompute)</div>
+              <table class="vd-kv">
+                {% if v.block_hours is not none %}<tr><th>Block</th><td>{{ "%.2f"|format(v.block_hours) }} h</td></tr>{% endif %}
+                {% if v.duty_hours is not none %}<tr><th>Duty</th><td>{{ "%.2f"|format(v.duty_hours) }} h</td></tr>{% endif %}
+                {% if v.tafb_hours is not none %}<tr><th>TAFB</th><td>{{ "%.2f"|format(v.tafb_hours) }} h</td></tr>{% endif %}
+                {% if v.workdays is not none %}<tr><th>Workdays</th><td>{{ v.workdays }}</td></tr>{% endif %}
+                {% if v.deadhead_pch is not none and v.deadhead_pch != 0 %}<tr><th>Deadhead</th><td>+{{ "%.2f"|format(v.deadhead_pch) }} PCH</td></tr>{% endif %}
+              </table>
+            </div>
+            {% elif v.entry_mode == 'SIMPLE' and not v.packet_match %}
+            <div class="vd-section">
+              <div class="vd-section-title">Pilot entry — Simple (off-packet)</div>
+              <p class="subtle">PCH entered directly. No leg or component data available.</p>
+            </div>
+            {% endif %}
+
+            {% if v.user_seq is not none %}
+            <div class="vd-section">
+              <table class="vd-kv">
+                {% if v.reason_code %}<tr><th>Reason</th><td>{{ v.reason_code }}</td></tr>{% endif %}
+                {% if v.premium_category and v.premium_category != 'NONE' %}<tr><th>Premium</th><td>{{ v.premium_category }}</td></tr>{% endif %}
+                <tr><th>Recorded</th><td>{{ v.created_at }}</td></tr>
+              </table>
+            </div>
+            {% endif %}
+          </div>
+        </details>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
   </div>
   {% endif %}
 
-  {# ── Reassignment form (Phase G) ─────────────────────────────── #}
-  {% if data.kind == 'trip' %}
+  {# ── Reassignment form (Phase G; H opens it on all day types) ── #}
   <div class="card" id="reassign-form">
     {% if data.saved_reassign %}
     <div class="banner banner--ok" style="margin-bottom: 12px;">
@@ -326,9 +374,29 @@
 
         <label>
           <span class="form-label">New trip ID</span>
-          <input type="text" name="assignment_id" maxlength="64"
-                 value="{{ defaults.assignment_id }}" placeholder="e.g. 722/754">
+          <input type="text" name="assignment_id" id="reassign-assignment-id"
+                 maxlength="64" list="packet-trip-options"
+                 value="{{ defaults.assignment_id }}"
+                 autocomplete="off"
+                 placeholder="e.g. 722/754">
+          <span class="form-hint">
+            Autocomplete from this month's Trip Pairing Packet
+            ({{ data.packet_trip_options|length }} trip{{ '' if data.packet_trip_options|length == 1 else 's' }}).
+            Off-packet entries — type any ID.
+          </span>
         </label>
+        <datalist id="packet-trip-options">
+          {% for opt in data.packet_trip_options %}
+          <option value="{{ opt.trip_id }}"
+                  data-pch="{{ opt.pch_value }}"
+                  data-block="{{ opt.sch_block_hours }}"
+                  data-duty="{{ opt.duty_hours }}"
+                  data-tafb="{{ opt.tafb_hours }}"
+                  data-workdays="{{ opt.workdays }}">
+            {{ "%.2f"|format(opt.pch_value) }} PCH
+          </option>
+          {% endfor %}
+        </datalist>
 
         <div class="reassign-simple-group">
           <label>
@@ -414,7 +482,43 @@
       </form>
     </details>
   </div>
-  {% endif %}
+
+  <script>
+    // Phase H — when the user picks a packet trip from the datalist,
+    // auto-fill the matching PCH/block/duty/TAFB/workdays inputs.
+    // Pilot can still override any field; off-packet IDs do nothing.
+    (function () {
+      var input = document.getElementById("reassign-assignment-id");
+      if (!input) return;
+      var list = document.getElementById("packet-trip-options");
+      if (!list) return;
+
+      function findOption(value) {
+        var opts = list.options;
+        for (var i = 0; i < opts.length; i++) {
+          if (opts[i].value === value) return opts[i];
+        }
+        return null;
+      }
+
+      function setField(name, value) {
+        var el = document.querySelector('[name="' + name + '"]');
+        if (el && value !== undefined && value !== null && value !== "") {
+          el.value = value;
+        }
+      }
+
+      input.addEventListener("change", function () {
+        var opt = findOption(input.value);
+        if (!opt) return;
+        setField("pch_value", opt.dataset.pch);
+        setField("block_hours", opt.dataset.block);
+        setField("duty_hours", opt.dataset.duty);
+        setField("tafb_hours", opt.dataset.tafb);
+        setField("workdays", opt.dataset.workdays);
+      });
+    })();
+  </script>
 
   {# ── Applied events on this date ────────────────────────────── #}
   {% if data.applied_events %}

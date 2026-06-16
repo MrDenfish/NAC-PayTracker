@@ -400,6 +400,32 @@ html, body {
 
 .day-cell--out.duty-bg--off { background: #fafbfc; }
 
+/* Phase H — pilot-recorded reassignment on a calendar day.
+   Sits ON TOP of the duty-bg tint via a translucent overlay so the
+   underlying duty color still hints what the FA originally said. */
+.day-cell--user-reassigned {
+  position: relative;
+  box-shadow: inset 3px 0 0 #6b5cd6;   /* indigo left rail */
+}
+.day-cell--user-reassigned::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(107, 92, 214, 0.10);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+}
+.day-cell--user-reassigned > * { position: relative; z-index: 1; }
+.flag-icon--user-reassign {
+  background: #ece8ff;
+  color: #4a3ea8;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .calendar-footer {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -647,6 +673,55 @@ a.day-cell:hover {
 .correct-link:hover { text-decoration: underline; }
 .badge--muted { background: #e4e6eb; color: #5b6471; }
 .version-source { font-size: 11.5px; }
+
+/* Phase H — per-version trip structure expander */
+.version-detail {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  font-size: 12.5px;
+}
+.version-detail > summary {
+  cursor: pointer;
+  color: var(--text-subtle, #5b6471);
+  list-style: none;
+  padding: 2px 0;
+}
+.version-detail > summary::-webkit-details-marker { display: none; }
+.version-detail > summary::before {
+  content: "▸ ";
+  font-size: 0.85em;
+}
+.version-detail[open] > summary::before { content: "▾ "; }
+.version-detail-body {
+  margin: 6px 0 2px;
+  padding: 8px 12px;
+  background: #fff;
+  border-radius: 4px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.vd-section-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-subtle, #5b6471);
+  margin-bottom: 4px;
+}
+.vd-kv {
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.vd-kv th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-subtle, #5b6471);
+  padding: 2px 12px 2px 0;
+}
+.vd-kv td {
+  padding: 2px 0;
+  font-variant-numeric: tabular-nums;
+}
 .version-seq {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   color: var(--text-subtle);

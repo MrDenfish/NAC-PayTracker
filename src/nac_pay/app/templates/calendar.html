@@ -58,7 +58,7 @@
       {% for cell in week %}
       {% if cell.in_month %}
       <a href="/day/{{ cell.date.isoformat() }}"
-         class="day-cell{% if cell.is_weekend %} day-cell--weekend{% endif %}{% if cell.duty_class %} duty-bg--{{ cell.duty_class }}{% endif %}">
+         class="day-cell{% if cell.is_weekend %} day-cell--weekend{% endif %}{% if cell.duty_class %} duty-bg--{{ cell.duty_class }}{% endif %}{% if cell.user_reassignment_count > 0 %} day-cell--user-reassigned{% endif %}">
       {% else %}
       <div class="day-cell day-cell--out{% if cell.is_weekend %} day-cell--weekend{% endif %}{% if cell.duty_class %} duty-bg--{{ cell.duty_class }}{% endif %}">
       {% endif %}
@@ -67,6 +67,10 @@
           <span class="day-flags">
             {% if cell.is_reassigned %}<span class="flag-icon" title="reassigned (greater-of-original)">↔</span>{% endif %}
             {% if cell.has_callout %}<span class="flag-icon" title="reserve callout">⚡</span>{% endif %}
+            {% if cell.user_reassignment_count > 0 %}
+            <span class="flag-icon flag-icon--user-reassign"
+                  title="{{ cell.user_reassignment_count }} pilot-recorded reassignment{{ '' if cell.user_reassignment_count == 1 else 's' }}">↻{{ cell.user_reassignment_count }}</span>
+            {% endif %}
           </span>
         </div>
         {% if cell.in_month and (cell.assignment_id or cell.duty_label) %}

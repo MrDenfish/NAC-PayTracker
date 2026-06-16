@@ -28,7 +28,8 @@ from dataclasses import replace
 from datetime import date as date_t
 from typing import TYPE_CHECKING
 
-from .models import AssignmentVersion, Month, Trip
+from .labels import DutyType
+from .models import AssignmentVersion, Day, Month, Trip
 
 if TYPE_CHECKING:
     from nac_pay.storage.assignment_versions import UserAssignmentVersion
@@ -38,8 +39,24 @@ def apply_user_versions_to_month(
     month: Month,
     versions_by_date: dict[str, list["UserAssignmentVersion"]],
 ) -> Month:
+    """Fold pilot-recorded versions onto the month.
+
+    Trip-day case: append each active version to the matching Trip's
+    `versions` tuple; existing `Trip.effective_pch = max(...)` does the
+    work.
+
+    No-trip case (Phase H): for dates with no matching Trip (OFF /
+    reserve sit / training / PTO), lift the matching Day's `pch_value`
+    to ``max(existing_pch, max(active_versions.pch))``. The Day's
+    ``duty_type`` is intentionally NOT changed — the calendar continues
+    to show the Final Award assignment with a reassignment badge, and
+    the day-detail screen carries the full audit. Lowering still treats
+    the day as one workday but credits it at the higher PCH.
+    """
     if not versions_by_date:
         return month
+
+    consumed_dates: set[str] = set()
 
     new_trips: list[Trip] = []
     for trip in month.trips:
@@ -47,8 +64,8 @@ def apply_user_versions_to_month(
         if not adds:
             new_trips.append(trip)
             continue
-        # Existing versions stay (originals from iCal reconciliation).
-        # New user versions append after, ordered by seq.
+        for uv in adds:
+            consumed_dates.add(uv.date_iso)
         existing = trip.versions
         next_seq = max((v.seq for v in existing), default=0) + 1
         new_versions = list(existing)
@@ -63,7 +80,52 @@ def apply_user_versions_to_month(
             next_seq += 1
         new_trips.append(replace(trip, versions=tuple(new_versions)))
 
-    return replace(month, trips=tuple(new_trips))
+    # No-trip case — two sub-cases:
+    #   a) An existing Day record on the date (RSV, PTO, training, etc.):
+    #      lift its pch_value to the high-water mark, keep duty_type.
+    #   b) No Day record (OFF day — represented by absence in month.days):
+    #      synthesize a Day with duty_type=OFF and the user's PCH so the
+    #      engine pays it. duty_type stays OFF — calendar continues to
+    #      show the FA-original "OFF" label with a reassignment badge.
+    new_days: list = []
+    for day in month.days:
+        if day.date is None:
+            new_days.append(day)
+            continue
+        iso = day.date.isoformat()
+        if iso in consumed_dates:
+            new_days.append(day)
+            continue
+        adds = versions_by_date.get(iso, ())
+        if not adds:
+            new_days.append(day)
+            continue
+        consumed_dates.add(iso)
+        max_user = max(uv.pch_value for uv in adds)
+        new_pch = max(day.pch_value, max_user)
+        new_days.append(replace(day, pch_value=new_pch))
+
+    # Sub-case (b): synthesize Days for dates with no Trip and no Day.
+    for iso, adds in versions_by_date.items():
+        if iso in consumed_dates:
+            continue
+        try:
+            d = date_t.fromisoformat(iso)
+        except ValueError:
+            continue
+        if d.year != month.year or d.month != month.month:
+            continue
+        max_user = max(uv.pch_value for uv in adds)
+        new_days.append(
+            Day(
+                date=d,
+                duty_type=DutyType.OFF,
+                pch_value=max_user,
+            )
+        )
+        consumed_dates.add(iso)
+
+    return replace(month, trips=tuple(new_trips), days=tuple(new_days))
 
 
 def _collect_for_trip(
