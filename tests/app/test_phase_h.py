@@ -287,6 +287,84 @@ def test_history_row_shows_offpacket_placeholder_for_simple(monkeypatch):
     assert "off-packet" in body.lower() or "Off-Packet" in body
 
 
+def test_calendar_cell_shows_new_assignment_in_bold(monkeypatch):
+    """Phase H.1: when a day has a winning pilot reassignment, the
+    calendar cell shows the new assignment_id in bold above the
+    FA-original label."""
+    client, _ = _bootstrap(monkeypatch, "cell-bold@x.test")
+    client.post(
+        "/day/2026-06-07/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "1021 RES", "pch_value": "3.82",
+              "reason_code": "FLOWN", "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    r = client.get("/calendar?ym=2026-6")
+    body = r.text
+    # The new assignment appears with the bold class + value.
+    assert "aid-new" in body
+    assert "1021 RES" in body
+    # The original duty label (OFF) is still shown.
+    assert "aid--original" in body or "duty-label--original" in body
+
+
+def test_premium_category_propagates_to_engine(monkeypatch):
+    """Phase H.2: a pilot reassignment with premium_category=OPEN_TIME_MID_MONTH
+    should pay at 1.5×. Currently the engine path drops the user's
+    premium category; this test guards the fix."""
+    client, uid = _bootstrap(monkeypatch, "premium-prop@x.test")
+    # Pick an OFF day (June 7) with a premium reassignment.
+    client.post(
+        "/day/2026-06-07/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "OPEN", "pch_value": "4.00",
+              "reason_code": "FLOWN",
+              "premium_category": "OPEN_TIME_MID_MONTH"},
+        follow_redirects=False,
+    )
+    invalidate_caches()
+    pr = _pipeline(2026, 6, uid)
+    # Verify the synthesized Day carries the OPEN_TIME premium.
+    from datetime import date
+    day = next(d for d in pr.updated_month.days if d.date == date(2026, 6, 7))
+    from nac_pay.schedule.labels import PremiumCategory
+    assert day.premium_category is PremiumCategory.OPEN_TIME_MID_MONTH
+
+    # And the pay breakdown surfaces an "Open Time" row at 1.5×.
+    from nac_pay.app.services import load_pay_breakdown
+    pb = load_pay_breakdown(2026, 6, uid)
+    open_time = [r for r in pb.earning_rows if r.pay_type == "Open Time"]
+    assert len(open_time) == 1
+    assert open_time[0].multiplier == Decimal("1.5")
+    assert open_time[0].pch == Decimal("4.00")
+
+
+def test_premium_not_applied_when_original_wins(monkeypatch):
+    """If the user reassigns at a LOWER PCH than the original, the
+    original wins via §3.E.1.b protection and the user's premium
+    category should NOT be adopted."""
+    client, uid = _bootstrap(monkeypatch, "premium-original-wins@x.test")
+    # June 2 has a trip with published PCH ~4.92. Reassign at 3.00
+    # with a premium category — original should still win and the
+    # trip stays at NONE.
+    client.post(
+        "/day/2026-06-02/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "X", "pch_value": "3.00",
+              "reason_code": "REASSIGNMENT",
+              "premium_category": "OPEN_TIME_MID_MONTH"},
+        follow_redirects=False,
+    )
+    invalidate_caches()
+    pr = _pipeline(2026, 6, uid)
+    from datetime import date
+    trip = next(t for t in pr.updated_month.trips
+                if date(2026, 6, 2) in t.dates)
+    from nac_pay.schedule.labels import PremiumCategory
+    # Original still wins → premium_category stays at NONE.
+    assert trip.premium_category is PremiumCategory.NONE
+
+
 def test_history_row_shown_for_superseded_versions(monkeypatch):
     """Audit requirement: a corrected (superseded) version still shows
     its own structure in the history — the user can inspect what was

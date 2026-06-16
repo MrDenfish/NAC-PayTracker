@@ -73,13 +73,19 @@
             {% endif %}
           </span>
         </div>
-        {% if cell.in_month and (cell.assignment_id or cell.duty_label) %}
+        {% if cell.in_month and (cell.assignment_id or cell.duty_label or cell.new_assignment_id) %}
         <div class="day-cell-body">
+          {# Phase H.1 — pilot's new assignment on top in bold; the
+             FA-original assignment + duty label stay below (subtle)
+             so the audit trail is visible at a glance. #}
+          {% if cell.new_assignment_id %}
+          <div class="aid-new">{{ cell.new_assignment_id }}</div>
+          {% endif %}
           {% if cell.assignment_id %}
-          <div class="aid">{{ cell.assignment_id }}</div>
+          <div class="aid {% if cell.new_assignment_id %}aid--original{% endif %}">{{ cell.assignment_id }}</div>
           {% endif %}
           {% if cell.duty_label %}
-          <div class="duty-label">{{ cell.duty_label }}</div>
+          <div class="duty-label {% if cell.new_assignment_id %}duty-label--original{% endif %}">{{ cell.duty_label }}</div>
           {% endif %}
           {% if cell.pch is not none %}
           <div class="pch">{{ "%.2f"|format(cell.pch) }}</div>

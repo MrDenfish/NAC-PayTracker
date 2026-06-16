@@ -415,6 +415,10 @@ class CalendarCell:
     # Phase H: count of active pilot reassignment versions on this date
     # (0 = no pilot reassignment; drives the ↻N badge + tint).
     user_reassignment_count: int = 0
+    # Phase H.1: the winning active user version's assignment_id, shown
+    # in bold ABOVE the FA-original label so the calendar tells the
+    # reader WHAT the day was reassigned to. None when no active version.
+    new_assignment_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -459,12 +463,27 @@ def load_calendar(
         d.date: d for d in updated.days if d.date is not None
     }
 
+    # Phase H.1: load active user versions to surface the winning
+    # assignment_id per date for the calendar cell.
+    from nac_pay.storage import UserAssignmentVersionStore as _UAVS
+    all_user_versions = _UAVS(user_id=user_id).list_for_month(year, month)
+    winning_aid_by_date: dict[str, str] = {}
+    for date_iso, vs in all_user_versions.items():
+        active, _sup = active_versions(vs)
+        if not active:
+            continue
+        # Highest pch wins; earliest seq breaks ties.
+        winner = max(active, key=lambda v: (v.pch_value, -v.seq))
+        if winner.assignment_id:
+            winning_aid_by_date[date_iso] = winner.assignment_id
+
     cal = _cal.Calendar(firstweekday=_cal.MONDAY)
     weeks: list[tuple[CalendarCell, ...]] = []
     for week_dates in cal.monthdatescalendar(year, month):
         cells = tuple(
             _build_cell(d, month, trip_by_date, day_by_date,
-                        pr.user_version_counts.get(d.isoformat(), 0))
+                        pr.user_version_counts.get(d.isoformat(), 0),
+                        winning_aid_by_date.get(d.isoformat()))
             for d in week_dates
         )
         weeks.append(cells)
@@ -1889,6 +1908,7 @@ def _build_cell(
     trip_by_date: dict[date_t, Trip],
     day_by_date: dict[date_t, Day],
     user_reassignment_count: int = 0,
+    new_assignment_id: str | None = None,
 ) -> CalendarCell:
     in_month = d.month == month
     is_weekend = d.weekday() >= 5
@@ -1908,6 +1928,7 @@ def _build_cell(
             has_callout=False,
             is_reassigned=len(trip.versions) > 0,
             user_reassignment_count=user_reassignment_count,
+            new_assignment_id=new_assignment_id,
         )
 
     if day is not None:
@@ -1934,6 +1955,7 @@ def _build_cell(
             has_callout=is_callout,
             is_reassigned=False,
             user_reassignment_count=user_reassignment_count,
+            new_assignment_id=new_assignment_id,
         )
 
     # Off day (no scheduled activity)

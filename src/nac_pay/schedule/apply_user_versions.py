@@ -28,7 +28,9 @@ from dataclasses import replace
 from datetime import date as date_t
 from typing import TYPE_CHECKING
 
-from .labels import DutyType
+from decimal import Decimal
+
+from .labels import DutyType, PremiumCategory
 from .models import AssignmentVersion, Day, Month, Trip
 
 if TYPE_CHECKING:
@@ -78,7 +80,17 @@ def apply_user_versions_to_month(
                 )
             )
             next_seq += 1
-        new_trips.append(replace(trip, versions=tuple(new_versions)))
+
+        # Phase H.2: if the winning user version OUT-PCHs the trip's
+        # published + iCal versions, also adopt its premium_category so
+        # the engine applies the right multiplier. Otherwise leave the
+        # trip's premium alone — the original wins via §3.E.1.b and
+        # shouldn't inherit a premium that didn't belong to it.
+        new_premium = _winning_premium_for_trip(trip, adds)
+        replaced_trip = replace(trip, versions=tuple(new_versions))
+        if new_premium is not None:
+            replaced_trip = replace(replaced_trip, premium_category=new_premium)
+        new_trips.append(replaced_trip)
 
     # No-trip case — two sub-cases:
     #   a) An existing Day record on the date (RSV, PTO, training, etc.):
@@ -103,7 +115,17 @@ def apply_user_versions_to_month(
         consumed_dates.add(iso)
         max_user = max(uv.pch_value for uv in adds)
         new_pch = max(day.pch_value, max_user)
-        new_days.append(replace(day, pch_value=new_pch))
+        new_day = replace(day, pch_value=new_pch)
+        # If the user version's PCH beats the day's pch_value, adopt
+        # the version's premium_category (and reason_code) — the pilot
+        # is now driving this day's pay. If the day wins (e.g., callout
+        # pch is higher), keep the original.
+        if max_user > day.pch_value:
+            winner = max(adds, key=lambda uv: uv.pch_value)
+            new_premium = _parse_premium(winner.premium_category)
+            if new_premium is not None:
+                new_day = replace(new_day, premium_category=new_premium)
+        new_days.append(new_day)
 
     # Sub-case (b): synthesize Days for dates with no Trip and no Day.
     for iso, adds in versions_by_date.items():
@@ -116,11 +138,14 @@ def apply_user_versions_to_month(
         if d.year != month.year or d.month != month.month:
             continue
         max_user = max(uv.pch_value for uv in adds)
+        winner = max(adds, key=lambda uv: uv.pch_value)
+        new_premium = _parse_premium(winner.premium_category) or PremiumCategory.NONE
         new_days.append(
             Day(
                 date=d,
                 duty_type=DutyType.OFF,
                 pch_value=max_user,
+                premium_category=new_premium,
             )
         )
         consumed_dates.add(iso)
@@ -155,3 +180,38 @@ def _label_for(uv: "UserAssignmentVersion") -> str:
     if uv.assignment_id:
         return f"{kind} — {uv.assignment_id}"
     return kind
+
+
+def _parse_premium(value: str) -> PremiumCategory | None:
+    """Convert a stored string to PremiumCategory; None if unknown."""
+    if not value:
+        return None
+    try:
+        return PremiumCategory(value)
+    except ValueError:
+        return None
+
+
+def _winning_premium_for_trip(
+    trip: Trip,
+    user_versions: list["UserAssignmentVersion"],
+) -> PremiumCategory | None:
+    """Return a new premium_category for the trip IFF the user's
+    highest-PCH version exceeds the existing high-water mark.
+
+    Edge: if the original published PCH or an iCal-derived version
+    still wins after the user's adds, the original premium stays
+    unchanged — the user's premium category only applies when their
+    version actually drives effective_pch.
+    """
+    if not user_versions:
+        return None
+    existing_max = max(
+        (Decimal(str(trip.published_pch)),)
+        + tuple(v.pch_value for v in trip.versions),
+        default=Decimal("0"),
+    )
+    winner = max(user_versions, key=lambda uv: uv.pch_value)
+    if winner.pch_value <= existing_max:
+        return None
+    return _parse_premium(winner.premium_category)

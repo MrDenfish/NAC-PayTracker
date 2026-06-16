@@ -426,6 +426,19 @@ html, body {
   font-weight: 700;
 }
 
+/* Phase H.1 — pilot's new assignment in bold above the FA original */
+.aid-new {
+  font-weight: 700;
+  color: #4a3ea8;       /* indigo, matches the reassignment rail */
+  font-size: 12px;
+  line-height: 1.15;
+}
+.aid--original,
+.duty-label--original {
+  opacity: 0.55;
+  font-size: 11px;
+}
+
 .calendar-footer {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
