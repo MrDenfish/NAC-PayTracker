@@ -384,6 +384,33 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Phase I.4 — subtle premium label under the new assignment */
+.premium-label {
+  font-size: 10px;
+  color: #4a3ea8;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  font-weight: 600;
+  line-height: 1.15;
+  margin-top: -1px;
+}
+
+/* Phase I.5 — PCH and $ on one row; $ in lower-right */
+.pch-pay-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 2px;
+  gap: 4px;
+}
+.pay-dollars {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-subtle, #5b6471);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
 /* Duty-type tinted backgrounds. Subtle — desktop calendars get noisy fast. */
 .duty-bg--flt        { background: #e6f1ff; }
 .duty-bg--rsv        { background: #fff2db; }
@@ -432,6 +459,38 @@ html, body {
   color: #4a3ea8;       /* indigo, matches the reassignment rail */
   font-size: 12px;
   line-height: 1.15;
+}
+
+/* Phase I.2 — premium pay callout on the dashboard */
+.premium-pch {
+  color: #4a3ea8;
+  font-weight: 600;
+}
+
+/* Phase I.7 — per-day pay breakdown table */
+.day-pay-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.day-pay-table th, .day-pay-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.day-pay-table thead th {
+  font-size: 12px;
+  color: var(--text-subtle, #5b6471);
+  font-weight: 600;
+}
+.day-pay-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.day-pay-table tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--border);
+  border-bottom: none;
 }
 .aid--original,
 .duty-label--original {

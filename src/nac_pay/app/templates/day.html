@@ -57,6 +57,41 @@
     </div>
   </div>
 
+  {# ── Day pay breakdown (Phase I.7) ────────────────────────────── #}
+  {% if data.day_pay_rows %}
+  <div class="card">
+    <h2 class="card-title">Day pay</h2>
+    <table class="day-pay-table">
+      <thead>
+        <tr>
+          <th>Pay type</th>
+          <th class="num">×</th>
+          <th class="num">PCH</th>
+          <th class="num">Rate</th>
+          <th class="num">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in data.day_pay_rows %}
+        <tr>
+          <td>{{ r.category }}</td>
+          <td class="num">{{ "%.1f"|format(r.multiplier) }}×</td>
+          <td class="num">{{ "%.2f"|format(r.pch) }}</td>
+          <td class="num">${{ "{:,.2f}".format(r.rate) }}</td>
+          <td class="num">${{ "{:,.2f}".format(r.amount) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr class="totals">
+          <td colspan="4">Total</td>
+          <td class="num">${{ "{:,.2f}".format(data.day_pay_total) }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% endif %}
+
   {# ── Reason / Premium (editable when day has work) ──────────── #}
   <div class="card">
     <h2 class="card-title">Reason &amp; premium</h2>

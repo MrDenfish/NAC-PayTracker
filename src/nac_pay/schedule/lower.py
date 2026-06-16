@@ -116,6 +116,7 @@ def _lower_trip(
             in_guarantee=True,
             workdays=trip.workdays,
             label=trip.label,
+            premium_category=trip.premium_category.value,
         )
     )
 
@@ -176,6 +177,7 @@ def _lower_day(
                 in_guarantee=True,
                 workdays=day.workdays,
                 label=day.label,
+                premium_category=day.premium_category.value,
             )
         )
         return
@@ -197,6 +199,7 @@ def _lower_day(
                 in_guarantee=True,
                 workdays=day.workdays,
                 label=day.label or f"Reserve callout {day.date}",
+                premium_category=day.premium_category.value,
             )
         )
         excess = max(Decimal("0"), callout_pch - DPG)
@@ -222,6 +225,7 @@ def _lower_day(
             in_guarantee=True,
             workdays=day.workdays,
             label=day.label,
+            premium_category=day.premium_category.value,
         )
     )
 

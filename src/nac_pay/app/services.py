@@ -329,11 +329,18 @@ class DashboardData:
     topup_dollars: Decimal
     total_pay: Decimal
 
-    fa_loaded: bool
-    packet_loaded: bool
-    feed_loaded: bool
-    packet_trip_count: int
-    feed_event_count: int
+    # Phase I.2 — Regular vs Premium PCH split for the dashboard tile.
+    # "Premium" = chunks paying at any multiplier > 1.0 (Open Time,
+    # Overtime, Junior Assignment, Landing, Hostile, NRFO-specialized).
+    regular_pch: Decimal = Decimal("0")
+    premium_pch: Decimal = Decimal("0")
+    premium_dollars: Decimal = Decimal("0")
+
+    fa_loaded: bool = True
+    packet_loaded: bool = True
+    feed_loaded: bool = False
+    packet_trip_count: int = 0
+    feed_event_count: int = 0
 
     applied_events: tuple[AppliedEvent, ...] = ()
     validation_discrepancies: tuple[ValidationDiscrepancy, ...] = ()
@@ -347,6 +354,18 @@ def load_dashboard(
     pr = _pipeline(year, month, user_id)
     r = pr.engine_result
     feed = pr.feed
+
+    # Phase I.2 — split into Regular vs Premium for the dashboard tile.
+    regular_pch = Decimal("0")
+    premium_pch = Decimal("0")
+    premium_dollars = Decimal("0")
+    for c in r.per_chunk:
+        if c.multiplier > Decimal("1.0"):
+            premium_pch += c.raw_pch
+            premium_dollars += c.dollars
+        else:
+            regular_pch += c.raw_pch
+
     return DashboardData(
         pilot=pr.pilot,
         year=pr.year,
@@ -363,6 +382,9 @@ def load_dashboard(
         topup_pch=r.topup_pch,
         topup_dollars=r.topup_dollars,
         total_pay=r.total_pay,
+        regular_pch=regular_pch,
+        premium_pch=premium_pch,
+        premium_dollars=premium_dollars,
         fa_loaded=pr.fa_loaded,
         packet_loaded=pr.packet_loaded,
         feed_loaded=feed is not None,
@@ -419,6 +441,12 @@ class CalendarCell:
     # in bold ABOVE the FA-original label so the calendar tells the
     # reader WHAT the day was reassigned to. None when no active version.
     new_assignment_id: str | None = None
+    # Phase I.4: subtle premium label under the new assignment (e.g.,
+    # "Open Time", "Overtime"). None when the day has no premium.
+    premium_label: str | None = None
+    # Phase I.5: per-day dollar value (PCH × base_rate × multiplier),
+    # rounded to the nearest whole dollar. Rendered in cell bottom-right.
+    pay_dollars: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -441,6 +469,8 @@ class CalendarData:
     line_value: Decimal
     monthly_pch: Decimal
     delta_vs_mpg: Decimal
+    # Phase I.6 — total pay $ for the footer, replacing "Δ vs MPG".
+    total_pay: Decimal = Decimal("0")
 
 
 _WEEKDAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -463,11 +493,12 @@ def load_calendar(
         d.date: d for d in updated.days if d.date is not None
     }
 
-    # Phase H.1: load active user versions to surface the winning
-    # assignment_id per date for the calendar cell.
+    # Phase H.1 + I.4: load active user versions to surface the winning
+    # assignment_id + premium label per date for the calendar cell.
     from nac_pay.storage import UserAssignmentVersionStore as _UAVS
     all_user_versions = _UAVS(user_id=user_id).list_for_month(year, month)
     winning_aid_by_date: dict[str, str] = {}
+    premium_label_by_date: dict[str, str] = {}
     for date_iso, vs in all_user_versions.items():
         active, _sup = active_versions(vs)
         if not active:
@@ -476,6 +507,13 @@ def load_calendar(
         winner = max(active, key=lambda v: (v.pch_value, -v.seq))
         if winner.assignment_id:
             winning_aid_by_date[date_iso] = winner.assignment_id
+        # I.4: if the winning version's premium category is real, label
+        # the cell with the human label ("Open Time", "Overtime", ...).
+        label = _PREMIUM_DISPLAY.get(winner.premium_category)
+        if label is not None:
+            premium_label_by_date[date_iso] = label
+
+    base_rate = pr.pilot.hourly_rate
 
     cal = _cal.Calendar(firstweekday=_cal.MONDAY)
     weeks: list[tuple[CalendarCell, ...]] = []
@@ -483,7 +521,9 @@ def load_calendar(
         cells = tuple(
             _build_cell(d, month, trip_by_date, day_by_date,
                         pr.user_version_counts.get(d.isoformat(), 0),
-                        winning_aid_by_date.get(d.isoformat()))
+                        winning_aid_by_date.get(d.isoformat()),
+                        premium_label_by_date.get(d.isoformat()),
+                        base_rate)
             for d in week_dates
         )
         weeks.append(cells)
@@ -513,6 +553,7 @@ def load_calendar(
         line_value=updated.line_value,
         monthly_pch=pr.engine_result.base_monthly_pch,
         delta_vs_mpg=pr.engine_result.base_monthly_pch - Decimal("65"),
+        total_pay=pr.engine_result.total_pay,
     )
 
 
@@ -576,6 +617,23 @@ class DayVersion:
     packet_match: PacketTripOption | None = None
     reason_code: str = ""
     premium_category: str = ""
+
+
+@dataclass(frozen=True)
+class DayPayRow:
+    """Phase I.7 — one row of the day-detail per-day pay breakdown card.
+
+    Example: Open Time · 1.5× · 3.82 · $186.88 = $713.90. For unmodified
+    trip/reserve days, it's a single row at 1.0×. For premium pickups,
+    it's the premium row. Layout mirrors the Pay Breakdown screen but
+    scoped to one day's chunks."""
+
+    category: str
+    multiplier: Decimal
+    pch: Decimal
+    rate: Decimal
+    base_rate: Decimal
+    amount: Decimal
 
 
 @dataclass(frozen=True)
@@ -698,6 +756,11 @@ class DayDetailData:
     # (autocomplete + PCH auto-fill via tiny JS).
     packet_trip_options: tuple[PacketTripOption, ...] = ()
 
+    # Phase I.7 — per-day pay breakdown rows (category · multiplier ·
+    # PCH · rate = amount). One row per chunk crediting this date.
+    day_pay_rows: tuple = ()
+    day_pay_total: Decimal | None = None
+
 
 _WEEKDAY_FULL = (
     "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
@@ -818,6 +881,11 @@ def load_day(
         None,
     )
 
+    # Phase I.7 — build per-day pay rows from the engine's chunks.
+    day_pay_rows, day_pay_total = _build_day_pay_rows(
+        pr=pr, trip=trip, day_entry=day_entry, target=target,
+    )
+
     # iCal legs on this date.
     legs: tuple[DayLeg, ...] = ()
     actual_block: Decimal | None = None
@@ -911,7 +979,85 @@ def load_day(
         saved_reassign=saved_reassign,
         reassign_error=reassign_error,
         packet_options=packet_options,
+        day_pay_rows=day_pay_rows,
+        day_pay_total=day_pay_total,
     )
+
+
+def _build_day_pay_rows(
+    *,
+    pr: PipelineResult,
+    trip: Trip | None,
+    day_entry: Day | None,
+    target: date_t,
+) -> tuple[tuple, Decimal | None]:
+    """Phase I.7 — per-day pay breakdown rows from the engine's chunks.
+
+    Filters ChunkResult records to those crediting this calendar date,
+    then runs the same categorize → display transform as the Pay
+    Breakdown screen. Returns (rows, total_dollars). Total may be None
+    when no chunks credit the day (off days with no reassignment).
+    """
+    from collections import defaultdict as _dd
+    from nac_pay.engine import ChunkKind as _CK
+    from .services import _categorize as _cat  # local re-bind for clarity
+
+    base_rate = pr.pilot.hourly_rate
+
+    # Compute the set of source_ids that credit this date.
+    target_source_ids: set[str] = set()
+    if trip is not None:
+        target_source_ids.add(trip.trip_id)
+    if day_entry is not None:
+        # Mirror _day_source_id in lower.py
+        sid = day_entry.label or f"{day_entry.duty_type.value}-{target.isoformat()}"
+        target_source_ids.add(sid)
+    if not target_source_ids:
+        return (), None
+
+    chunks_for_day = [
+        c for c in pr.engine_result.per_chunk
+        if c.source_id in target_source_ids
+    ]
+    if not chunks_for_day:
+        return (), None
+
+    # Group by (category, multiplier) — same as the monthly breakdown.
+    pch_by_key: dict[tuple[str, Decimal], Decimal] = _dd(lambda: Decimal("0"))
+    for c in chunks_for_day:
+        pch_by_key[(_categorize(c), c.multiplier)] += c.raw_pch
+
+    rows: list[DayPayRow] = []
+    for (cat, mult), pch in pch_by_key.items():
+        if cat == "Home Study":
+            # Same pilot-facing convention as the Pay Breakdown: show
+            # module-hours at half-rate.
+            display_pch = pch * Decimal("2")
+            display_mult = Decimal("0.5")
+            rate = base_rate * display_mult
+            amount = (display_pch * rate).quantize(_DOLLAR_QUANT, rounding=ROUND_HALF_UP)
+            rows.append(DayPayRow(
+                category=cat, multiplier=display_mult,
+                pch=display_pch, rate=rate,
+                base_rate=base_rate, amount=amount,
+            ))
+        else:
+            rate = base_rate * mult
+            amount = (pch * rate).quantize(_DOLLAR_QUANT, rounding=ROUND_HALF_UP)
+            rows.append(DayPayRow(
+                category=cat, multiplier=mult,
+                pch=pch, rate=rate,
+                base_rate=base_rate, amount=amount,
+            ))
+
+    # Sort: higher multipliers first within a category, then by category order.
+    def _sort_key(r: DayPayRow) -> tuple[int, str, Decimal]:
+        order = _PAY_TYPE_ORDER.index(r.category) if r.category in _PAY_TYPE_ORDER else 99
+        return (order, r.category, -r.multiplier)
+    rows.sort(key=_sort_key)
+
+    total = sum((r.amount for r in rows), Decimal("0"))
+    return tuple(rows), total
 
 
 def _build_reassign_defaults(
@@ -965,6 +1111,8 @@ def _build_day_detail(
     saved_reassign: bool = False,
     reassign_error: str = "",
     packet_options: tuple = (),
+    day_pay_rows: tuple = (),
+    day_pay_total: Decimal | None = None,
 ) -> DayDetailData:
     user_versions = user_versions or []
     superseded_seqs = superseded_seqs or set()
@@ -1127,6 +1275,8 @@ def _build_day_detail(
         saved_reassign=saved_reassign,
         reassign_error=reassign_error,
         packet_trip_options=packet_options,
+        day_pay_rows=day_pay_rows,
+        day_pay_total=day_pay_total,
     )
 
 
@@ -1305,28 +1455,67 @@ class PayBreakdownData:
     base_monthly_pch: Decimal
 
 
-# Pay-stub category labels, in display order.
+# Pay-stub category labels, in display order. Phase I expands the list
+# with Overtime / Junior Assignment / Landing / Hostile / and the split
+# of Training into its three sub-types (Classroom / SIM / Home Study).
 _PAY_TYPE_ORDER: tuple[str, ...] = (
     "Regular Pay",
     "Open Time",
+    "Overtime",
+    "Junior Assignment",
+    "Landing Credit",
+    "Hostile Area",
     "Paid Time Off",
     "Sick",
     "Jury Duty",
     "Bereavement",
-    "Training",
-    "Moving",
+    "Classroom Train",
+    "Simulator Train",
+    "Training",          # generic (CLASS/SIM unknown)
     "Home Study",
+    "Moving",
     "NRFO",
     "Other",
 )
 
 
+# Premium category .value → display label. Used when a chunk carries a
+# premium multiplier but ChunkKind alone doesn't pin the category
+# (Phase I fix — Overtime / Landing / Junior etc. previously fell through
+# to "Regular Pay 1.5x" which isn't a real contract concept).
+_PREMIUM_DISPLAY: dict[str, str] = {
+    "OPEN_TIME_MID_MONTH": "Open Time",
+    "OPEN_TIME_BID_PERIOD": "Open Time",
+    "OVERTIME": "Overtime",
+    "JUNIOR_ASSIGNMENT_1ST": "Junior Assignment",
+    "JUNIOR_ASSIGNMENT_NTH": "Junior Assignment",
+    "LANDING": "Landing Credit",
+    "HOSTILE": "Hostile Area",
+    "NRFO_SPECIALIZED": "NRFO",
+}
+
+
 def _categorize(chunk: ChunkResult) -> str:
-    """Map a ChunkResult to a pay-stub category. The user's terminology
-    note in SYSTEM_CONTEXT.md §5: reserves and straight-time reassignments
-    roll into Regular Pay; Open Time is only the qualifying 1.5× pickup;
-    PTO/SICK/etc. always get their own categories regardless of multiplier."""
+    """Map a ChunkResult to a pay-stub category.
+
+    Priority (Phase I):
+    1. Premium chunks (multiplier > 1.0) bucket by ``premium_category``
+       — fixes "Regular Pay 1.5x" for Overtime / Landing / Junior Assign
+       which were falling through to Regular Pay.
+    2. Training splits: ChunkKind.TRAINING + label hint splits into
+       Classroom Train / Simulator Train; Home Study has its own kind.
+    3. ChunkKind directly maps the rest.
+    """
     kind = chunk.kind
+
+    # 1. Premium routing.
+    if chunk.multiplier > Decimal("1.0") and chunk.premium_category:
+        label = _PREMIUM_DISPLAY.get(chunk.premium_category)
+        if label is not None:
+            return label
+
+    # 2. Protected / leave categories — these always get their own row
+    # regardless of multiplier (PTO at premium is still PTO category).
     if kind is ChunkKind.PTO:
         return "Paid Time Off"
     if kind is ChunkKind.SICK:
@@ -1336,16 +1525,28 @@ def _categorize(chunk: ChunkResult) -> str:
     if kind is ChunkKind.BEREAVEMENT:
         return "Bereavement"
     if kind is ChunkKind.TRAINING:
+        # Split Classroom vs SIM by inspecting the chunk's label.
+        # _CHUNK_KIND_BY_DUTY_TYPE puts CLASS and SIM both under TRAINING
+        # so we can't differentiate at the engine level without a label.
+        label = (chunk.label or "").upper()
+        if "SIM" in label:
+            return "Simulator Train"
+        if "CLASS" in label or "CLASSROOM" in label:
+            return "Classroom Train"
         return "Training"
     if kind is ChunkKind.MOVING:
         return "Moving"
     if kind is ChunkKind.HOME_STUDY:
         return "Home Study"
+
+    # 3. Premium-eligible kinds (when chunk_category wasn't carried).
     if kind is ChunkKind.OPEN_TIME and chunk.multiplier > Decimal("1.0"):
         return "Open Time"
     if kind is ChunkKind.NRFO and chunk.multiplier > Decimal("1.0"):
         return "NRFO"
-    # TRIP, RESERVE_DAY, MILITARY, OTHER, OPEN_TIME @ 1.0×, NRFO @ 1.0× → Regular Pay.
+
+    # TRIP, RESERVE_DAY (reserve straight time per §5 terminology),
+    # OTHER, OPEN_TIME @ 1.0×, NRFO @ 1.0× → Regular Pay.
     return "Regular Pay"
 
 
@@ -1354,7 +1555,18 @@ def _build_earning_rows(
     base_rate: Decimal,
 ) -> tuple[EarningRow, ...]:
     """Group chunks by (category, multiplier). Each group yields one row with
-    PCH = sum(raw_pch), rate = base × multiplier, amount = PCH × rate."""
+    PCH = sum(raw_pch), rate = base × multiplier, amount = PCH × rate.
+
+    Phase I — Home Study display convention: the engine stores Home
+    Study chunks as ``raw_pch = module_hours × 0.5`` at multiplier 1.0
+    per §3.H. Pilots think of it as hours × half-rate (matches the pay
+    stub format), so we display ``hours = raw_pch × 2`` at
+    ``rate = base × 0.5``. Math is identical:
+        stored: 12.0 PCH × $124.59 × 1.0 = $1,495.08
+        display: 24.0 hrs × $62.29     ≈ $1,494.96  ← shown
+    Amount stays computed from the displayed PCH × displayed rate so the
+    row arithmetic checks out on screen.
+    """
     pch_by_key: dict[tuple[str, Decimal], Decimal] = defaultdict(lambda: Decimal("0"))
     for c in chunks:
         key = (_categorize(c), c.multiplier)
@@ -1362,18 +1574,35 @@ def _build_earning_rows(
 
     rows: list[EarningRow] = []
     for (cat, mult), pch in pch_by_key.items():
-        rate = base_rate * mult
-        amount = (pch * rate).quantize(_DOLLAR_QUANT, rounding=ROUND_HALF_UP)
-        rows.append(
-            EarningRow(
-                pay_type=cat,
-                pch=pch,
-                rate=rate,
-                base_rate=base_rate,
-                multiplier=mult,
-                amount=amount,
+        if cat == "Home Study":
+            # Pilot-facing convention: show module-hours at half-rate.
+            display_pch = pch * Decimal("2")
+            display_mult = Decimal("0.5")
+            rate = base_rate * display_mult
+            amount = (display_pch * rate).quantize(_DOLLAR_QUANT, rounding=ROUND_HALF_UP)
+            rows.append(
+                EarningRow(
+                    pay_type=cat,
+                    pch=display_pch,
+                    rate=rate,
+                    base_rate=base_rate,
+                    multiplier=display_mult,
+                    amount=amount,
+                )
             )
-        )
+        else:
+            rate = base_rate * mult
+            amount = (pch * rate).quantize(_DOLLAR_QUANT, rounding=ROUND_HALF_UP)
+            rows.append(
+                EarningRow(
+                    pay_type=cat,
+                    pch=pch,
+                    rate=rate,
+                    base_rate=base_rate,
+                    multiplier=mult,
+                    amount=amount,
+                )
+            )
 
     def sort_key(r: EarningRow) -> tuple[int, str, Decimal]:
         order = _PAY_TYPE_ORDER.index(r.pay_type) if r.pay_type in _PAY_TYPE_ORDER else 99
@@ -1909,14 +2138,26 @@ def _build_cell(
     day_by_date: dict[date_t, Day],
     user_reassignment_count: int = 0,
     new_assignment_id: str | None = None,
+    premium_label: str | None = None,
+    base_rate: Decimal | None = None,
 ) -> CalendarCell:
     in_month = d.month == month
     is_weekend = d.weekday() >= 5
+
+    def _pay_for(pch: Decimal | None, multiplier: Decimal) -> Decimal | None:
+        """Phase I.5 — per-day dollar value rounded to nearest whole dollar."""
+        if pch is None or base_rate is None or pch <= 0:
+            return None
+        return (pch * base_rate * multiplier).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP,
+        )
 
     trip = trip_by_date.get(d)
     day = day_by_date.get(d)
 
     if trip is not None:
+        from .services import _premium_multiplier
+        mult = _premium_multiplier(trip)
         return CalendarCell(
             date=d,
             in_month=in_month,
@@ -1929,6 +2170,8 @@ def _build_cell(
             is_reassigned=len(trip.versions) > 0,
             user_reassignment_count=user_reassignment_count,
             new_assignment_id=new_assignment_id,
+            premium_label=premium_label,
+            pay_dollars=_pay_for(trip.effective_pch, mult),
         )
 
     if day is not None:
@@ -1941,9 +2184,11 @@ def _build_cell(
         display_class = "flt" if is_callout else class_suffix
         display_label = "CALLOUT" if is_callout else label
         from nac_pay.engine.constants import DPG
+        from nac_pay.schedule.labels import premium_multiplier as _pm
         pch_display = (
             max(DPG, day.callout_trip_pch) if is_callout else day.pch_value
         )
+        mult = _pm(day.premium_category, day.custom_multiplier)
         return CalendarCell(
             date=d,
             in_month=in_month,
@@ -1956,6 +2201,8 @@ def _build_cell(
             is_reassigned=False,
             user_reassignment_count=user_reassignment_count,
             new_assignment_id=new_assignment_id,
+            premium_label=premium_label,
+            pay_dollars=_pay_for(pch_display, mult),
         )
 
     # Off day (no scheduled activity)

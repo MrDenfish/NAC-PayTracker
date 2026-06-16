@@ -48,6 +48,12 @@ class Chunk:
 
     raw_pch counts toward the guarantee (Option 3) and toward Stage 2 dollars.
     multiplier applies to dollars only.
+
+    ``premium_category`` is the source Trip/Day's ``PremiumCategory.value``
+    when applicable, blank otherwise. Carried so the display layer can
+    categorize premium rows correctly — `ChunkKind` alone is not enough
+    because the same kind (TRIP / OTHER) can apply at 1.0× or with a
+    premium multiplier depending on Overtime / Landing / Junior etc.
     """
 
     source_id: str
@@ -58,6 +64,7 @@ class Chunk:
     in_guarantee: bool = True
     workdays: int = 0
     label: str = ""
+    premium_category: str = ""
 
 
 @dataclass(frozen=True)
@@ -92,6 +99,7 @@ class ChunkResult:
     rate: Decimal
     dollars: Decimal
     label: str = ""
+    premium_category: str = ""
 
 
 @dataclass(frozen=True)

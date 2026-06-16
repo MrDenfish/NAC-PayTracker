@@ -77,9 +77,13 @@
         <div class="day-cell-body">
           {# Phase H.1 — pilot's new assignment on top in bold; the
              FA-original assignment + duty label stay below (subtle)
-             so the audit trail is visible at a glance. #}
+             so the audit trail is visible at a glance.
+             Phase I.4 — premium label under the new assignment. #}
           {% if cell.new_assignment_id %}
           <div class="aid-new">{{ cell.new_assignment_id }}</div>
+          {% endif %}
+          {% if cell.premium_label %}
+          <div class="premium-label">{{ cell.premium_label }}</div>
           {% endif %}
           {% if cell.assignment_id %}
           <div class="aid {% if cell.new_assignment_id %}aid--original{% endif %}">{{ cell.assignment_id }}</div>
@@ -87,8 +91,14 @@
           {% if cell.duty_label %}
           <div class="duty-label {% if cell.new_assignment_id %}duty-label--original{% endif %}">{{ cell.duty_label }}</div>
           {% endif %}
+          {# Phase I.5 — PCH and $ on the same row, $ in lower-right. #}
           {% if cell.pch is not none %}
-          <div class="pch">{{ "%.2f"|format(cell.pch) }}</div>
+          <div class="pch-pay-row">
+            <span class="pch">{{ "%.2f"|format(cell.pch) }}</span>
+            {% if cell.pay_dollars is not none %}
+            <span class="pay-dollars">${{ "{:,.0f}".format(cell.pay_dollars) }}</span>
+            {% endif %}
+          </div>
           {% endif %}
         </div>
         {% endif %}
@@ -113,10 +123,8 @@
       <span class="footer-value">{{ "%.2f"|format(data.line_value) }}</span>
     </div>
     <div class="footer-cell">
-      <span class="footer-label">Vs MPG 65</span>
-      <span class="footer-value">
-        {% if data.delta_vs_mpg >= 0 %}+{% endif %}{{ "%.2f"|format(data.delta_vs_mpg) }}
-      </span>
+      <span class="footer-label">Total Pay</span>
+      <span class="footer-value">${{ "{:,.2f}".format(data.total_pay) }}</span>
     </div>
   </div>
 </section>

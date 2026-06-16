@@ -65,6 +65,7 @@ def compute_pay(inp: EngineInput) -> EngineResult:
                 rate=rate,
                 dollars=_q_dollar(chunk_dollars),
                 label=c.label,
+                premium_category=c.premium_category,
             )
         )
 

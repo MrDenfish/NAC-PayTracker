@@ -32,7 +32,13 @@
     <div class="metric">
       <div class="metric-label">Monthly PCH</div>
       <div class="metric-value">{{ "%.2f"|format(data.base_monthly_pch) }}</div>
-      <div class="metric-sub">winning: {{ data.winning_option }}</div>
+      <div class="metric-sub">
+        {# Phase I.2 — Regular vs Premium PCH split #}
+        regular {{ "%.2f"|format(data.regular_pch) }}
+        {% if data.premium_pch > 0 %}
+        · <span class="premium-pch">premium {{ "%.2f"|format(data.premium_pch) }}</span>
+        {% endif %}
+      </div>
     </div>
     <div class="metric metric--accent">
       <div class="metric-label">Total pay</div>
@@ -41,6 +47,9 @@
         earned ${{ "{:,.2f}".format(data.earned_dollars) }}
         {% if data.topup_dollars > 0 %}
         + top-up ${{ "{:,.2f}".format(data.topup_dollars) }}
+        {% endif %}
+        {% if data.premium_dollars > 0 %}
+        <br><span class="premium-pch">includes premium ${{ "{:,.2f}".format(data.premium_dollars) }}</span>
         {% endif %}
       </div>
     </div>
