@@ -1,0 +1,25 @@
+# Build context hygiene — keep the image small and free of local state.
+.git
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.idea
+.vscode
+.DS_Store
+
+# Local data / secrets — must never enter the image
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!deploy/.env.prod.example
+
+# Docs and test fixtures aren't needed at runtime
+docs
+tests

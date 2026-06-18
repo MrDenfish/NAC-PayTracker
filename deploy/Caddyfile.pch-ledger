@@ -1,0 +1,36 @@
+# =============================================================================
+# NAC-Pay site block — APPEND these blocks to /opt/amis/Caddyfile on the box.
+#
+# Mirrors the existing crewref.app pattern: serve on both :80 and :443 so the
+# origin stays healthy under any Cloudflare SSL/TLS mode, with no origin-side
+# HTTP->HTTPS redirect (Cloudflare's "Always Use HTTPS" handles that at the
+# edge). TLS uses a Cloudflare Origin CA cert minted for pch-ledger.com.
+#
+# Prereqs on the box:
+#   /opt/amis/certs/pch-ledger.pem   (Cloudflare Origin Certificate)
+#   /opt/amis/certs/pch-ledger.key   (its private key)
+# Reuses the shared (siteapp) header snippet already defined in the Caddyfile?
+# No — that snippet hard-codes `reverse_proxy app:8501`, so we inline our own
+# headers here and proxy to nac-pay:8000 instead.
+# =============================================================================
+
+(nacpay_headers) {
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+}
+
+http://pch-ledger.com, http://www.pch-ledger.com {
+    import nacpay_headers
+    reverse_proxy nac-pay:8000
+}
+
+https://pch-ledger.com, https://www.pch-ledger.com {
+    tls /etc/caddy/certs/pch-ledger.pem /etc/caddy/certs/pch-ledger.key
+    import nacpay_headers
+    reverse_proxy nac-pay:8000
+}

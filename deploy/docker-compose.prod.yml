@@ -1,0 +1,42 @@
+# =============================================================================
+# NAC-Pay production stack — colocated on the CrewRef box.
+#
+# The front door is the EXISTING `amis-caddy` container (in /opt/amis). This
+# app joins the shared `amis-internal` network and is reached by Caddy as
+# `nac-pay:8000`. Caddy terminates TLS with the pch-ledger.com origin cert and
+# reverse-proxies to this service (see deploy/Caddyfile.pch-ledger snippet).
+#
+# Deploy:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+# =============================================================================
+services:
+  nac-pay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: nac-pay:latest
+    container_name: nac-pay
+    restart: unless-stopped
+    env_file: .env.prod          # secrets + config (never committed)
+    environment:
+      NAC_PAY_DATA_DIR: /data     # fixed infra path; matches the volume below
+    volumes:
+      - nac_pay_data:/data        # SQLite DB persists across rebuilds
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - amis-internal
+
+volumes:
+  nac_pay_data:
+    name: nac_pay_data
+
+# The network is created and owned by the CrewRef stack; we attach to it.
+networks:
+  amis-internal:
+    external: true
+    name: amis-internal
