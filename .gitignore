@@ -28,6 +28,12 @@ uv.lock
 .env
 .env.local
 
+# TLS origin certs + exported DNS zone — never commit
+certs/
+*.pem
+*.key
+pch-ledger.com.txt
+
 # Build artifacts
 dist/
 build/
