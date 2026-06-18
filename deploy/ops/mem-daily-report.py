@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import pathlib
 import urllib.error
 import urllib.request
@@ -96,6 +97,10 @@ def main() -> int:
         f"OOM kill seen: {'YES' if oom else 'no'}\n\n"
         f"Latest sample:\n{latest}\n"
     )
+
+    if os.environ.get("DRY_RUN"):
+        print(f"Subject: {subject}\nTo: {TO}\n\n{body}")
+        return 0
 
     api_key = env("RESEND_API_KEY")
     sender = env("RESEND_FROM_EMAIL", "no-reply@pch-ledger.com")
