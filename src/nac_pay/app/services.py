@@ -268,10 +268,6 @@ def _pipeline(
     else:
         updated, applied = baseline, ()
 
-    # Apply pilot overrides last so they trump iCal-derived events.
-    overrides = override_store(user_id).load_all()
-    updated = apply_overrides_to_month(updated, overrides)
-
     # Phase G: fold pilot-recorded assignment versions onto matching
     # trips (reassignments + corrections). The store keeps the full
     # history; we resolve supersession here and pass only ACTIVE versions
@@ -286,6 +282,15 @@ def _pipeline(
             user_version_counts[date_iso] = len(active)
     if active_by_date:
         updated = apply_user_versions_to_month(updated, active_by_date)
+
+    # Apply pilot overrides LAST so an explicit pilot edit is the final
+    # word: it trumps iCal-derived events AND the premium_category a
+    # reassignment version adopts by default (§7 — the pilot always has
+    # final say). This is what lets the day-detail "Reason & premium"
+    # card relabel a reassigned day, e.g. Overtime → Open Time, without
+    # the version re-stamping its own premium afterward.
+    overrides = override_store(user_id).load_all()
+    updated = apply_overrides_to_month(updated, overrides)
 
     engine_result = compute_pay(lower_month(updated))
 

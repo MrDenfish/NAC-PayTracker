@@ -492,6 +492,20 @@ html, body {
   border-top: 2px solid var(--border);
   border-bottom: none;
 }
+.day-pay-edit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.day-pay-edit .form-label {
+  margin: 0;
+}
+.day-pay-edit select {
+  flex: 1 1 auto;
+  min-width: 180px;
+}
 .aid--original,
 .duty-label--original {
   opacity: 0.55;

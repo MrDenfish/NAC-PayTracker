@@ -89,6 +89,30 @@
         </tr>
       </tfoot>
     </table>
+
+    {# Inline pay-type quick-edit — relabel this day's premium right here
+       (e.g. Overtime → Open Time). Posts the same DayOverride as the
+       "Reason & premium" card below; current reason/entry-mode ride along
+       as hidden fields so a quick relabel doesn't clear them. #}
+    {% if data.editable %}
+    <form action="/day/{{ data.date_iso }}" method="post" class="day-pay-edit">
+      {% for opt in data.reason_options %}{% if opt.selected %}
+      <input type="hidden" name="reason_code" value="{{ opt.value }}">
+      {% endif %}{% endfor %}
+      {% for opt in data.entry_mode_options %}{% if opt.selected %}
+      <input type="hidden" name="entry_mode" value="{{ opt.value }}">
+      {% endif %}{% endfor %}
+      <label class="form-label" for="day-pay-premium">Pay type</label>
+      <select name="premium_category" id="day-pay-premium">
+        {% for opt in data.premium_options %}
+        <option value="{{ opt.value }}" {% if opt.selected %}selected{% endif %}>
+          {{ opt.label }}
+        </option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn--secondary">Update pay type</button>
+    </form>
+    {% endif %}
   </div>
   {% endif %}
 

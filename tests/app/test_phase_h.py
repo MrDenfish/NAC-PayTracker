@@ -339,6 +339,77 @@ def test_premium_category_propagates_to_engine(monkeypatch):
     assert open_time[0].pch == Decimal("4.00")
 
 
+def test_override_relabels_reassigned_day_premium(monkeypatch):
+    """A pilot override is the final word (§7): on a reassigned day whose
+    version adopted premium=OVERTIME, saving a DayOverride premium=Open Time
+    must win — the override applies AFTER the version folds, so the version
+    can't re-stamp its own premium. Guards the pipeline-ordering fix."""
+    client, uid = _bootstrap(monkeypatch, "override-relabel@x.test")
+
+    from datetime import date
+    from nac_pay.schedule.labels import PremiumCategory
+    from nac_pay.app.services import load_pay_breakdown
+
+    # Pick up an OFF day (June 7) and label it Overtime via the version.
+    client.post(
+        "/day/2026-06-07/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "OPEN", "pch_value": "4.00",
+              "reason_code": "FLOWN", "premium_category": "OVERTIME"},
+        follow_redirects=False,
+    )
+    invalidate_caches()
+    pr = _pipeline(2026, 6, uid)
+    day = next(d for d in pr.updated_month.days if d.date == date(2026, 6, 7))
+    # Baseline: the version drives the day's premium.
+    assert day.premium_category is PremiumCategory.OVERTIME
+
+    # Now relabel via the day-detail "Reason & premium" card (DayOverride).
+    r = client.post(
+        "/day/2026-06-07",
+        data={"reason_code": "FLOWN",
+              "premium_category": "OPEN_TIME_MID_MONTH",
+              "entry_mode": "", "custom_multiplier": ""},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    invalidate_caches()
+    pr = _pipeline(2026, 6, uid)
+    day = next(d for d in pr.updated_month.days if d.date == date(2026, 6, 7))
+    # Override wins — premium is now Open Time, not Overtime.
+    assert day.premium_category is PremiumCategory.OPEN_TIME_MID_MONTH
+
+    # And the pay breakdown buckets the chunk under "Open Time", not "Overtime".
+    pb = load_pay_breakdown(2026, 6, uid)
+    assert any(row.pay_type == "Open Time" for row in pb.earning_rows)
+    assert not any(row.pay_type == "Overtime" for row in pb.earning_rows)
+
+
+def test_day_pay_card_renders_inline_pay_type_editor(monkeypatch):
+    """The Day pay card carries an inline pay-type quick-edit form so the
+    pilot can relabel premium right where the pay is shown. It posts the
+    same DayOverride route and carries reason/entry-mode as hidden fields."""
+    client, _ = _bootstrap(monkeypatch, "inline-editor@x.test")
+    client.post(
+        "/day/2026-06-07/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "OPEN", "pch_value": "4.00",
+              "reason_code": "FLOWN", "premium_category": "OVERTIME"},
+        follow_redirects=False,
+    )
+    body = client.get("/day/2026-06-07").text
+    # Isolate the Day pay card and assert the inline editor lives inside it.
+    card = re.search(r'<h2 class="card-title">Day pay</h2>.*?</div>', body, re.S)
+    assert card, "Day pay card should render for a day with pay"
+    block = card.group(0)
+    assert 'class="day-pay-edit"' in block
+    assert 'action="/day/2026-06-07"' in block
+    assert 'name="premium_category"' in block
+    # Hidden fields preserve the other override dimensions on a quick edit.
+    assert 'name="reason_code"' in block
+    assert 'name="entry_mode"' in block
+
+
 def test_premium_not_applied_when_original_wins(monkeypatch):
     """If the user reassigns at a LOWER PCH than the original, the
     original wins via §3.E.1.b protection and the user's premium
