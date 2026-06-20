@@ -1229,7 +1229,26 @@ def _build_day_detail(
         components = ()
         in_packet = False
         packet_trip_id = None
-        versions = ()
+        # Render the pilot-version history on non-trip days too (OFF-day
+        # pickups, lifted RSV/PTO/training). The "Original published"
+        # baseline is the pre-pickup PCH preserved on the Day (0 for a
+        # picked-up OFF day); fall back to the current value if untouched.
+        # _build_history returns () when there are no user versions, so a
+        # plain reserve/PTO day still shows nothing.
+        history_published = (
+            day_entry.original_pch
+            if day_entry.original_pch is not None
+            else published
+        )
+        versions = _build_history(
+            published=history_published,
+            effective=effective,
+            user_versions=user_versions,
+            superseded_seqs=superseded_seqs,
+            superseded_by_seq=superseded_by_seq,
+            packet_by_trip_id=pr.packet,
+            original_assignment_id=assignment_id or "",
+        )
     else:
         kind = "off"
         duty_label = "OFF"
