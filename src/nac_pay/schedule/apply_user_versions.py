@@ -115,7 +115,9 @@ def apply_user_versions_to_month(
         consumed_dates.add(iso)
         max_user = max(uv.pch_value for uv in adds)
         new_pch = max(day.pch_value, max_user)
-        new_day = replace(day, pch_value=new_pch)
+        # Preserve the pre-pickup PCH so the day-detail history can show the
+        # "Original published" baseline (the value is overwritten by the lift).
+        new_day = replace(day, pch_value=new_pch, original_pch=day.pch_value)
         # If the user version's PCH beats the day's pch_value, adopt
         # the version's premium_category (and reason_code) — the pilot
         # is now driving this day's pay. If the day wins (e.g., callout
@@ -146,6 +148,8 @@ def apply_user_versions_to_month(
                 duty_type=DutyType.OFF,
                 pch_value=max_user,
                 premium_category=new_premium,
+                # The FA had nothing here (OFF, 0 PCH) before the pickup.
+                original_pch=Decimal("0"),
             )
         )
         consumed_dates.add(iso)

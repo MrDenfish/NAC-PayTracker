@@ -118,6 +118,11 @@ class Day:
     callout_trip_pch: Decimal | None = None
     custom_multiplier: Decimal | None = None
     label: str = ""
+    # The day's PCH before any pilot reassignment version lifted/synthesized
+    # it (Phase H). Preserved so the day-detail assignment history can show
+    # the pre-pickup "Original published" baseline (0 for a picked-up OFF
+    # day). None when the day was never touched by a pilot version.
+    original_pch: Decimal | None = None
 
 
 @dataclass(frozen=True)

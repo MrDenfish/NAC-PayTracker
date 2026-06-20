@@ -414,6 +414,25 @@ def test_calendar_premium_label_follows_override(monkeypatch):
     assert "Overtime" not in body
 
 
+def test_off_day_pickup_renders_assignment_history(monkeypatch):
+    """Closing the gap: a picked-up OFF day now shows the assignment
+    history (Original 0.00 baseline + the pilot reassignment), like a trip
+    day. Previously the history block only rendered for trip days."""
+    client, _ = _bootstrap(monkeypatch, "off-history@x.test")
+    client.post(
+        "/day/2026-06-07/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "OPEN", "pch_value": "4.00",
+              "reason_code": "FLOWN", "premium_category": "OPEN_TIME_MID_MONTH"},
+        follow_redirects=False,
+    )
+    body = client.get("/day/2026-06-07").text
+    assert "Assignment history" in body          # block now renders for OFF days
+    assert "0.00 PCH" in body                     # pre-pickup baseline (seq 0)
+    assert "4.00 PCH" in body                     # the pilot reassignment
+    assert "Pilot reassignment" in body
+
+
 def test_day_pay_card_renders_inline_pay_type_editor(monkeypatch):
     """The Day pay card carries an inline pay-type quick-edit form so the
     pilot can relabel premium right where the pay is shown. It posts the
