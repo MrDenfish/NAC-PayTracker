@@ -218,12 +218,17 @@ def day_save(
     premium_category: str = Form(""),
     entry_mode: str = Form(""),
     custom_multiplier: str = Form(""),
+    # Inline Day-pay editor extras (the "Reason & premium" card omits these).
+    pch_value: str = Form(""),
+    current_pch: str = Form(""),
+    assignment_id: str = Form(""),
 ) -> RedirectResponse:
     try:
         date.fromisoformat(date_iso)
     except ValueError as exc:
         raise HTTPException(400, f"Invalid date {date_iso!r}") from exc
 
+    uid = _user_id(request)
     override = DayOverride(
         date_iso=date_iso,
         reason_code=reason_code or None,
@@ -231,7 +236,35 @@ def day_save(
         custom_multiplier=custom_multiplier.strip() or None,
         entry_mode=entry_mode or None,
     )
-    override_store(_user_id(request)).save_one(override)
+    override_store(uid).save_one(override)
+
+    # Inline Day-pay editor can also adjust PCH. A PCH change is recorded
+    # as an append-only REASSIGNMENT version — audited, and subject to the
+    # §3.E.1.b greater-of protection (raising takes effect; lowering is
+    # protected and uses the "Correct this" flow). Only act when the value
+    # actually changed and we have a real account (reassignments are blocked
+    # for the default/dev user).
+    if pch_value.strip() and uid != DEFAULT_USER_ID:
+        try:
+            new_pch = Decimal(pch_value.strip())
+            cur_pch = Decimal(current_pch.strip()) if current_pch.strip() else None
+        except InvalidOperation:
+            new_pch = cur_pch = None
+        if new_pch is not None and new_pch > 0 and new_pch != cur_pch:
+            UserAssignmentVersionStore(user_id=uid).save(
+                date_iso=date_iso,
+                version_type=VersionType.REASSIGNMENT,
+                correction_of=None,
+                assignment_id=assignment_id.strip(),
+                entry_mode=VersionEntryMode.SIMPLE,
+                pch_value=new_pch,
+                block_hours=None, duty_hours=None,
+                tafb_hours=None, deadhead_pch=None, workdays=None,
+                reason_code=reason_code.strip() or "FLOWN",
+                premium_category=premium_category.strip() or "NONE",
+                notes="PCH adjusted via Day-pay editor",
+            )
+
     invalidate_caches()
     return RedirectResponse(f"/day/{date_iso}?saved=1", status_code=303)
 

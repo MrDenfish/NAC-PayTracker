@@ -385,6 +385,35 @@ def test_override_relabels_reassigned_day_premium(monkeypatch):
     assert not any(row.pay_type == "Overtime" for row in pb.earning_rows)
 
 
+def test_calendar_premium_label_follows_override(monkeypatch):
+    """The calendar cell's premium label must reflect a day-page relabel.
+    Regression: the calendar read the raw winning version's premium, so a
+    DayOverride (Overtime → Open Time) updated the day page but the
+    calendar still showed Overtime."""
+    client, _ = _bootstrap(monkeypatch, "cal-premium-override@x.test")
+    # Reassign June 7 (OFF) with Overtime, then relabel to Open Time.
+    client.post(
+        "/day/2026-06-07/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "OPEN", "pch_value": "4.00",
+              "reason_code": "FLOWN", "premium_category": "OVERTIME"},
+        follow_redirects=False,
+    )
+    # Calendar shows Overtime first.
+    assert "Overtime" in client.get("/calendar?ym=2026-6").text
+    # Relabel via the day-page override.
+    client.post(
+        "/day/2026-06-07",
+        data={"reason_code": "FLOWN",
+              "premium_category": "OPEN_TIME_MID_MONTH",
+              "entry_mode": "", "custom_multiplier": ""},
+        follow_redirects=False,
+    )
+    body = client.get("/calendar?ym=2026-6").text
+    assert "Open Time" in body
+    assert "Overtime" not in body
+
+
 def test_day_pay_card_renders_inline_pay_type_editor(monkeypatch):
     """The Day pay card carries an inline pay-type quick-edit form so the
     pilot can relabel premium right where the pay is shown. It posts the
@@ -408,6 +437,62 @@ def test_day_pay_card_renders_inline_pay_type_editor(monkeypatch):
     # Hidden fields preserve the other override dimensions on a quick edit.
     assert 'name="reason_code"' in block
     assert 'name="entry_mode"' in block
+    # PCH is editable inline, pre-filled with the current effective value.
+    assert 'name="pch_value"' in block
+    assert 'name="current_pch"' in block
+
+
+def test_inline_editor_raises_pch_via_audited_version(monkeypatch):
+    """Editing PCH up in the inline editor records an append-only
+    reassignment version and raises the day's effective PCH."""
+    client, uid = _bootstrap(monkeypatch, "inline-pch-up@x.test")
+    client.post(
+        "/day/2026-06-07/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "OPEN", "pch_value": "4.00",
+              "reason_code": "FLOWN", "premium_category": "OPEN_TIME_MID_MONTH"},
+        follow_redirects=False,
+    )
+    before = _june_total_pch(uid)
+    # Raise 4.00 → 5.50 via the inline Day-pay editor.
+    r = client.post(
+        "/day/2026-06-07",
+        data={"reason_code": "FLOWN", "premium_category": "OPEN_TIME_MID_MONTH",
+              "entry_mode": "", "custom_multiplier": "",
+              "pch_value": "5.50", "current_pch": "4.00", "assignment_id": "OPEN"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    after = _june_total_pch(uid)
+    assert after - before == Decimal("1.50")
+    # The change is in the audit history (a new pilot version exists).
+    from nac_pay.storage import UserAssignmentVersionStore
+    versions = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-07")
+    assert any(v.pch_value == Decimal("5.50") for v in versions)
+
+
+def test_inline_editor_lowering_pch_is_protected(monkeypatch):
+    """§3.E.1.b: lowering PCH in the inline editor records the attempt but
+    does NOT reduce effective PCH (the higher prior value is protected)."""
+    client, uid = _bootstrap(monkeypatch, "inline-pch-down@x.test")
+    client.post(
+        "/day/2026-06-07/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "OPEN", "pch_value": "4.00",
+              "reason_code": "FLOWN", "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    before = _june_total_pch(uid)
+    client.post(
+        "/day/2026-06-07",
+        data={"reason_code": "FLOWN", "premium_category": "NONE",
+              "entry_mode": "", "custom_multiplier": "",
+              "pch_value": "3.00", "current_pch": "4.00", "assignment_id": "OPEN"},
+        follow_redirects=False,
+    )
+    after = _june_total_pch(uid)
+    # Protected — effective PCH unchanged.
+    assert after == before
 
 
 def test_premium_not_applied_when_original_wins(monkeypatch):
