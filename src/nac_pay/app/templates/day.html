@@ -90,10 +90,12 @@
       </tfoot>
     </table>
 
-    {# Inline pay-type quick-edit — relabel this day's premium right here
-       (e.g. Overtime → Open Time). Posts the same DayOverride as the
-       "Reason & premium" card below; current reason/entry-mode ride along
-       as hidden fields so a quick relabel doesn't clear them. #}
+    {# Inline quick-edit — adjust this day's pay type and/or PCH right here.
+       Posts the same DayOverride route as the "Reason & premium" card below;
+       current reason/entry-mode ride along as hidden fields so a quick edit
+       doesn't clear them. A changed PCH is recorded as an audited
+       reassignment version (§3.E.1.b: raising takes effect, lowering is
+       protected — use "Correct this" in the history to reduce a value). #}
     {% if data.editable %}
     <form action="/day/{{ data.date_iso }}" method="post" class="day-pay-edit">
       {% for opt in data.reason_options %}{% if opt.selected %}
@@ -102,6 +104,14 @@
       {% for opt in data.entry_mode_options %}{% if opt.selected %}
       <input type="hidden" name="entry_mode" value="{{ opt.value }}">
       {% endif %}{% endfor %}
+      <input type="hidden" name="assignment_id" value="{{ data.assignment_id or '' }}">
+      <input type="hidden" name="current_pch"
+             value="{% if data.effective_pch is not none %}{{ '%.2f'|format(data.effective_pch) }}{% endif %}">
+      <label class="form-label" for="day-pay-pch">PCH</label>
+      <input type="text" name="pch_value" id="day-pay-pch" inputmode="decimal"
+             class="day-pay-pch-input"
+             value="{% if data.effective_pch is not none %}{{ '%.2f'|format(data.effective_pch) }}{% endif %}"
+             placeholder="e.g. 4.00">
       <label class="form-label" for="day-pay-premium">Pay type</label>
       <select name="premium_category" id="day-pay-premium">
         {% for opt in data.premium_options %}
@@ -110,7 +120,7 @@
         </option>
         {% endfor %}
       </select>
-      <button type="submit" class="btn btn--secondary">Update pay type</button>
+      <button type="submit" class="btn btn--secondary">Update</button>
     </form>
     {% endif %}
   </div>

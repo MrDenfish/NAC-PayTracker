@@ -506,6 +506,12 @@ html, body {
   flex: 1 1 auto;
   min-width: 180px;
 }
+.day-pay-edit .day-pay-pch-input {
+  width: 84px;
+  flex: 0 0 auto;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .aid--original,
 .duty-label--original {
   opacity: 0.55;

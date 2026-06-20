@@ -512,9 +512,18 @@ def load_calendar(
         winner = max(active, key=lambda v: (v.pch_value, -v.seq))
         if winner.assignment_id:
             winning_aid_by_date[date_iso] = winner.assignment_id
-        # I.4: if the winning version's premium category is real, label
-        # the cell with the human label ("Open Time", "Overtime", ...).
-        label = _PREMIUM_DISPLAY.get(winner.premium_category)
+        # I.4 (fixed 2026-06-19): label the cell with the EFFECTIVE premium
+        # from the post-override month, NOT the raw winning version. A
+        # DayOverride applies after reassignment versions (see _pipeline),
+        # so reading the version's premium here ignored a relabel done on
+        # the day page — the calendar kept showing the stale premium.
+        eff = trip_by_date.get(date_t.fromisoformat(date_iso)) \
+            or day_by_date.get(date_t.fromisoformat(date_iso))
+        eff_premium = (
+            eff.premium_category.value if eff is not None
+            else winner.premium_category
+        )
+        label = _PREMIUM_DISPLAY.get(eff_premium)
         if label is not None:
             premium_label_by_date[date_iso] = label
 
