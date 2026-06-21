@@ -501,13 +501,20 @@ def load_calendar(
     # Phase H.1 + I.4: load active user versions to surface the winning
     # assignment_id + premium label per date for the calendar cell.
     from nac_pay.storage import UserAssignmentVersionStore as _UAVS
+    from nac_pay.storage import VersionType as _VT
     all_user_versions = _UAVS(user_id=user_id).list_for_month(year, month)
     winning_aid_by_date: dict[str, str] = {}
     premium_label_by_date: dict[str, str] = {}
+    # Dates with an active RESERVE_CALLOUT version — drives the ⚡ marker for
+    # manually-recorded "called in during reserve window" days (the iCal path
+    # lights the same bolt via Day.callout_trip_pch).
+    callout_by_date: set[str] = set()
     for date_iso, vs in all_user_versions.items():
         active, _sup = active_versions(vs)
         if not active:
             continue
+        if any(v.version_type is _VT.RESERVE_CALLOUT for v in active):
+            callout_by_date.add(date_iso)
         # Highest pch wins; earliest seq breaks ties.
         winner = max(active, key=lambda v: (v.pch_value, -v.seq))
         if winner.assignment_id:
@@ -537,7 +544,8 @@ def load_calendar(
                         pr.user_version_counts.get(d.isoformat(), 0),
                         winning_aid_by_date.get(d.isoformat()),
                         premium_label_by_date.get(d.isoformat()),
-                        base_rate)
+                        base_rate,
+                        d.isoformat() in callout_by_date)
             for d in week_dates
         )
         weeks.append(cells)
@@ -1371,11 +1379,12 @@ def _build_history(
     ]
     for uv in user_versions:
         is_sup = uv.seq in superseded_seqs
-        source = (
-            "Pilot correction"
-            if uv.version_type is _VT.CORRECTION
-            else "Pilot reassignment"
-        )
+        if uv.version_type is _VT.CORRECTION:
+            source = "Pilot correction"
+        elif uv.version_type is _VT.RESERVE_CALLOUT:
+            source = "Reserve callout"
+        else:
+            source = "Pilot reassignment"
         rows.append(
             DayVersion(
                 seq=uv.seq,
@@ -2178,6 +2187,7 @@ def _build_cell(
     new_assignment_id: str | None = None,
     premium_label: str | None = None,
     base_rate: Decimal | None = None,
+    has_user_callout: bool = False,
 ) -> CalendarCell:
     in_month = d.month == month
     is_weekend = d.weekday() >= 5
@@ -2204,7 +2214,7 @@ def _build_cell(
             duty_label="FLT",
             duty_class="flt",
             pch=trip.effective_pch,
-            has_callout=False,
+            has_callout=has_user_callout,
             is_reassigned=len(trip.versions) > 0,
             user_reassignment_count=user_reassignment_count,
             new_assignment_id=new_assignment_id,
@@ -2216,9 +2226,10 @@ def _build_cell(
         class_suffix, label = _DUTY_DISPLAY.get(
             day.duty_type, ("other", day.duty_type.value)
         )
+        # iCal-derived callout (callout_trip_pch) flips the cell to a full
+        # CALLOUT look; a manual reserve-callout version only lights the bolt
+        # and keeps the RSV label (pay flows through the reassignment path).
         is_callout = day.callout_trip_pch is not None
-        # A callout day visually flips to FLT-style (since they flew) but
-        # keeps the reserve aid for context.
         display_class = "flt" if is_callout else class_suffix
         display_label = "CALLOUT" if is_callout else label
         from nac_pay.engine.constants import DPG
@@ -2235,7 +2246,7 @@ def _build_cell(
             duty_label=display_label,
             duty_class=display_class,
             pch=pch_display,
-            has_callout=is_callout,
+            has_callout=is_callout or has_user_callout,
             is_reassigned=False,
             user_reassignment_count=user_reassignment_count,
             new_assignment_id=new_assignment_id,

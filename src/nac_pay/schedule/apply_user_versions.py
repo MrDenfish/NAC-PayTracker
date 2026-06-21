@@ -180,7 +180,12 @@ def _collect_for_trip(
 def _label_for(uv: "UserAssignmentVersion") -> str:
     """Short human label for the assignment-history row."""
     from nac_pay.storage.assignment_versions import VersionType
-    kind = "Correction" if uv.version_type is VersionType.CORRECTION else "Reassignment"
+    if uv.version_type is VersionType.CORRECTION:
+        kind = "Correction"
+    elif uv.version_type is VersionType.RESERVE_CALLOUT:
+        kind = "Reserve callout"
+    else:
+        kind = "Reassignment"
     if uv.assignment_id:
         return f"{kind} — {uv.assignment_id}"
     return kind

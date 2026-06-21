@@ -280,6 +280,9 @@ def day_reassign(
     correction_of: str = Form(""),
     assignment_id: str = Form(""),
     entry_mode: str = Form("SIMPLE"),
+    # Reserve callout: a checkbox on RSV days that flags this reassignment as a
+    # "called in during the reserve window" version (drives the ⚡ marker).
+    called_in: str = Form(""),
     # Simple mode
     pch_value: str = Form(""),
     # Detailed mode
@@ -308,7 +311,7 @@ def day_reassign(
         )
 
     try:
-        date.fromisoformat(date_iso)
+        target_date = date.fromisoformat(date_iso)
     except ValueError:
         raise HTTPException(400, f"Invalid date {date_iso!r}")
 
@@ -321,9 +324,27 @@ def day_reassign(
     except ValueError:
         return _bail(f"Invalid entry_mode {entry_mode!r}")
 
+    # "Called in during reserve window" promotes a plain reassignment to a
+    # RESERVE_CALLOUT (pay is unchanged; it only marks the day). Never applies
+    # to corrections — those carry the type of the row they supersede.
+    if vt is VersionType.REASSIGNMENT and called_in.strip():
+        vt = VersionType.RESERVE_CALLOUT
+
     uid = _user_id(request)
     if uid == DEFAULT_USER_ID:
         return _bail("Default user cannot record reassignments — use a real account.")
+
+    # A reserve callout only makes sense on a reserve (RSV) day — you can only
+    # be called in off reserve. Validate server-side against the schedule.
+    if vt is VersionType.RESERVE_CALLOUT:
+        try:
+            day_kind = load_day(
+                target_date.year, target_date.month, target_date.day, user_id=uid,
+            ).kind
+        except ValueError:
+            day_kind = None
+        if day_kind != "reserve":
+            return _bail("Reserve callout can only be recorded on a reserve (RSV) day.")
 
     store = UserAssignmentVersionStore(user_id=uid)
 
