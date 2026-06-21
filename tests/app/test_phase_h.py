@@ -571,3 +571,103 @@ def test_history_row_shown_for_superseded_versions(monkeypatch):
     assert "version--superseded" in body
     # Original (5.00 h block) AND corrected (4.00 h) both visible.
     assert "5.00 h" in body and "4.00 h" in body
+
+
+# ── Manual reserve callout (called-in during reserve window) ──────────
+#
+# June 2026 reserve days for the bundled test pilot: 16, 18, 19, 20, 24-27.
+# They don't overlap the trip days (1,2,4,5,6,12,17), so there are no
+# iCal-derived auto-callouts — 2026-06-18 is a clean RSV day at 3.82.
+
+_RSV_DAY = "2026-06-18"
+_OFF_DAY = "2026-06-07"
+_CALLOUT_BOLT = 'title="reserve callout"'
+
+
+def test_reserve_callout_lifts_pch_like_reassignment(monkeypatch):
+    """A called-in reserve day pays via the normal reassignment lift
+    (greater-of original). The RSV day at 3.82 lifts to 5.00; duty_type
+    stays RSV (no §3.F callout_trip_pch path)."""
+    from datetime import date
+    from nac_pay.schedule.labels import DutyType
+
+    client, uid = _bootstrap(monkeypatch, "rsv-callout-lift@x.test")
+    before = _june_total_pch(uid)
+    r = client.post(
+        f"/day/{_RSV_DAY}/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "called_in": "1", "assignment_id": "720/772", "pch_value": "5.00",
+              "reason_code": "FLOWN", "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    after = _june_total_pch(uid)
+    assert after - before == Decimal("5.00") - Decimal("3.82")
+
+    pr = _pipeline(2026, 6, uid)
+    day = next(d for d in pr.updated_month.days if d.date == date(2026, 6, 18))
+    assert day.duty_type is DutyType.RSV          # not flipped to a trip
+    assert day.callout_trip_pch is None           # NOT the §3.F path
+    assert day.pch_value == Decimal("5.00")       # reassignment lift
+
+
+def test_reserve_callout_stored_as_reserve_callout_type(monkeypatch):
+    """The checkbox promotes the version to VersionType.RESERVE_CALLOUT and
+    the day-detail history labels it as a reserve callout."""
+    from nac_pay.storage import UserAssignmentVersionStore, VersionType
+
+    client, uid = _bootstrap(monkeypatch, "rsv-callout-type@x.test")
+    client.post(
+        f"/day/{_RSV_DAY}/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "called_in": "1", "assignment_id": "720/772", "pch_value": "5.00",
+              "reason_code": "FLOWN", "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    rows = UserAssignmentVersionStore(user_id=uid).list_for_date(_RSV_DAY)
+    assert len(rows) == 1
+    assert rows[0].version_type is VersionType.RESERVE_CALLOUT
+
+    body = client.get(f"/day/{_RSV_DAY}").text
+    assert "Reserve callout" in body              # history label
+
+
+def test_reserve_callout_lights_calendar_bolt(monkeypatch):
+    """The ⚡ marker appears for the called-in day (it was absent before,
+    since no trip overlaps a reserve day to auto-detect a callout)."""
+    client, uid = _bootstrap(monkeypatch, "rsv-callout-bolt@x.test")
+    before = client.get("/calendar?ym=2026-6").text.count(_CALLOUT_BOLT)
+    client.post(
+        f"/day/{_RSV_DAY}/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "called_in": "1", "assignment_id": "720/772", "pch_value": "5.00",
+              "reason_code": "FLOWN", "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    after = client.get("/calendar?ym=2026-6").text.count(_CALLOUT_BOLT)
+    assert after == before + 1
+
+
+def test_reserve_callout_rejected_on_non_reserve_day(monkeypatch):
+    """Callout is reserve-only: marking an OFF day bails with an error and
+    records nothing."""
+    from nac_pay.storage import UserAssignmentVersionStore
+
+    client, uid = _bootstrap(monkeypatch, "rsv-callout-reject@x.test")
+    r = client.post(
+        f"/day/{_OFF_DAY}/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "called_in": "1", "assignment_id": "X", "pch_value": "5.00",
+              "reason_code": "FLOWN", "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "reassign_error" in r.headers["location"]
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date(_OFF_DAY) == []
+
+
+def test_reserve_callout_checkbox_only_on_reserve_days(monkeypatch):
+    """The called-in checkbox renders on RSV days only — not on OFF days."""
+    client, _ = _bootstrap(monkeypatch, "rsv-callout-ui@x.test")
+    assert 'name="called_in"' in client.get(f"/day/{_RSV_DAY}").text
+    assert 'name="called_in"' not in client.get(f"/day/{_OFF_DAY}").text

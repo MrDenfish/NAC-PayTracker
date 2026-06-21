@@ -441,6 +441,19 @@
           </label>
         </fieldset>
 
+        {# Reserve callout marker — only on reserve days, and not for a
+           correction (which inherits the type of the row it supersedes). #}
+        {% if data.kind == 'reserve' and not is_correction %}
+        <label class="checkbox-inline reassign-callout">
+          <input type="checkbox" name="called_in" value="1">
+          <span class="form-label">⚡ Called in during reserve window</span>
+          <span class="form-hint">
+            Flags this day with a callout bolt on the calendar. Pay is recorded
+            as a normal reassignment (greater-of-original).
+          </span>
+        </label>
+        {% endif %}
+
         <label>
           <span class="form-label">New trip ID</span>
           <input type="text" name="assignment_id" id="reassign-assignment-id"

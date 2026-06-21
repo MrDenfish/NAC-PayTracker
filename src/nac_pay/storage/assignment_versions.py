@@ -28,6 +28,14 @@ from sqlalchemy import select
 class VersionType(StrEnum):
     REASSIGNMENT = "REASSIGNMENT"
     CORRECTION = "CORRECTION"
+    # A reassignment the pilot was *called in* to fly during their reserve
+    # window. Pays identically to a REASSIGNMENT (the engine folds it via the
+    # same max-PCH path); the distinct type only drives the ⚡ calendar marker
+    # and the "Reserve callout" history label. NB: unlike the iCal-derived
+    # callout (which sets Day.callout_trip_pch and gets the §3.F on-top excess
+    # floor), this manual path is a plain reassignment lift — see
+    # apply_user_versions for why.
+    RESERVE_CALLOUT = "RESERVE_CALLOUT"
 
 
 class VersionEntryMode(StrEnum):
