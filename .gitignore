@@ -34,9 +34,6 @@ certs/
 *.key
 pch-ledger.com.txt
 
-# Personal pay stubs (the May_ samples are intentionally tracked for dev)
-docs/pay Stubs/Nov_payStub_training.pdf
-
 # Build artifacts
 dist/
 build/

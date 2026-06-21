@@ -335,12 +335,16 @@ html, body {
   font-size: 12.5px;
 }
 .day-cell:last-child { border-right: none; }
+/* Weekend tint: one class + placed before the rules below so .day-cell--out
+   (grey, out-of-month) and the .duty-bg--* duty tints both outrank it. It is
+   only a fallback for in-month weekend cells that carry no duty colour —
+   otherwise it would wash RSV/FLT/etc. to near-white on Sat/Sun. */
+.day-cell--weekend { background: #fbfcfd; }
 .day-cell--out {
   background: #fafbfc;
   color: var(--text-subtle);
 }
 .day-cell--out .day-number { opacity: 0.55; }
-.day-cell--weekend:not(.day-cell--out) { background: #fbfcfd; }
 
 .day-cell-header {
   display: flex;
@@ -411,7 +415,10 @@ html, body {
   font-weight: 600;
 }
 
-/* Duty-type tinted backgrounds. Subtle — desktop calendars get noisy fast. */
+/* Duty-type tinted backgrounds. Subtle — desktop calendars get noisy fast.
+   Single-class (also used by the legend swatches); the weekend tint above is
+   deliberately kept to one class + earlier in source so these duty tints win
+   on Sat/Sun cells. */
 .duty-bg--flt        { background: #e6f1ff; }
 .duty-bg--rsv        { background: #fff2db; }
 .duty-bg--pto        { background: #e3f6ec; }
