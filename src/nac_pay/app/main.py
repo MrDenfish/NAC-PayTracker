@@ -58,11 +58,37 @@ _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 logger = logging.getLogger("nac_pay.app")
 
 
+def _configure_app_logging() -> None:
+    """Surface the app's own ``nac_pay.*`` INFO logs in the process output.
+
+    Uvicorn configures handlers for its own loggers only — it leaves the
+    root logger handler-less, so our named loggers (e.g. the feed updater's
+    hourly sweep summary) propagate to nowhere and never appear in
+    ``docker logs``. Reuse uvicorn's handler when present (consistent
+    formatting), falling back to a plain stream handler otherwise. Idempotent
+    — guarded so repeated app startups (e.g. the test client) don't stack
+    duplicate handlers."""
+    nac_logger = logging.getLogger("nac_pay")
+    if nac_logger.handlers:
+        return
+    uvicorn_logger = logging.getLogger("uvicorn")
+    if uvicorn_logger.handlers:
+        for handler in uvicorn_logger.handlers:
+            nac_logger.addHandler(handler)
+    else:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+        nac_logger.addHandler(handler)
+    nac_logger.setLevel(logging.INFO)
+    nac_logger.propagate = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the hourly feed updater (when enabled) for the app's lifetime,
     and stop it cleanly on shutdown. Gated by FEED_UPDATER_ENABLED so the
     test suite / local dev don't spawn a network loop."""
+    _configure_app_logging()
     stop = asyncio.Event()
     task: asyncio.Task | None = None
     if updater_enabled():
