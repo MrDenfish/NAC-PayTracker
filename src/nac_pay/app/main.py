@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
@@ -33,6 +36,7 @@ from .billing_routes import router as billing_router
 from .document_routes import router as document_router
 from .onboarding_routes import router as onboarding_router
 
+from .feed_updater import feed_update_loop, updater_enabled
 from .services import (
     DEFAULT_PERSISTED,
     available_months,
@@ -51,7 +55,32 @@ from .services import (
 _HERE = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 
-app = FastAPI(title="NAC Pay Tracker", version="0.1.0")
+logger = logging.getLogger("nac_pay.app")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the hourly feed updater (when enabled) for the app's lifetime,
+    and stop it cleanly on shutdown. Gated by FEED_UPDATER_ENABLED so the
+    test suite / local dev don't spawn a network loop."""
+    stop = asyncio.Event()
+    task: asyncio.Task | None = None
+    if updater_enabled():
+        task = asyncio.create_task(feed_update_loop(stop))
+    else:
+        logger.info("feed updater disabled (set FEED_UPDATER_ENABLED=true to enable)")
+    try:
+        yield
+    finally:
+        stop.set()
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                task.cancel()
+
+
+app = FastAPI(title="NAC Pay Tracker", version="0.1.0", lifespan=lifespan)
 
 # Starlette middleware order: LAST add_middleware is OUTERMOST and runs
 # first on the request path. Desired request-time order:
@@ -146,12 +175,15 @@ def dashboard(
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_view(request: Request) -> HTMLResponse:
-    persisted = load_persisted_profile(_user_id(request))
+    uid = _user_id(request)
+    persisted = load_persisted_profile(uid)
+    from .feed_updater import last_feed_fetch
     return _TEMPLATES.TemplateResponse(
         request,
         "settings.html",
         {
             "persisted": persisted,
+            "feed_last_fetched": last_feed_fetch(uid),
             "active_screen": "settings",
             "saved": request.query_params.get("saved") == "1",
         },

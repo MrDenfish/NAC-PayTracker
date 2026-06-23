@@ -99,14 +99,19 @@
                  placeholder="https://blueone.example/feed/...">
         </label>
         <label>
-          <span class="form-label">Auto-update daily</span>
+          <span class="form-label">Auto-update hourly</span>
           <input type="checkbox" name="feed_auto_update"
                  {% if persisted.feed_auto_update %}checked{% endif %}>
         </label>
       </div>
       <p class="subtle form-hint">
-        Fetching from a URL ships with the feed-updater milestone.
-        Until then, drop the .ics into <code>docs/</code> manually.
+        When enabled, your feed URL is fetched every hour and applied to the
+        current and next month (once each has a Final Award + Trip Packet
+        uploaded). You can still upload an <code>.ics</code> manually on the
+        Documents page any time.
+        {% if feed_last_fetched %}
+          <br>Last fetched: <code>{{ feed_last_fetched }}</code> (UTC).
+        {% endif %}
       </p>
     </div>
 
