@@ -86,7 +86,11 @@ from .assignment_versions import (  # noqa: E402
     active_versions,
 )
 from .overrides import DayOverride, DayOverrideStore  # noqa: E402
-from .profile import PersistedPilotProfile, PilotProfileStore  # noqa: E402
+from .profile import (  # noqa: E402
+    PersistedPilotProfile,
+    PilotProfileStore,
+    feed_auto_update_profiles,
+)
 from .users import (  # noqa: E402
     DEFAULT_USER_ID,
     User,
@@ -118,6 +122,7 @@ __all__ = [
     "default_user",
     "dispose_engine",
     "expected_extension",
+    "feed_auto_update_profiles",
     "get_data_dir",
     "get_engine",
     "reset_tables",

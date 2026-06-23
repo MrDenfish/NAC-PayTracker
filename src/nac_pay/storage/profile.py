@@ -99,3 +99,23 @@ class PilotProfileStore:
             ).scalar_one_or_none()
             if row is not None:
                 sess.delete(row)
+
+
+def feed_auto_update_profiles() -> list[tuple[str, str]]:
+    """Every user who has opted into automatic feed refresh.
+
+    Returns ``(user_id, feed_url)`` for each pilot_profiles row with
+    ``feed_auto_update`` set and a non-empty ``feed_url``. The background
+    feed updater iterates this set each tick. Cross-user query — not scoped
+    to a single store instance — so it lives at module level."""
+    from .db import session_scope
+    from .db_models import PilotProfileRow
+
+    with session_scope() as sess:
+        rows = sess.execute(
+            select(PilotProfileRow.user_id, PilotProfileRow.feed_url).where(
+                PilotProfileRow.feed_auto_update.is_(True),
+                PilotProfileRow.feed_url != "",
+            )
+        ).all()
+    return [(r.user_id, r.feed_url) for r in rows]
