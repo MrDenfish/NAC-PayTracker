@@ -225,6 +225,44 @@ def documents_for_user(
     return (fa.path, packet.path, ical.path if ical is not None else None)
 
 
+def _in_month(d: date_t, year: int, month: int) -> bool:
+    return d.year == year and d.month == month
+
+
+def _filter_reconciliation_to_month(
+    recon: ReconciliationResult, year: int, month: int,
+) -> ReconciliationResult:
+    """Keep only reconciled trips that START in the target month.
+
+    The BlueOne feed is one stable roster URL spanning many months, so a
+    feed loaded for June also contains July's legs. Reconciliation groups
+    legs into trips on the FULL feed first (so a trip straddling the month
+    boundary keeps all its legs), then this drops trips that belong to a
+    different month — otherwise a next-month trip leaks into this month as a
+    phantom open-time pickup, inflating PCH. A trip is attributed to the
+    month of its first leg (UTC).
+    """
+    keep = lambda rt: _in_month(rt.first_dt_utc.date(), year, month)  # noqa: E731
+    return ReconciliationResult(
+        trips=tuple(t for t in recon.trips if keep(t)),
+        matched=tuple(t for t in recon.matched if keep(t)),
+        unmatched=tuple(t for t in recon.unmatched if keep(t)),
+    )
+
+
+def _filter_feed_to_month(feed: ParsedFeed, year: int, month: int) -> ParsedFeed:
+    """Scope a parsed feed's events to the target month (for display: event
+    counts, unmatched-leg listings). Each event is kept by its own start
+    date; the pay path uses the trip-level filter above."""
+    inm = lambda ev: _in_month(ev.dt_start_utc.date(), year, month)  # noqa: E731
+    return ParsedFeed(
+        flight_legs=tuple(e for e in feed.flight_legs if inm(e)),
+        reserves=tuple(e for e in feed.reserves if inm(e)),
+        off_days=tuple(e for e in feed.off_days if inm(e)),
+        unknown=tuple(e for e in feed.unknown if inm(e)),
+    )
+
+
 @lru_cache(maxsize=64)
 def _pipeline(
     year: int,
@@ -261,7 +299,12 @@ def _pipeline(
     reconciliation = None
     if feed_path is not None and feed_path.exists():
         feed = parse_ical_feed(str(feed_path))
-        reconciliation = reconcile_feed_to_packet(feed, packet)
+        # Group + reconcile on the FULL feed (boundary trips need all legs),
+        # then scope to this month so next-month trips don't leak in.
+        reconciliation = _filter_reconciliation_to_month(
+            reconcile_feed_to_packet(feed, packet), year, month,
+        )
+        feed = _filter_feed_to_month(feed, year, month)
 
     if reconciliation is not None:
         updated, applied = apply_actuals_to_month(baseline, reconciliation)
@@ -376,7 +419,7 @@ def load_dashboard(
         year=pr.year,
         month=pr.month,
         month_label=f"{_MONTH_NAMES[pr.month]} {pr.year}",
-        available_months=available_months(),
+        available_months=available_months(user_id),
         line_value=pr.updated_month.line_value,
         base_monthly_pch=r.base_monthly_pch,
         winning_option=_winning_option_label(r.winning_option),
@@ -567,7 +610,7 @@ def load_calendar(
         year=pr.year,
         month=pr.month,
         month_label=f"{_MONTH_NAMES[pr.month]} {pr.year}",
-        available_months=available_months(),
+        available_months=available_months(user_id),
         weekday_headers=_WEEKDAY_LABELS,
         weeks=tuple(weeks),
         legend=tuple(legend_entries),
@@ -1812,7 +1855,7 @@ def load_compare(
             year=year,
             month=month,
             month_label=pb.month_label,
-            available_months=available_months(),
+            available_months=available_months(user_id),
             verdict=CompareVerdict.NO_STUBS,
             total_tracker=pb.total_pay,
             total_stub=Decimal("0"),
@@ -1962,7 +2005,7 @@ def load_compare(
         year=year,
         month=month,
         month_label=pb.month_label,
-        available_months=available_months(),
+        available_months=available_months(user_id),
         verdict=verdict,
         total_tracker=total_tracker,
         total_stub=total_stub,
@@ -2129,7 +2172,7 @@ def load_discrepancies(
         year=year,
         month=month,
         month_label=f"{_MONTH_NAMES[month]} {year}",
-        available_months=available_months(),
+        available_months=available_months(user_id),
         items=tuple(items),
         counts_by_severity=counts,
         total_money_impact=total_impact,
@@ -2156,7 +2199,7 @@ def load_pay_breakdown(
         year=pr.year,
         month=pr.month,
         month_label=f"{_MONTH_NAMES[pr.month]} {pr.year}",
-        available_months=available_months(),
+        available_months=available_months(user_id),
         earning_rows=rows,
         earned_pch_total=earned_pch,
         # Display the row-sum so the table footer matches the displayed rows.
