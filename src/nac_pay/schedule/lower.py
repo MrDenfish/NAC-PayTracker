@@ -312,8 +312,20 @@ def _trip_source_id(trip: Trip) -> str:
 
 
 def _day_source_id(day: Day) -> str:
+    """Unique chunk source_id per day OCCURRENCE.
+
+    A reserve day's ``label`` is the line designator (e.g. "1021"), which is
+    shared by EVERY reserve day in the month. Without date qualification,
+    every reserve chunk collides on one source_id, and the per-day Day Pay
+    card (which filters chunks by source_id) sums the whole month's reserve
+    PCH onto a single day — e.g. one reserve day showing 31.49 instead of
+    3.82. Same hazard the trip path avoids; see _trip_source_id.
+
+    Tests build synthetic Days without ``date``; those keep the bare label
+    for backward compat.
+    """
+    if day.date is not None:
+        return f"{day.label or day.duty_type.value}@{day.date.isoformat()}"
     if day.label:
         return day.label
-    if day.date is not None:
-        return f"{day.duty_type.value}-{day.date.isoformat()}"
     return f"{day.duty_type.value}"

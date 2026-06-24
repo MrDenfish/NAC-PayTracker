@@ -299,3 +299,35 @@ def test_day_pay_scoped_to_single_trip_occurrence(monkeypatch):
 
     # And critically: the two days should NOT sum to the same total.
     assert dd2.day_pay_total != dd5.day_pay_total
+
+
+def test_day_pay_scoped_to_single_reserve_day(monkeypatch):
+    """Regression: reserve days share one line-designator label ("1021"),
+    so without date-qualified source_ids the Day Pay card pooled EVERY
+    reserve day's PCH onto whichever reserve day was opened (e.g. showing
+    ~30.56 PCH / one reserve day instead of 3.82). The day-detail Effective
+    PCH stayed correct because it reads the Day, not the chunk pool.
+    """
+    from nac_pay.app.services import load_day
+    client, uid = _bootstrap(monkeypatch, "reserve-pool@x.test")
+
+    rate = Decimal("124.59")
+    # The bundled June FA has 8 reserve days, all labelled "1021" @ 3.82 PCH.
+    one_day = Decimal("3.82") * rate          # ~$475.93
+    pooled = Decimal("30.56") * rate          # ~$3,807.48 (the old bug)
+
+    for iso, (y, m, d) in {
+        "2026-06-16": (2026, 6, 16),
+        "2026-06-18": (2026, 6, 18),
+    }.items():
+        dd = load_day(y, m, d, user_id=uid)
+        assert dd.day_pay_total is not None, iso
+        assert abs(dd.day_pay_total - one_day) < Decimal("0.10"), \
+            f"{iso} reserve day should pay ~${one_day} (3.82 PCH), got ${dd.day_pay_total}"
+        # Must be nowhere near the whole-month reserve pool.
+        assert dd.day_pay_total < pooled / 2, \
+            f"{iso} pooled the month's reserve PCH: ${dd.day_pay_total}"
+        # The single reserve row reports 3.82 PCH, not the pooled figure.
+        assert any(abs(r.pch - Decimal("3.82")) < Decimal("0.01")
+                   for r in dd.day_pay_rows), \
+            f"{iso} no 3.82 PCH row; rows={[str(r.pch) for r in dd.day_pay_rows]}"

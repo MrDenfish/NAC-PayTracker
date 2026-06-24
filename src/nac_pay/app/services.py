@@ -963,7 +963,7 @@ def load_day(
 
     # Phase I.7 — build per-day pay rows from the engine's chunks.
     day_pay_rows, day_pay_total = _build_day_pay_rows(
-        pr=pr, trip=trip, day_entry=day_entry, target=target,
+        pr=pr, trip=trip, day_entry=day_entry,
     )
 
     # iCal legs on this date.
@@ -1069,7 +1069,6 @@ def _build_day_pay_rows(
     pr: PipelineResult,
     trip: Trip | None,
     day_entry: Day | None,
-    target: date_t,
 ) -> tuple[tuple, Decimal | None]:
     """Phase I.7 — per-day pay breakdown rows from the engine's chunks.
 
@@ -1094,9 +1093,13 @@ def _build_day_pay_rows(
         else:
             target_source_ids.add(trip.trip_id)
     if day_entry is not None:
-        # Mirror _day_source_id in lower.py
-        sid = day_entry.label or f"{day_entry.duty_type.value}-{target.isoformat()}"
-        target_source_ids.add(sid)
+        # Use the exact same source_id the engine stamped on this Day's
+        # chunks. day_entry is the pipeline Day matched by date, so reusing
+        # _day_source_id keeps the producer/consumer in lock-step — a reserve
+        # day's shared line-designator label (e.g. "1021") is date-qualified
+        # on both sides so chunks no longer collide across the month.
+        from nac_pay.schedule.lower import _day_source_id as _day_sid
+        target_source_ids.add(_day_sid(day_entry))
     if not target_source_ids:
         return (), None
 
