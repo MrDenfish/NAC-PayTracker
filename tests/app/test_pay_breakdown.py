@@ -56,7 +56,7 @@ def test_pay_route_renders_may():
 
 def test_pay_route_active_nav():
     r = client.get("/pay?ym=2026-6")
-    assert 'href="/pay" class="nav-link nav-link--active"' in r.text
+    assert 'href="/pay?ym=2026-6" class="nav-link nav-link--active"' in r.text
 
 
 def test_pay_route_invalid_ym():

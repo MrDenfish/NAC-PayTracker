@@ -12,12 +12,19 @@
 <body>
   <header class="topbar">
     <div class="brand">NAC Pay Tracker</div>
+    {# Carry the month the user is currently viewing onto the month-scoped
+       nav links, so switching tabs stays on the same month instead of
+       snapping to the newest available month. Screens without a month
+       (Settings/Documents/empty state) leave it blank. #}
+    {% set current_ym = ('?ym=' ~ data.year ~ '-' ~ data.month)
+        if (data is defined and data is not none and data.year is defined)
+        else '' %}
     <nav class="primary-nav">
-      <a href="/" class="nav-link {% if active_screen == 'dashboard' %}nav-link--active{% endif %}">Dashboard</a>
-      <a href="/calendar" class="nav-link {% if active_screen == 'calendar' %}nav-link--active{% endif %}">Calendar</a>
-      <a href="/pay" class="nav-link {% if active_screen == 'pay' %}nav-link--active{% endif %}">Pay breakdown</a>
-      <a href="/compare" class="nav-link {% if active_screen == 'compare' %}nav-link--active{% endif %}">Compare to stub</a>
-      <a href="/discrepancies" class="nav-link {% if active_screen == 'discrepancies' %}nav-link--active{% endif %}">Discrepancies</a>
+      <a href="/{{ current_ym }}" class="nav-link {% if active_screen == 'dashboard' %}nav-link--active{% endif %}">Dashboard</a>
+      <a href="/calendar{{ current_ym }}" class="nav-link {% if active_screen == 'calendar' %}nav-link--active{% endif %}">Calendar</a>
+      <a href="/pay{{ current_ym }}" class="nav-link {% if active_screen == 'pay' %}nav-link--active{% endif %}">Pay breakdown</a>
+      <a href="/compare{{ current_ym }}" class="nav-link {% if active_screen == 'compare' %}nav-link--active{% endif %}">Compare to stub</a>
+      <a href="/discrepancies{{ current_ym }}" class="nav-link {% if active_screen == 'discrepancies' %}nav-link--active{% endif %}">Discrepancies</a>
       <a href="/documents" class="nav-link {% if active_screen == 'documents' %}nav-link--active{% endif %}">Documents</a>
       <a href="/settings" class="nav-link {% if active_screen == 'settings' %}nav-link--active{% endif %}">Settings</a>
     </nav>

@@ -111,7 +111,7 @@ def test_compare_route_renders_no_stubs_banner_for_june():
 
 def test_compare_route_active_nav():
     r = client.get("/compare?ym=2026-5")
-    assert 'href="/compare" class="nav-link nav-link--active"' in r.text
+    assert 'href="/compare?ym=2026-5" class="nav-link nav-link--active"' in r.text
 
 
 def test_compare_route_invalid_ym_400():
