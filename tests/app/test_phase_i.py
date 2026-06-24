@@ -299,3 +299,65 @@ def test_day_pay_scoped_to_single_trip_occurrence(monkeypatch):
 
     # And critically: the two days should NOT sum to the same total.
     assert dd2.day_pay_total != dd5.day_pay_total
+
+
+def test_day_header_shows_active_reassignment_aid(monkeypatch):
+    """Regression: the day-detail Assignment card must show the CURRENT
+    assignment after a reassignment, matching the calendar cell — not the
+    stale FA original. Reassignment versions are appended to the trip but
+    never rewrite trip.trip_id, so the header read the original while the
+    calendar and the history already showed the active id.
+    """
+    from nac_pay.app.services import load_day, load_calendar
+    client, uid = _bootstrap(monkeypatch, "active-aid@x.test")
+
+    # June 2 is FA trip 722/750. Reassign it to a different id at higher PCH.
+    dd_before = load_day(2026, 6, 2, user_id=uid)
+    assert dd_before.assignment_id == "722/750"
+
+    _reassign(client, "2026-06-02", aid="720/772", pch="6.08",
+              premium="NONE", reason="REASSIGNMENT")
+    invalidate_caches()
+
+    dd = load_day(2026, 6, 2, user_id=uid)
+    assert dd.assignment_id == "720/772", \
+        f"header should show the active reassignment id, got {dd.assignment_id!r}"
+    assert dd.effective_pch == Decimal("6.08")
+
+    # Parity with the calendar: the cell's winning active id matches the header.
+    cal = load_calendar(2026, 6, user_id=uid)
+    cell = next(c for wk in cal.weeks for c in wk
+                if c.in_month and c.date.day == 2)
+    assert cell.new_assignment_id == dd.assignment_id == "720/772"
+
+
+def test_day_pay_scoped_to_single_reserve_day(monkeypatch):
+    """Regression: reserve days share one line-designator label ("1021"),
+    so without date-qualified source_ids the Day Pay card pooled EVERY
+    reserve day's PCH onto whichever reserve day was opened (e.g. showing
+    ~30.56 PCH / one reserve day instead of 3.82). The day-detail Effective
+    PCH stayed correct because it reads the Day, not the chunk pool.
+    """
+    from nac_pay.app.services import load_day
+    client, uid = _bootstrap(monkeypatch, "reserve-pool@x.test")
+
+    rate = Decimal("124.59")
+    # The bundled June FA has 8 reserve days, all labelled "1021" @ 3.82 PCH.
+    one_day = Decimal("3.82") * rate          # ~$475.93
+    pooled = Decimal("30.56") * rate          # ~$3,807.48 (the old bug)
+
+    for iso, (y, m, d) in {
+        "2026-06-16": (2026, 6, 16),
+        "2026-06-18": (2026, 6, 18),
+    }.items():
+        dd = load_day(y, m, d, user_id=uid)
+        assert dd.day_pay_total is not None, iso
+        assert abs(dd.day_pay_total - one_day) < Decimal("0.10"), \
+            f"{iso} reserve day should pay ~${one_day} (3.82 PCH), got ${dd.day_pay_total}"
+        # Must be nowhere near the whole-month reserve pool.
+        assert dd.day_pay_total < pooled / 2, \
+            f"{iso} pooled the month's reserve PCH: ${dd.day_pay_total}"
+        # The single reserve row reports 3.82 PCH, not the pooled figure.
+        assert any(abs(r.pch - Decimal("3.82")) < Decimal("0.01")
+                   for r in dd.day_pay_rows), \
+            f"{iso} no 3.82 PCH row; rows={[str(r.pch) for r in dd.day_pay_rows]}"

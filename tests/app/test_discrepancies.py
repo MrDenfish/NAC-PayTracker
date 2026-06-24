@@ -46,7 +46,7 @@ def test_discrepancies_route_june_shows_all_clear():
 def test_discrepancies_active_nav():
     r = client.get("/discrepancies?ym=2026-6")
     assert (
-        'href="/discrepancies" class="nav-link nav-link--active"' in r.text
+        'href="/discrepancies?ym=2026-6" class="nav-link nav-link--active"' in r.text
     )
 
 

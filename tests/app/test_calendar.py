@@ -67,8 +67,8 @@ def test_calendar_route_unknown_month_404():
 def test_calendar_link_is_active_in_nav():
     r = client.get("/calendar?ym=2026-6")
     # Nav has both Dashboard and Calendar; Calendar should carry --active.
-    assert 'href="/calendar" class="nav-link nav-link--active"' in r.text
-    assert 'href="/" class="nav-link "' in r.text  # dashboard not active
+    assert 'href="/calendar?ym=2026-6" class="nav-link nav-link--active"' in r.text
+    assert 'href="/?ym=2026-6" class="nav-link "' in r.text  # dashboard not active
 
 
 # ── Loader: shape & content ────────────────────────────────────────────

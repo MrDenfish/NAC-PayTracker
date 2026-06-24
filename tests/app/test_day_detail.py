@@ -56,9 +56,23 @@ def test_day_route_unknown_month_returns_404():
 
 
 def test_day_route_active_nav_is_calendar():
-    """Day detail is reached from the calendar — keep Calendar highlighted."""
+    """Day detail is reached from the calendar — keep Calendar highlighted,
+    and the Calendar tab must carry the viewed month so it doesn't snap to
+    the newest available month on click."""
     r = client.get("/day/2026-06-12")
-    assert 'href="/calendar" class="nav-link nav-link--active"' in r.text
+    assert 'href="/calendar?ym=2026-6" class="nav-link nav-link--active"' in r.text
+
+
+def test_day_route_nav_links_preserve_month():
+    """All month-scoped nav tabs carry the viewed month (?ym=) so switching
+    tabs from a June day stays on June."""
+    r = client.get("/day/2026-06-12")
+    for path in ("/?ym=2026-6", "/calendar?ym=2026-6", "/pay?ym=2026-6",
+                 "/compare?ym=2026-6", "/discrepancies?ym=2026-6"):
+        assert f'href="{path}"' in r.text
+    # Non-month-scoped tabs stay bare.
+    assert 'href="/settings"' in r.text
+    assert 'href="/documents"' in r.text
 
 
 # ── Loader content ─────────────────────────────────────────────────────
