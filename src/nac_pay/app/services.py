@@ -26,10 +26,12 @@ from __future__ import annotations
 import calendar as _cal
 from dataclasses import dataclass, field, replace
 from datetime import date as date_t
+from datetime import datetime as datetime_t
 from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from nac_pay.engine import EngineResult, WinningOption, compute_pay
 from nac_pay.parsers import (
@@ -225,6 +227,19 @@ def documents_for_user(
     return (fa.path, packet.path, ical.path if ical is not None else None)
 
 
+# NAC's domicile. The Final Award / Trip Packet label trips by **Alaska
+# local date**, but iCal events are stored in UTC (local + 8/9h). A trip
+# departing the evening of the last day of a month is already the 1st in
+# UTC, so month attribution must convert to local date first — otherwise
+# that boundary trip leaks into the next month (see §14.10 caveat).
+_DOMICILE_TZ = ZoneInfo("America/Anchorage")
+
+
+def _local_date(dt: datetime_t) -> date_t:
+    """Domicile-local civil date of a UTC timestamp (DST handled by tz)."""
+    return dt.astimezone(_DOMICILE_TZ).date()
+
+
 def _in_month(d: date_t, year: int, month: int) -> bool:
     return d.year == year and d.month == month
 
@@ -242,7 +257,7 @@ def _filter_reconciliation_to_month(
     phantom open-time pickup, inflating PCH. A trip is attributed to the
     month of its first leg (UTC).
     """
-    keep = lambda rt: _in_month(rt.first_dt_utc.date(), year, month)  # noqa: E731
+    keep = lambda rt: _in_month(_local_date(rt.first_dt_utc), year, month)  # noqa: E731
     return ReconciliationResult(
         trips=tuple(t for t in recon.trips if keep(t)),
         matched=tuple(t for t in recon.matched if keep(t)),
@@ -254,7 +269,7 @@ def _filter_feed_to_month(feed: ParsedFeed, year: int, month: int) -> ParsedFeed
     """Scope a parsed feed's events to the target month (for display: event
     counts, unmatched-leg listings). Each event is kept by its own start
     date; the pay path uses the trip-level filter above."""
-    inm = lambda ev: _in_month(ev.dt_start_utc.date(), year, month)  # noqa: E731
+    inm = lambda ev: _in_month(_local_date(ev.dt_start_utc), year, month)  # noqa: E731
     return ParsedFeed(
         flight_legs=tuple(e for e in feed.flight_legs if inm(e)),
         reserves=tuple(e for e in feed.reserves if inm(e)),
