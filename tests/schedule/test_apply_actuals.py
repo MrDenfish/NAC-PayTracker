@@ -47,6 +47,42 @@ JUNE_PACKET = DOCS / "JUNE 2026 Trip Pairing Packet.pdf"
 ICAL = DOCS / "iCal_schedule_feed.ics"
 
 
+# ── Reserve-designator + specificity in baseline↔packet matching ─────────
+
+
+def test_flying_segments_strips_trailing_reserve_designator():
+    from nac_pay.schedule.apply_actuals import _flying_segments
+
+    assert _flying_segments("768/R1") == ("768",)
+    assert _flying_segments("722/750") == ("722", "750")
+    assert _flying_segments("R1") == ()          # pure reserve → matches nothing
+    assert _flying_segments("720/1780") == ("720", "1780")
+
+
+def test_match_reserve_designator_aid_to_packet_trip():
+    """``768/R1`` (fly 768, then reserve) must reconcile to packet
+    ``768/769`` instead of being mistaken for an open-time pickup."""
+    from nac_pay.schedule.apply_actuals import (
+        _find_baseline_aid_for_packet_trip,
+        _flying_segments,
+    )
+
+    segs = [(a, _flying_segments(a)) for a in ("768/R1",)]
+    assert _find_baseline_aid_for_packet_trip("768/769", segs) == "768/R1"
+
+
+def test_longest_subsequence_match_wins():
+    """When both a reserve-tail aid and a fuller aid could match, the more
+    specific (longer) one claims the packet trip."""
+    from nac_pay.schedule.apply_actuals import (
+        _find_baseline_aid_for_packet_trip,
+        _flying_segments,
+    )
+
+    segs = [(a, _flying_segments(a)) for a in ("722/R1", "722/750")]
+    assert _find_baseline_aid_for_packet_trip("722/723/750/751", segs) == "722/750"
+
+
 # ── Test helpers ────────────────────────────────────────────────────────
 
 

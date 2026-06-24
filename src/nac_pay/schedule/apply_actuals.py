@@ -46,6 +46,7 @@ Month automatically. They need pilot categorization.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from datetime import date as date_t
 from decimal import Decimal
@@ -99,7 +100,7 @@ def apply_actuals_to_month(
     for idx, trip in enumerate(baseline.trips):
         aid_to_indexes.setdefault(trip.trip_id, []).append(idx)
     aid_segments: list[tuple[str, tuple[str, ...]]] = [
-        (aid, tuple(aid.split("/"))) for aid in aid_to_indexes
+        (aid, _flying_segments(aid)) for aid in aid_to_indexes
     ]
 
     baseline_rsv_by_date: dict[date_t, Day] = {
@@ -233,8 +234,10 @@ def _find_baseline_aid_for_packet_trip(
     the packet uses the full leg sequence. A FA aid like ``"722/754"``
     refers to packet trip ``"722/723/754/755"`` — same trip, shorter label.
 
-    Direct equality wins; otherwise we accept the first aid whose slash-
-    segments form an ordered subsequence of the packet trip_id's segments.
+    Direct equality wins; otherwise we accept the aid whose flying segments
+    form an ordered subsequence of the packet trip_id's segments, preferring
+    the LONGEST (most specific) match so e.g. ``722/750`` beats ``722/R1``
+    for packet ``722/723/750/751`` instead of the bare ``722`` claiming it.
     """
     if not packet_trip_id:
         return None
@@ -242,10 +245,16 @@ def _find_baseline_aid_for_packet_trip(
         if aid == packet_trip_id:
             return aid
     packet_segments = packet_trip_id.split("/")
+    best: str | None = None
+    best_len = 0
     for aid, aid_segs in baseline_aid_segments:
-        if _is_ordered_subsequence(aid_segs, packet_segments):
-            return aid
-    return None
+        if (
+            aid_segs
+            and len(aid_segs) > best_len
+            and _is_ordered_subsequence(aid_segs, packet_segments)
+        ):
+            best, best_len = aid, len(aid_segs)
+    return best
 
 
 def _next_unmatched_index_for_aid(
@@ -277,6 +286,26 @@ def _next_unmatched_index_for_aid(
         if target_date in baseline_trips[idx].dates:
             return idx
     return candidates[0]
+
+
+_RESERVE_SEG_RE = re.compile(r"^R\d+$", re.IGNORECASE)
+
+
+def _flying_segments(aid: str) -> tuple[str, ...]:
+    """The flight-number segments of an FA assignment id, dropping a trailing
+    reserve designator.
+
+    An FA aid like ``768/R1`` means "fly trip 768 (packet ``768/769``), then
+    sit reserve" — the ``R1`` is a reserve tail, not a flight. For matching
+    the flown trip we keep only the leading flight segments (``("768",)``),
+    so it reconciles to the packet instead of being mistaken for an
+    open-time pickup. A purely-reserve aid reduces to ``()`` and matches
+    nothing.
+    """
+    segs = tuple(s for s in aid.split("/") if s)
+    while segs and _RESERVE_SEG_RE.match(segs[-1]):
+        segs = segs[:-1]
+    return segs
 
 
 def _is_ordered_subsequence(needle: tuple[str, ...], haystack: list[str]) -> bool:

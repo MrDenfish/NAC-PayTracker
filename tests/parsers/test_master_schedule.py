@@ -16,6 +16,31 @@ import pytest
 
 from nac_pay.engine.constants import MPG
 from nac_pay.parsers import parse_master_schedule
+from nac_pay.parsers.master_schedule import _parse_cell
+
+
+# ── _parse_cell: wrapped assignment-ID reassembly ───────────────────────
+
+
+def test_parse_cell_reassembles_wrapped_flight_number():
+    """The table extractor wraps a long ID across lines: ``720/1780`` comes
+    back as ``"720/178\\n0"``. The trailing pure-digit fragment must be
+    concatenated back, not joined with " / " (which produced "720/178 / 0"
+    and broke packet matching)."""
+    cell = _parse_cell("720/178\n0\nFLT\n6.08")
+    assert cell.assignment_id == "720/1780"
+    assert cell.duty_type == "FLT"
+    assert cell.pch_value == Decimal("6.08")
+
+
+def test_parse_cell_keeps_reserve_designator_assignment():
+    cell = _parse_cell("768/R1\nFLT\n5.25")
+    assert cell.assignment_id == "768/R1"
+
+
+def test_parse_cell_single_token_assignment_unchanged():
+    cell = _parse_cell("768\nFLT\n5.33")
+    assert cell.assignment_id == "768"
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 MAY_PDF = DOCS / "MAY 2026 ANC 737 - FO FINAL AWARDS.pdf"
