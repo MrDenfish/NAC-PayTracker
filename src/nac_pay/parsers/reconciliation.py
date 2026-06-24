@@ -29,6 +29,7 @@ the packet — exactly the case the spec wants flagged.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -36,6 +37,31 @@ from enum import StrEnum
 
 from .ical_feed import FlightLegEvent, ParsedFeed
 from .trip_pairing_packet import TripPairing
+
+# A packet trip can carry a trailing reserve designator: "722/723/R1" means
+# fly 722/723, then sit reserve (its TRIP PCH VALUE is the duty-rig over the
+# whole 10:45 duty per §3.E.2.a). The iCal feed only shows the *flown*
+# portion ("722/723"), so an exact key lookup misses it.
+_RESERVE_SUFFIX_RE = re.compile(r"/R\d+$", re.IGNORECASE)
+
+
+def _match_packet_trip(
+    sequence: str, packet: dict[str, TripPairing],
+) -> TripPairing | None:
+    """Find the packet trip for a flown flight sequence.
+
+    Exact key match wins. Failing that, match a reserve-designator pairing
+    by its flying portion — ``"722/723"`` flown matches packet
+    ``"722/723/R1"`` (the trailing ``/R<n>`` is reserve, not a leg). Exact
+    equality after stripping the suffix keeps this unambiguous (a fully-flown
+    ``722/723/750/751`` still matches its own key first)."""
+    trip = packet.get(sequence)
+    if trip is not None:
+        return trip
+    for tid, tp in packet.items():
+        if _RESERVE_SUFFIX_RE.search(tid) and _RESERVE_SUFFIX_RE.sub("", tid) == sequence:
+            return tp
+    return None
 
 DEFAULT_LAYOVER_MAX_HOURS: float = 12.0
 
@@ -156,7 +182,7 @@ def _reconcile_one(
     packet: dict[str, TripPairing],
 ) -> ReconciledTrip:
     sequence = "/".join(leg.flight_no_short for leg in group)
-    packet_trip = packet.get(sequence)
+    packet_trip = _match_packet_trip(sequence, packet)
     status = MatchStatus.MATCHED if packet_trip else MatchStatus.UNMATCHED_NO_PACKET
 
     actual_block = sum(

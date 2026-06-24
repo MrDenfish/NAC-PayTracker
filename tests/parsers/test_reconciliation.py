@@ -30,6 +30,27 @@ ICAL = DOCS / "iCal_schedule_feed.ics"
 PACKET = DOCS / "JUNE 2026 Trip Pairing Packet.pdf"
 
 
+# ── Reserve-designator packet pairings (722/723 ↔ 722/723/R1) ──────────
+
+
+def test_match_packet_trip_resolves_reserve_designator_pairing():
+    """The feed shows only the flown portion ("722/723"); the packet keys
+    the pairing with its reserve tail ("722/723/R1"). They must reconcile —
+    otherwise the flown trip is wrongly flagged unmatched (the July 722/R1
+    false positive)."""
+    from nac_pay.parsers.reconciliation import _match_packet_trip
+
+    reserve_trip = object()
+    full_trip = object()
+    packet = {"722/723/R1": reserve_trip, "722/723/750/751": full_trip}
+
+    assert _match_packet_trip("722/723", packet) is reserve_trip
+    # A fully-flown pairing still matches its own exact key first.
+    assert _match_packet_trip("722/723/750/751", packet) is full_trip
+    # No spurious match.
+    assert _match_packet_trip("999/998", packet) is None
+
+
 # ── End-to-end: sample feed + June packet ──────────────────────────────
 @pytest.fixture(scope="module")
 def reconciled():
