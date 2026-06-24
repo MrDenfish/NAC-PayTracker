@@ -1338,6 +1338,21 @@ def _build_day_detail(
         packet_trip_id = None
         versions = ()
 
+    # The Assignment card shows the CURRENT assignment. Reassignment versions
+    # are appended to the trip/day but never rewrite trip.trip_id / day.label,
+    # so the per-branch assignment_id above is the FA original — which the
+    # history block above correctly consumes as its baseline. Now (after the
+    # history is built) mirror the calendar's winning-aid logic (highest pch,
+    # earliest seq) so the header surfaces the active reassignment's id instead
+    # of the stale original. A PCH-only version with no aid keeps the original.
+    active_versions_today = [
+        uv for uv in user_versions if uv.seq not in superseded_seqs
+    ]
+    if active_versions_today:
+        winner = max(active_versions_today, key=lambda v: (v.pch_value, -v.seq))
+        if winner.assignment_id:
+            assignment_id = winner.assignment_id
+
     return DayDetailData(
         pilot=pr.pilot,
         year=target.year,

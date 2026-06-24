@@ -301,6 +301,36 @@ def test_day_pay_scoped_to_single_trip_occurrence(monkeypatch):
     assert dd2.day_pay_total != dd5.day_pay_total
 
 
+def test_day_header_shows_active_reassignment_aid(monkeypatch):
+    """Regression: the day-detail Assignment card must show the CURRENT
+    assignment after a reassignment, matching the calendar cell — not the
+    stale FA original. Reassignment versions are appended to the trip but
+    never rewrite trip.trip_id, so the header read the original while the
+    calendar and the history already showed the active id.
+    """
+    from nac_pay.app.services import load_day, load_calendar
+    client, uid = _bootstrap(monkeypatch, "active-aid@x.test")
+
+    # June 2 is FA trip 722/750. Reassign it to a different id at higher PCH.
+    dd_before = load_day(2026, 6, 2, user_id=uid)
+    assert dd_before.assignment_id == "722/750"
+
+    _reassign(client, "2026-06-02", aid="720/772", pch="6.08",
+              premium="NONE", reason="REASSIGNMENT")
+    invalidate_caches()
+
+    dd = load_day(2026, 6, 2, user_id=uid)
+    assert dd.assignment_id == "720/772", \
+        f"header should show the active reassignment id, got {dd.assignment_id!r}"
+    assert dd.effective_pch == Decimal("6.08")
+
+    # Parity with the calendar: the cell's winning active id matches the header.
+    cal = load_calendar(2026, 6, user_id=uid)
+    cell = next(c for wk in cal.weeks for c in wk
+                if c.in_month and c.date.day == 2)
+    assert cell.new_assignment_id == dd.assignment_id == "720/772"
+
+
 def test_day_pay_scoped_to_single_reserve_day(monkeypatch):
     """Regression: reserve days share one line-designator label ("1021"),
     so without date-qualified source_ids the Day Pay card pooled EVERY
