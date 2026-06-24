@@ -69,6 +69,39 @@ def test_feed_filter_scopes_each_event_type():
     assert len(out.flight_legs) == 1
 
 
+def _rt_at(dt) -> ReconciledTrip:
+    return ReconciledTrip(
+        flight_sequence="1", legs=(), packet_trip=None,
+        match_status=MatchStatus.MATCHED, first_dt_utc=dt, last_dt_utc=dt,
+        actual_block_hours=Decimal("1"),
+    )
+
+
+def test_month_attribution_uses_alaska_local_date_not_utc():
+    """A trip departing the evening of the last day of the month belongs to
+    THAT month even though its UTC timestamp has already rolled to the 1st.
+    June 30 23:00 AKDT == July 1 07:00 UTC → must count as June, not July."""
+    late_june_eve = _rt_at(datetime(2026, 7, 1, 7, 0, tzinfo=timezone.utc))
+    recon = ReconciliationResult(
+        trips=(late_june_eve,), matched=(late_june_eve,), unmatched=(),
+    )
+    assert s._filter_reconciliation_to_month(recon, 2026, 6).trips == (late_june_eve,)
+    assert s._filter_reconciliation_to_month(recon, 2026, 7).trips == ()
+
+
+def test_feed_filter_uses_alaska_local_date_at_boundary():
+    # July 1 07:00 UTC == June 30 23:00 AKDT → a June event.
+    boundary = FlightLegEvent(
+        uid="b", dt_start_utc=datetime(2026, 7, 1, 7, 0, tzinfo=timezone.utc),
+        dt_end_utc=datetime(2026, 7, 1, 8, 0, tzinfo=timezone.utc),
+        flight_no_raw="NC9", flight_no_short="9", origin="ANC",
+        destination="BRW", tail="N9", customer="c", captain="c", first_officer="f",
+    )
+    feed = ParsedFeed(flight_legs=(boundary,))
+    assert len(s._filter_feed_to_month(feed, 2026, 6).flight_legs) == 1
+    assert len(s._filter_feed_to_month(feed, 2026, 7).flight_legs) == 0
+
+
 # ── End-to-end: a multi-month feed doesn't inflate the month ─────────
 
 
