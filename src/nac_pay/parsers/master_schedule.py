@@ -349,5 +349,24 @@ def _parse_cell(text: str) -> _CellTokens:
             duty = leftover[0].upper()
             leftover = []
 
-    assignment = " / ".join(leftover) if leftover else None
+    assignment = _join_assignment_fragments(leftover) if leftover else None
     return _CellTokens(assignment, duty, pch)
+
+
+def _join_assignment_fragments(leftover: list[str]) -> str:
+    """Reassemble an assignment ID that the PDF table extractor wrapped
+    across lines.
+
+    A long ID like ``720/1780`` can come back as two fragments
+    ``["720/178", "0"]`` (the trailing ``0`` is the wrapped tail of the
+    flight number). A pure-digit fragment following a fragment that ends in
+    a digit is such a continuation and is concatenated back on; genuinely
+    distinct fragments keep a visible separator.
+    """
+    out = [leftover[0]]
+    for frag in leftover[1:]:
+        if frag.isdigit() and out[-1][-1:].isdigit():
+            out[-1] += frag
+        else:
+            out.append(frag)
+    return " / ".join(out)
