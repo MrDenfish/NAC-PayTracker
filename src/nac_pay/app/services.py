@@ -510,6 +510,9 @@ class CalendarCell:
     # Phase I.5: per-day dollar value (PCH × base_rate × multiplier),
     # rounded to the nearest whole dollar. Rendered in cell bottom-right.
     pay_dollars: Decimal | None = None
+    # Company-approved drop: the scheduled assignment was forfeited (0 PCH).
+    # The cell shows a DROPPED tag; the FA-original aid stays visible.
+    is_dropped: bool = False
 
 
 @dataclass(frozen=True)
@@ -754,6 +757,10 @@ class ReassignFormDefaults:
     reason_code: str = "FLOWN"
     premium_category: str = "NONE"
     notes: str = ""
+    # True when this correction is undoing a DROP (the form re-renders as a
+    # "Restore assignment" action, pre-filled with the original PCH). Saving
+    # files a CORRECTION that supersedes the drop, reverting the forfeit.
+    is_restore: bool = False
 
 
 @dataclass(frozen=True)
@@ -826,10 +833,15 @@ class DayDetailData:
     has_override: bool = False
     editable: bool = True
     saved: bool = False
+    # Company-approved drop active on this day: the assignment is forfeited
+    # (0 PCH credited, floor reduced by the lost PCH). Drives the day-detail
+    # "Dropped" note + hides the drop affordance.
+    is_dropped: bool = False
 
     # Phase G — pilot reassignment form
     reassign_form_defaults: ReassignFormDefaults = ReassignFormDefaults()
     saved_reassign: bool = False
+    saved_drop: bool = False
     reassign_error: str = ""
 
     # Phase H — packet trip catalog for the assignment_id datalist
@@ -938,6 +950,7 @@ def load_day(
     *,
     saved: bool = False,
     saved_reassign: bool = False,
+    saved_drop: bool = False,
     reassign_error: str = "",
     correct_seq: int | None = None,
 ) -> DayDetailData:
@@ -1024,8 +1037,21 @@ def load_day(
         if uv.version_type is _VT.CORRECTION and uv.correction_of is not None:
             superseded_by[uv.correction_of] = uv.seq
 
-    # Pre-fill form when ?correct=<seq> is in the URL.
-    reassign_defaults = _build_reassign_defaults(user_versions, correct_seq)
+    # Pre-fill form when ?correct=<seq> is in the URL. For a drop-restore the
+    # original published PCH (the value to revert to) comes from the trip/day.
+    if trip is not None:
+        restore_pch = trip.published_pch
+    elif day_entry is not None:
+        restore_pch = (
+            day_entry.original_pch
+            if day_entry.original_pch is not None
+            else day_entry.pch_value
+        )
+    else:
+        restore_pch = None
+    reassign_defaults = _build_reassign_defaults(
+        user_versions, correct_seq, restore_pch,
+    )
 
     # Packet trip catalog for the assignment_id <datalist>. Sorted by id
     # so the dropdown is scannable.
@@ -1057,6 +1083,7 @@ def load_day(
         superseded_by_seq=superseded_by,
         reassign_defaults=reassign_defaults,
         saved_reassign=saved_reassign,
+        saved_drop=saved_drop,
         reassign_error=reassign_error,
         packet_options=packet_options,
         day_pay_rows=day_pay_rows,
@@ -1151,6 +1178,7 @@ def _build_day_pay_rows(
 def _build_reassign_defaults(
     user_versions: list,
     correct_seq: int | None,
+    restore_pch: Decimal | None = None,
 ) -> ReassignFormDefaults:
     """Pre-fill the form when correcting a prior version."""
     if correct_seq is None:
@@ -1163,6 +1191,20 @@ def _build_reassign_defaults(
         # The route also rejects this, but defensively skip the pre-fill
         # so the UI doesn't suggest an impossible action.
         return ReassignFormDefaults()
+    if target.version_type is _VT.DROP:
+        # Undo a drop: a CORRECTION superseding the drop reverts the forfeit.
+        # The drop itself carries 0 PCH, so pre-fill the ORIGINAL published
+        # value (passed in) — saving restores the assignment to it.
+        return ReassignFormDefaults(
+            version_type="CORRECTION",
+            correction_of=target.seq,
+            correcting_seq_label=f"v{target.seq}",
+            entry_mode="SIMPLE",
+            assignment_id=target.assignment_id,
+            pch_value=str(restore_pch) if restore_pch is not None else "",
+            reason_code="FLOWN",
+            is_restore=True,
+        )
     return ReassignFormDefaults(
         version_type="CORRECTION",
         correction_of=target.seq,
@@ -1197,6 +1239,7 @@ def _build_day_detail(
     superseded_by_seq: dict | None = None,
     reassign_defaults: ReassignFormDefaults | None = None,
     saved_reassign: bool = False,
+    saved_drop: bool = False,
     reassign_error: str = "",
     packet_options: tuple = (),
     day_pay_rows: tuple = (),
@@ -1348,7 +1391,19 @@ def _build_day_detail(
     active_versions_today = [
         uv for uv in user_versions if uv.seq not in superseded_seqs
     ]
-    if active_versions_today:
+    from nac_pay.storage import VersionType as _VT
+    is_dropped = any(uv.version_type is _VT.DROP for uv in active_versions_today)
+    if is_dropped:
+        # A company-approved drop forfeits the assignment. Show 0 effective
+        # PCH and a DROPPED tag; keep the FA-original aid + published value
+        # visible (the audit trail of what was given up). Don't let the
+        # max-winner block below surface a now-irrelevant reassignment aid.
+        duty_label = "DROPPED"
+        duty_class = "off"
+        effective = Decimal("0")
+        uplift = Decimal("0")
+        premium_multiplier = None
+    elif active_versions_today:
         winner = max(active_versions_today, key=lambda v: (v.pch_value, -v.seq))
         if winner.assignment_id:
             assignment_id = winner.assignment_id
@@ -1395,10 +1450,12 @@ def _build_day_detail(
         saved=saved,
         reassign_form_defaults=reassign_defaults,
         saved_reassign=saved_reassign,
+        saved_drop=saved_drop,
         reassign_error=reassign_error,
         packet_trip_options=packet_options,
         day_pay_rows=day_pay_rows,
         day_pay_total=day_pay_total,
+        is_dropped=is_dropped,
     )
 
 
@@ -1487,10 +1544,16 @@ def _build_history(
             )
         )
 
-    # Mark the effective row — highest non-superseded PCH; earliest seq breaks ties.
+    # Mark the effective row. A company-approved DROP forfeits the assignment,
+    # so it wins regardless of PCH (the latest active drop, by seq). Otherwise
+    # the effective row is the highest non-superseded PCH; earliest seq ties.
     candidates = [r for r in rows if not r.is_superseded]
     if candidates:
-        winner = max(candidates, key=lambda r: (r.pch_value, -r.seq))
+        drops = [r for r in candidates if r.user_version_type == "DROP"]
+        if drops:
+            winner = max(drops, key=lambda r: r.seq)
+        else:
+            winner = max(candidates, key=lambda r: (r.pch_value, -r.seq))
         rows = [replace(r, is_effective=(r is winner)) for r in rows]
     return tuple(rows)
 
@@ -2278,6 +2341,31 @@ def _build_cell(
 
     trip = trip_by_date.get(d)
     day = day_by_date.get(d)
+
+    from nac_pay.schedule.labels import ReasonCode as _RC
+    _dropped = (
+        (trip is not None and trip.reason_code is _RC.VOLUNTARY_DROP)
+        or (day is not None and day.reason_code is _RC.VOLUNTARY_DROP)
+    )
+    if _dropped:
+        # Company-approved drop: the assignment was forfeited. Show a DROPPED
+        # tag with the FA-original aid still visible (audit), 0 PCH, no pay.
+        original_aid = (trip.trip_id if trip is not None else (day.label or None))
+        return CalendarCell(
+            date=d,
+            in_month=in_month,
+            is_weekend=is_weekend,
+            assignment_id=original_aid,
+            duty_label="DROPPED",
+            duty_class="off",
+            pch=None,
+            has_callout=False,
+            is_reassigned=False,
+            user_reassignment_count=user_reassignment_count,
+            premium_label=None,
+            pay_dollars=None,
+            is_dropped=True,
+        )
 
     if trip is not None:
         from .services import _premium_multiplier

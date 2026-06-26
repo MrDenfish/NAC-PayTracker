@@ -472,6 +472,79 @@ def day_reassign(
     )
 
 
+@app.post("/day/{date_iso}/drop")
+def day_drop(
+    request: Request,
+    date_iso: str,
+    # Required: drops can only occur with company approval. Server-enforced —
+    # the save is rejected unless this checkbox is ticked.
+    company_approved: str = Form(""),
+    assignment_id: str = Form(""),
+    notes: str = Form(""),
+) -> RedirectResponse:
+    """Record a company-approved DROP of a scheduled assignment.
+
+    A drop is the inverse of a reassignment: it forfeits the assignment.
+    Stored as a ``VersionType.DROP`` row (pch 0); apply_user_versions then
+    stamps the matched Trip/Day with ``ReasonCode.VOLUNTARY_DROP`` so the
+    engine credits 0 PCH, drops the workday, and forfeits the floor 1:1 by
+    the lost PCH (§3.D). Reverse it from the history's "Restore" link, which
+    files a CORRECTION superseding the drop."""
+
+    def _bail(err: str) -> RedirectResponse:
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"/day/{date_iso}?reassign_error={quote(err)}",
+            status_code=303,
+        )
+
+    try:
+        target_date = date.fromisoformat(date_iso)
+    except ValueError:
+        raise HTTPException(400, f"Invalid date {date_iso!r}")
+
+    uid = _user_id(request)
+    if uid == DEFAULT_USER_ID:
+        return _bail("Default user cannot record drops — use a real account.")
+
+    if not company_approved.strip():
+        return _bail("Company approval is required to drop an assignment.")
+
+    # Only a scheduled, paying assignment can be dropped. An OFF day (or a
+    # 0-PCH day) has nothing to forfeit.
+    try:
+        detail = load_day(
+            target_date.year, target_date.month, target_date.day, user_id=uid,
+        )
+    except ValueError:
+        return _bail("No assignment found on this day to drop.")
+    if detail.kind == "off" or not detail.effective_pch or detail.effective_pch <= 0:
+        return _bail("Nothing to drop — this day has no paying assignment.")
+
+    # Default the dropped-assignment label to whatever the day currently shows.
+    aid = assignment_id.strip() or (detail.assignment_id or "")
+
+    note = "Company-approved drop"
+    if notes.strip():
+        note = f"{note} — {notes.strip()[:400]}"
+
+    UserAssignmentVersionStore(user_id=uid).save(
+        date_iso=date_iso,
+        version_type=VersionType.DROP,
+        correction_of=None,
+        assignment_id=aid,
+        entry_mode=VersionEntryMode.SIMPLE,
+        pch_value=Decimal("0"),
+        block_hours=None, duty_hours=None,
+        tafb_hours=None, deadhead_pch=None, workdays=None,
+        reason_code="VOLUNTARY_DROP",
+        premium_category="NONE",
+        notes=note,
+    )
+    invalidate_caches()
+    return RedirectResponse(f"/day/{date_iso}?saved=drop", status_code=303)
+
+
 @app.get("/discrepancies", response_class=HTMLResponse)
 def discrepancies_view(
     request: Request,
@@ -590,6 +663,7 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
             user_id=_user_id(request),
             saved=(saved_q == "1"),
             saved_reassign=(saved_q == "reassign"),
+            saved_drop=(saved_q == "drop"),
             reassign_error=request.query_params.get("reassign_error", ""),
             correct_seq=correct_seq,
         )

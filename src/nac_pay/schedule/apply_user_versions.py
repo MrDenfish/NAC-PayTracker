@@ -30,11 +30,22 @@ from typing import TYPE_CHECKING
 
 from decimal import Decimal
 
-from .labels import DutyType, PremiumCategory
+from .labels import DutyType, PremiumCategory, ReasonCode
 from .models import AssignmentVersion, Day, Month, Trip
 
 if TYPE_CHECKING:
     from nac_pay.storage.assignment_versions import UserAssignmentVersion
+
+
+def _is_drop(adds) -> bool:
+    """True if any active version on this date is a company-approved DROP.
+
+    A DROP overrides every other version on the date — the assignment is
+    forfeited, so the §3.E.1.b max-lift is irrelevant. We mark the matched
+    Trip/Day with ``ReasonCode.VOLUNTARY_DROP`` and let lower.py emit the
+    drop floor event (no chunk, no workday, floor forfeits by the lost PCH)."""
+    from nac_pay.storage.assignment_versions import VersionType
+    return any(uv.version_type is VersionType.DROP for uv in adds)
 
 
 def apply_user_versions_to_month(
@@ -86,10 +97,18 @@ def apply_user_versions_to_month(
         # the engine applies the right multiplier. Otherwise leave the
         # trip's premium alone — the original wins via §3.E.1.b and
         # shouldn't inherit a premium that didn't belong to it.
-        new_premium = _winning_premium_for_trip(trip, adds)
         replaced_trip = replace(trip, versions=tuple(new_versions))
-        if new_premium is not None:
-            replaced_trip = replace(replaced_trip, premium_category=new_premium)
+        if _is_drop(adds):
+            # Company-approved drop: forfeit this trip. lower.py's FLOOR_DROP
+            # path then emits no chunk + a VOLUNTARY_DROP floor event at the
+            # trip's published PCH. The appended version rows stay for the
+            # audit history but never reach effective_pch (FLOOR_DROP returns
+            # before the max is read). No premium on a dropped trip.
+            replaced_trip = replace(replaced_trip, reason_code=ReasonCode.VOLUNTARY_DROP)
+        else:
+            new_premium = _winning_premium_for_trip(trip, adds)
+            if new_premium is not None:
+                replaced_trip = replace(replaced_trip, premium_category=new_premium)
         new_trips.append(replaced_trip)
 
     # No-trip case — two sub-cases:
@@ -113,6 +132,19 @@ def apply_user_versions_to_month(
             new_days.append(day)
             continue
         consumed_dates.add(iso)
+        if _is_drop(adds):
+            # Forfeit this day. Keep pch_value as the lost-PCH basis (lower.py
+            # FLOOR_DROP reads day.pch_value for the drop event); flip the
+            # reason so it forfeits instead of crediting. Preserve original_pch
+            # for the day-detail "Original published" baseline.
+            new_days.append(
+                replace(
+                    day,
+                    reason_code=ReasonCode.VOLUNTARY_DROP,
+                    original_pch=day.pch_value,
+                )
+            )
+            continue
         max_user = max(uv.pch_value for uv in adds)
         new_pch = max(day.pch_value, max_user)
         # Preserve the pre-pickup PCH so the day-detail history can show the
@@ -138,6 +170,12 @@ def apply_user_versions_to_month(
         except ValueError:
             continue
         if d.year != month.year or d.month != month.month:
+            continue
+        if _is_drop(adds):
+            # A DROP on a date with no Trip and no Day has nothing to forfeit
+            # (an OFF day is already 0 PCH). The route blocks this, but guard
+            # here too so a stray drop never synthesizes a phantom day.
+            consumed_dates.add(iso)
             continue
         max_user = max(uv.pch_value for uv in adds)
         winner = max(adds, key=lambda uv: uv.pch_value)
@@ -184,6 +222,8 @@ def _label_for(uv: "UserAssignmentVersion") -> str:
         kind = "Correction"
     elif uv.version_type is VersionType.RESERVE_CALLOUT:
         kind = "Reserve callout"
+    elif uv.version_type is VersionType.DROP:
+        kind = "Dropped"
     else:
         kind = "Reassignment"
     if uv.assignment_id:
