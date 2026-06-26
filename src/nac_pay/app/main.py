@@ -55,6 +55,23 @@ from .services import (
 _HERE = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 
+
+def _static_version() -> str:
+    """Short content hash of styles.css, appended as ?v= to the stylesheet
+    link so a CSS change busts the browser AND Cloudflare edge cache (which a
+    hard refresh alone does not clear). Falls back to a constant if unreadable.
+    Recomputed at import (once per container build), which is exactly when the
+    bundled CSS can change."""
+    import hashlib
+    try:
+        data = (_HERE / "static" / "styles.css").read_bytes()
+        return hashlib.sha256(data).hexdigest()[:8]
+    except OSError:
+        return "0"
+
+
+_TEMPLATES.env.globals["static_v"] = _static_version()
+
 logger = logging.getLogger("nac_pay.app")
 
 
