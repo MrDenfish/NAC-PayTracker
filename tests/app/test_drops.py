@@ -135,6 +135,9 @@ def test_dropped_day_and_calendar_render(monkeypatch):
     cal = client.get("/calendar?ym=2026-6")
     assert cal.status_code == 200
     assert "DROPPED" in cal.text
+    # Stylesheet is cache-busted with a content-hash version query so a CSS
+    # change reaches the browser/edge without a manual purge.
+    assert "styles.css?v=" in cal.text
     # The dropped assignment id is de-emphasized (not bold) to match the
     # DROPPED/OFF duty-label styling.
     assert "aid--dropped" in cal.text
