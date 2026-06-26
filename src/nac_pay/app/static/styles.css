@@ -525,6 +525,13 @@ html, body {
   font-size: 11px;
 }
 
+/* Dropped day: the forfeited assignment id should read like the DROPPED/OFF
+   duty label — not bold, same subtle color — so it doesn't draw the eye. */
+.aid--dropped {
+  font-weight: 400;
+  color: var(--text-subtle);
+}
+
 .calendar-footer {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

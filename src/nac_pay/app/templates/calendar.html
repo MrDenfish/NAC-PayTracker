@@ -86,7 +86,7 @@
           <div class="premium-label">{{ cell.premium_label }}</div>
           {% endif %}
           {% if cell.assignment_id %}
-          <div class="aid {% if cell.new_assignment_id %}aid--original{% endif %}">{{ cell.assignment_id }}</div>
+          <div class="aid {% if cell.new_assignment_id %}aid--original{% endif %}{% if cell.is_dropped %} aid--dropped{% endif %}">{{ cell.assignment_id }}</div>
           {% endif %}
           {% if cell.duty_label %}
           <div class="duty-label {% if cell.new_assignment_id %}duty-label--original{% endif %}">{{ cell.duty_label }}</div>
