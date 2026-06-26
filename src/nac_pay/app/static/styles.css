@@ -1288,6 +1288,15 @@ a.day-cell:hover {
   background: #ffffff;
   color: var(--text);
 }
+.btn--danger {
+  background: #c0392b;
+  color: #ffffff;
+  border-color: #c0392b;
+}
+.btn--danger:hover {
+  filter: brightness(1.1);
+  color: #ffffff;
+}
 
 /* ── Documents ──────────────────────────────────────────────── */
 

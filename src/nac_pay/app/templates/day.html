@@ -45,7 +45,11 @@
       <div class="pch-block">
         <div class="metric-label">Effective PCH</div>
         <div class="metric-value pch-effective">{{ "%.2f"|format(data.effective_pch) }}</div>
-        {% if data.published_pch is not none and data.published_pch != data.effective_pch %}
+        {% if data.is_dropped %}
+        <div class="metric-sub">
+          dropped (company-approved){% if data.published_pch %} · {{ "%.2f"|format(data.published_pch) }} PCH forfeited{% endif %}
+        </div>
+        {% elif data.published_pch is not none and data.published_pch != data.effective_pch %}
         <div class="metric-sub">
           original {{ "%.2f"|format(data.published_pch) }} · paid the greater (§3.E.1.b)
         </div>
@@ -327,8 +331,12 @@
               {% if v.superseded_by_user_seq is not none %}by v{{ v.superseded_by_user_seq }}{% endif %}
             </span>
           {% endif %}
-          {% if v.user_seq is not none and v.user_version_type == 'REASSIGNMENT' and not v.is_superseded %}
+          {% if v.user_seq is not none and not v.is_superseded %}
+            {% if v.user_version_type == 'DROP' %}
+            <a class="correct-link" href="/day/{{ data.date_iso }}?correct={{ v.user_seq }}#reassign-form">Restore</a>
+            {% elif v.user_version_type == 'REASSIGNMENT' %}
             <a class="correct-link" href="/day/{{ data.date_iso }}?correct={{ v.user_seq }}#reassign-form">Correct this</a>
+            {% endif %}
           {% endif %}
         </span>
         {% if v.notes %}
@@ -389,7 +397,10 @@
   </div>
   {% endif %}
 
-  {# ── Reassignment form (Phase G; H opens it on all day types) ── #}
+  {# ── Reassignment form (Phase G; H opens it on all day types) ──
+       Hidden on a dropped day unless we're mid-restore (a CORRECTION of the
+       drop), so the only action offered on a dropped day is Restore. #}
+  {% if not data.is_dropped or data.reassign_form_defaults.correction_of is not none %}
   <div class="card" id="reassign-form">
     {% if data.saved_reassign %}
     <div class="banner banner--ok" style="margin-bottom: 12px;">
@@ -405,10 +416,13 @@
 
     {% set defaults = data.reassign_form_defaults %}
     {% set is_correction = defaults.correction_of is not none %}
+    {% set is_restore = defaults.is_restore %}
 
     <details class="reassign-details" {% if is_correction or data.reassign_error %}open{% endif %}>
       <summary class="reassign-summary">
-        {% if is_correction %}
+        {% if is_restore %}
+          ↩ Restore dropped assignment ({{ defaults.correcting_seq_label }})
+        {% elif is_correction %}
           ✎ Correcting {{ defaults.correcting_seq_label }}
         {% else %}
           + Reassign / record a new version
@@ -558,12 +572,52 @@
           <a href="/day/{{ data.date_iso }}" class="btn btn--secondary">Cancel correction</a>
           {% endif %}
           <button type="submit" class="btn btn--primary">
-            {% if is_correction %}Save correction{% else %}Save reassignment{% endif %}
+            {% if is_restore %}Restore assignment{% elif is_correction %}Save correction{% else %}Save reassignment{% endif %}
           </button>
         </div>
       </form>
     </details>
   </div>
+  {% endif %}
+
+  {# ── Drop this assignment (company-approved) ─────────────────── #}
+  {% if data.saved_drop %}
+  <div class="card banner banner--ok">
+    <strong>Assignment dropped.</strong> 0 PCH credited; the floor was reduced
+    by the forfeited PCH. Reverse it from the assignment history below.
+  </div>
+  {% endif %}
+
+  {% if data.editable and not data.is_dropped %}
+  <div class="card" id="drop-form">
+    <details class="reassign-details">
+      <summary class="reassign-summary">
+        <span class="reassign-summary-title">− Drop this assignment</span>
+        <span class="subtle">forfeit the day with company approval</span>
+      </summary>
+      <form action="/day/{{ data.date_iso }}/drop" method="post" class="reassign-form">
+        <p class="subtle" style="margin-top: 12px;">
+          A drop forfeits this assignment: it credits <strong>0 PCH</strong>,
+          stops counting as a workday, and reduces your monthly guarantee floor
+          by the dropped value. The original assignment stays visible for the
+          audit trail. Reverse a drop from the history's “Restore” link.
+        </p>
+        <label class="checkbox-inline" style="margin-top: 8px;">
+          <input type="checkbox" name="company_approved" value="1" required>
+          <span>This drop was <strong>approved by the company</strong> (required).</span>
+        </label>
+        <label class="reassign-field" style="margin-top: 12px;">
+          <span>Note (optional)</span>
+          <textarea name="notes" maxlength="400" rows="2"
+                    placeholder="e.g. CS approved drop 09:14, ref #1234"></textarea>
+        </label>
+        <div class="form-actions" style="margin-top: 16px;">
+          <button type="submit" class="btn btn--danger">Drop assignment</button>
+        </div>
+      </form>
+    </details>
+  </div>
+  {% endif %}
 
   <script>
     // Phase H — when the user picks a packet trip from the datalist,

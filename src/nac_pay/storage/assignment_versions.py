@@ -36,6 +36,16 @@ class VersionType(StrEnum):
     # floor), this manual path is a plain reassignment lift — see
     # apply_user_versions for why.
     RESERVE_CALLOUT = "RESERVE_CALLOUT"
+    # A company-approved DROP of a scheduled assignment. Unlike every other
+    # version type (which lift pay via the §3.E.1.b max), a DROP is the
+    # inverse: it removes the assignment entirely. apply_user_versions stamps
+    # the matched Trip/Day with ``ReasonCode.VOLUNTARY_DROP`` so the existing
+    # engine path (lower.py FLOOR_DROP) credits 0 PCH, drops the workday, and
+    # forfeits the floor 1:1 by the lost PCH (§3.D). pch_value is always 0;
+    # the row's existence implies company approval (the route gates the save
+    # behind a required checkbox). Reverse a drop by superseding it with a
+    # CORRECTION — the active-versions resolver then ignores it.
+    DROP = "DROP"
 
 
 class VersionEntryMode(StrEnum):
