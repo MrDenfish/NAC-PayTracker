@@ -116,6 +116,10 @@ class Day:
     premium_category: PremiumCategory = PremiumCategory.NONE
     workdays: int = 1
     callout_trip_pch: Decimal | None = None
+    # The flown trip id a reserve callout was assigned to (e.g. "720/1780"),
+    # captured from the iCal reconciliation. Surfaced on the calendar as the
+    # bold "new assignment" over the subtle reserve line. None when unknown.
+    callout_trip_id: str | None = None
     custom_multiplier: Decimal | None = None
     label: str = ""
     # The day's PCH before any pilot reassignment version lifted/synthesized

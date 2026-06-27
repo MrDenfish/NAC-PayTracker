@@ -113,6 +113,7 @@ def apply_actuals_to_month(
     duty_extension_by_index: dict[int, Trip] = {}
     pickups: list[Trip] = []
     callout_pch_by_date: dict[date_t, Decimal] = {}
+    callout_aid_by_date: dict[date_t, str] = {}
     events: list[AppliedEvent] = []
 
     # ── Matched reconciled trips ─────────────────────────────────────────
@@ -137,6 +138,7 @@ def apply_actuals_to_month(
             and first_date not in callout_pch_by_date
         ):
             callout_pch_by_date[first_date] = rt.published_pch
+            callout_aid_by_date[first_date] = rt.trip_id
             excess = max(Decimal("0"), rt.published_pch - DPG)
             events.append(
                 AppliedEvent(
@@ -204,7 +206,11 @@ def apply_actuals_to_month(
     for day in baseline.days:
         if day.date is not None and day.date in callout_pch_by_date:
             final_days.append(
-                replace(day, callout_trip_pch=callout_pch_by_date[day.date])
+                replace(
+                    day,
+                    callout_trip_pch=callout_pch_by_date[day.date],
+                    callout_trip_id=callout_aid_by_date.get(day.date),
+                )
             )
         else:
             final_days.append(day)

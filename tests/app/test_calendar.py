@@ -238,6 +238,7 @@ def test_calendar_surfaces_callout_flag(monkeypatch):
                     premium_category=day.premium_category,
                     workdays=day.workdays,
                     callout_trip_pch=Decimal("4.50"),
+                    callout_trip_id="720/1780",
                     label=day.label,
                 )
             )
@@ -279,4 +280,9 @@ def test_calendar_surfaces_callout_flag(monkeypatch):
     assert cell_june_16.has_callout is True
     assert cell_june_16.duty_label == "CALLOUT"
     assert cell_june_16.duty_class == "flt"
+    # The flown trip is the bold "new" assignment; the reserve line stays as
+    # the (subtle) original — a distinct, non-empty designator.
+    assert cell_june_16.new_assignment_id == "720/1780"
+    assert cell_june_16.assignment_id
+    assert cell_june_16.assignment_id != "720/1780"
     assert cell_june_16.pch == Decimal("4.50")  # max(DPG 3.82, 4.50)
