@@ -2402,6 +2402,11 @@ def _build_cell(
             max(DPG, day.callout_trip_pch) if is_callout else day.pch_value
         )
         mult = _pm(day.premium_category, day.custom_multiplier)
+        # On an iCal callout, surface the flown trip id (e.g. 720/1780) as the
+        # bold "new" assignment over the subtle reserve line (e.g. 1021), the
+        # same treatment a pilot reassignment gets. A manually-supplied
+        # new_assignment_id (the user-version path) still wins if present.
+        new_aid = new_assignment_id or (day.callout_trip_id if is_callout else None)
         return CalendarCell(
             date=d,
             in_month=in_month,
@@ -2413,7 +2418,7 @@ def _build_cell(
             has_callout=is_callout or has_user_callout,
             is_reassigned=False,
             user_reassignment_count=user_reassignment_count,
-            new_assignment_id=new_assignment_id,
+            new_assignment_id=new_aid,
             premium_label=premium_label,
             pay_dollars=_pay_for(pch_display, mult),
         )

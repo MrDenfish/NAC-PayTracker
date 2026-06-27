@@ -308,6 +308,9 @@ def test_reserve_callout_sets_callout_trip_pch():
     assert len(updated.days) == 1
     assert updated.days[0].date == callout_date
     assert updated.days[0].callout_trip_pch == D("4.50")
+    # The flown trip id is captured too, so the calendar can surface it as the
+    # bold "new" assignment over the subtle reserve line.
+    assert updated.days[0].callout_trip_id == "766"
     callout_events = [e for e in events if e.kind is AppliedEventKind.RESERVE_CALLOUT]
     assert len(callout_events) == 1
     # delta_pch should be the excess over DPG = 4.50 - 3.82 = 0.68
