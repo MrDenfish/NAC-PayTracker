@@ -32,8 +32,11 @@ from nac_pay.auth import (
 )
 from nac_pay.billing import start_trial
 
+from .static_version import register as _register_static_v
+
 _HERE = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
+_register_static_v(_TEMPLATES)
 
 router = APIRouter()
 
