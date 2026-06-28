@@ -578,15 +578,24 @@ def load_calendar(
             callout_by_date.add(date_iso)
         # Highest pch wins; earliest seq breaks ties.
         winner = max(active, key=lambda v: (v.pch_value, -v.seq))
-        if winner.assignment_id:
+        eff = trip_by_date.get(date_t.fromisoformat(date_iso)) \
+            or day_by_date.get(date_t.fromisoformat(date_iso))
+        # A genuine reassignment names a DIFFERENT id than the day's own
+        # assignment. A PCH-only quick edit copies the current id (e.g. the
+        # reserve line "1021" on a callout day) — that must NOT register as a
+        # winning aid, or it overrides the flown-trip callout id (the bug that
+        # made a callout day's cell revert from "720/..." back to "1021").
+        self_id = (
+            getattr(eff, "trip_id", None) or getattr(eff, "label", None)
+            if eff is not None else None
+        )
+        if winner.assignment_id and winner.assignment_id != self_id:
             winning_aid_by_date[date_iso] = winner.assignment_id
         # I.4 (fixed 2026-06-19): label the cell with the EFFECTIVE premium
         # from the post-override month, NOT the raw winning version. A
         # DayOverride applies after reassignment versions (see _pipeline),
         # so reading the version's premium here ignored a relabel done on
         # the day page — the calendar kept showing the stale premium.
-        eff = trip_by_date.get(date_t.fromisoformat(date_iso)) \
-            or day_by_date.get(date_t.fromisoformat(date_iso))
         eff_premium = (
             eff.premium_category.value if eff is not None
             else winner.premium_category
@@ -1393,6 +1402,9 @@ def _build_day_detail(
     ]
     from nac_pay.storage import VersionType as _VT
     is_dropped = any(uv.version_type is _VT.DROP for uv in active_versions_today)
+    day_is_callout = (
+        day_entry is not None and day_entry.callout_trip_pch is not None
+    )
     if is_dropped:
         # A company-approved drop forfeits the assignment. Show 0 effective
         # PCH and a DROPPED tag; keep the FA-original aid + published value
@@ -1403,10 +1415,27 @@ def _build_day_detail(
         effective = Decimal("0")
         uplift = Decimal("0")
         premium_multiplier = None
-    elif active_versions_today:
-        winner = max(active_versions_today, key=lambda v: (v.pch_value, -v.seq))
-        if winner.assignment_id:
-            assignment_id = winner.assignment_id
+    else:
+        if active_versions_today:
+            winner = max(
+                active_versions_today, key=lambda v: (v.pch_value, -v.seq)
+            )
+            # Only a genuine reassignment to a DIFFERENT id overrides the
+            # header. A PCH-only quick edit copies the current id (the reserve
+            # line on a callout day), so it must not hijack the displayed
+            # assignment — same guard as the calendar winning-aid logic.
+            if winner.assignment_id and winner.assignment_id != assignment_id:
+                assignment_id = winner.assignment_id
+        # On an iCal callout the flown trip IS the assignment — surface
+        # callout_trip_id (mirror the calendar's _build_cell) unless a genuine
+        # reassignment above already replaced the reserve-line label. The
+        # history baseline was built above with the reserve line as "Original".
+        if (
+            day_is_callout
+            and day_entry.callout_trip_id
+            and (assignment_id is None or assignment_id == day_entry.label)
+        ):
+            assignment_id = day_entry.callout_trip_id
 
     return DayDetailData(
         pilot=pr.pilot,
