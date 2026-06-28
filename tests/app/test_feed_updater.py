@@ -277,7 +277,7 @@ def test_update_merge_preserves_frozen_dropped_leg():
     store = _set_up_month(uid, 2026, 6)
     now = datetime(2026, 6, 28, 12, 0, tzinfo=timezone.utc)
 
-    # Stored feed has both legs (both completed before `now`).
+    # Stored feed has 720 (will age out) + 721, both completed before `now`.
     store.save(
         2026, 6, DocumentKind.ICAL_FEED, "feed.ics",
         _vcal(
@@ -285,12 +285,20 @@ def test_update_merge_preserves_frozen_dropped_leg():
             _vevent("721", "20260627T170000Z", "20260627T190000Z"),
         ),
     )
-    # Fetch drops 720 (aged out).
-    incoming = _vcal(_vevent("721", "20260627T170000Z", "20260627T190000Z"))
+    # Fetch drops 720 (aged out) AND brings a NEW leg 722 — so a silent no-op
+    # (e.g. a swallowed error) is detectable: 722 only lands if the merge ran.
+    incoming = _vcal(
+        _vevent("721", "20260627T170000Z", "20260627T190000Z"),
+        _vevent("722", "20260628T140000Z", "20260628T160000Z"),
+    )
     with _client(lambda req: httpx.Response(200, content=incoming)) as c:
-        fu.update_user_feed(
+        result = fu.update_user_feed(
             uid, "https://feed.example/x.ics", today=JUNE22, now=now, client=c,
         )
 
+    # June must have actually updated (not a swallowed failure).
+    june = next(m for m in result.months if (m.year, m.month) == (2026, 6))
+    assert june.ok and june.detail == "updated"
     merged = store.get(2026, 6, DocumentKind.ICAL_FEED).path.read_bytes()
-    assert b"UID:720" in merged and b"UID:721" in merged
+    assert b"UID:720" in merged   # frozen dropped leg preserved
+    assert b"UID:722" in merged   # proves the fresh fetch was merged in

@@ -187,7 +187,7 @@ def update_user_feed(
             existing = store.get(y, m, DocumentKind.ICAL_FEED)
             existing_bytes = (
                 existing.path.read_bytes()
-                if existing is not None and existing.exists()
+                if existing is not None and existing.exists
                 else None
             )
             merged = merge_feed_bytes(existing_bytes, data, now)
