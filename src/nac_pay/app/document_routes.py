@@ -156,7 +156,7 @@ async def documents_upload(
         existing = store.get(year, month, DocumentKind.ICAL_FEED)
         existing_bytes = (
             existing.path.read_bytes()
-            if existing is not None and existing.exists()
+            if existing is not None and existing.exists
             else None
         )
         data = merge_feed_bytes(existing_bytes, data, datetime.now(timezone.utc))
