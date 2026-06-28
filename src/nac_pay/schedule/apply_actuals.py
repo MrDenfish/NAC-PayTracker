@@ -49,10 +49,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import date as date_t
+from datetime import timedelta
 from decimal import Decimal
 from enum import StrEnum
 
-from nac_pay.engine.constants import DPG
+from nac_pay.engine.constants import (
+    DPG,
+    REPORT_PAD_HOURS,
+    TRIP_END_PAD_HOURS,
+)
 from nac_pay.engine.trip_pch import (
     components_from_times,
     effective_trip_pch_after_reassignment,
@@ -137,15 +142,32 @@ def apply_actuals_to_month(
             first_date in baseline_rsv_by_date
             and first_date not in callout_pch_by_date
         ):
-            callout_pch_by_date[first_date] = rt.published_pch
+            # A callout is a protected trip — auto-credit the greater of the
+            # published value and the §3.E recompute from actual times (a long
+            # callout / duty extension), same as a matched trip gets.
+            recomputed = _recomputed_actual_pch(rt)
+            callout_pch = rt.published_pch
+            if (
+                recomputed is not None
+                and recomputed > rt.published_pch + duty_extension_tolerance_hours
+            ):
+                callout_pch = recomputed
+            callout_pch_by_date[first_date] = callout_pch
             callout_aid_by_date[first_date] = rt.trip_id
-            excess = max(Decimal("0"), rt.published_pch - DPG)
+            excess = max(Decimal("0"), callout_pch - DPG)
+            extended_note = (
+                f" (recomputed from actuals, published {rt.published_pch:.2f})"
+                if callout_pch != rt.published_pch else ""
+            )
             events.append(
                 AppliedEvent(
                     kind=AppliedEventKind.RESERVE_CALLOUT,
                     date=first_date,
                     trip_id=rt.trip_id,
-                    detail=f"Reserve callout to {rt.trip_id} (pch={rt.published_pch})",
+                    detail=(
+                        f"Reserve callout to {rt.trip_id} "
+                        f"(pch={callout_pch:.2f}){extended_note}"
+                    ),
                     delta_pch=excess,
                 )
             )
@@ -326,54 +348,68 @@ def _is_ordered_subsequence(needle: tuple[str, ...], haystack: list[str]) -> boo
     return False
 
 
+def _actual_duty_hours(rt: ReconciledTrip) -> Decimal:
+    """The ACTUAL duty period from iCal, padded to report→release so it's
+    comparable to the packet's already-padded scheduled duty: report
+    REPORT_PAD before the first leg out, release TRIP_END_PAD after the last
+    leg in (§3.E; same padding the day-detail duty window uses)."""
+    duty_start = rt.first_dt_utc - timedelta(hours=float(REPORT_PAD_HOURS))
+    duty_end = rt.last_dt_utc + timedelta(hours=float(TRIP_END_PAD_HOURS))
+    seconds = int((duty_end - duty_start).total_seconds())
+    return Decimal(seconds) / Decimal("3600")
+
+
+def _recomputed_actual_pch(rt: ReconciledTrip) -> Decimal | None:
+    """§3.E PCH recomputed from ACTUAL iCal times — the greater of actual
+    flight-op (block) and actual duty rig (padded duty ÷ 2), plus trip rig /
+    cumulative DPG / deadhead from the packet (the feed doesn't publish TAFB
+    or DH separately). None when there's no matched packet to source those.
+    """
+    packet = rt.packet_trip
+    if packet is None:
+        return None
+    recomputed = components_from_times(
+        block_hours=rt.actual_block_hours,
+        duty_hours=_actual_duty_hours(rt),
+        tafb_hours=packet.tafb_hours,
+        workdays=packet.workdays,
+        deadhead=packet.deadhead_pch,
+    )
+    return recomputed.trip_pch
+
+
 def _apply_duty_extension(
     baseline_trip: Trip,
     rt: ReconciledTrip,
     tolerance_hours: Decimal,
     events: list[AppliedEvent],
 ) -> Trip:
-    """If actual block exceeds packet block by more than the tolerance,
-    append an AssignmentVersion with recomputed PCH and return a new Trip;
-    otherwise return the baseline Trip unchanged.
+    """Auto-credit a duty extension: recompute §3.E PCH from the ACTUAL iCal
+    times (padded duty rig + block) and, if it beats the published value by
+    more than the tolerance, append an AssignmentVersion so the engine's
+    ``Trip.effective_pch`` pays ``max(published, recomputed)``. Otherwise
+    return the baseline Trip unchanged.
 
-    Duty time is estimated from the leg span (first-leg start → last-leg
-    end); the packet's published TAFB is reused for trip-rig recomputation
-    since the iCal feed doesn't separately publish a release time. This is
-    a rough recompute — sufficient to spot duty extensions of meaningful
-    size. Future refinement can plumb actual show/release deltas if those
-    signals become available.
+    Triggered by either a longer actual block OR a longer actual duty (the
+    rig over the report→release window) — previously only a block overrun
+    triggered, which missed extensions driven by ground/duty time.
     """
     packet = rt.packet_trip
     assert packet is not None  # MatchStatus.MATCHED implies packet_trip set
-    actual_block = rt.actual_block_hours
-    packet_block = packet.sch_block_hours
 
-    if actual_block <= packet_block + tolerance_hours:
+    recomputed_pch = _recomputed_actual_pch(rt)
+    if recomputed_pch is None:
         return baseline_trip
-
-    duty_span_seconds = (rt.last_dt_utc - rt.first_dt_utc).total_seconds()
-    actual_duty_hours = Decimal(int(duty_span_seconds)) / Decimal("3600")
-    recomputed = components_from_times(
-        block_hours=actual_block,
-        duty_hours=actual_duty_hours,
-        tafb_hours=packet.tafb_hours,
-        workdays=packet.workdays,
-        deadhead=packet.deadhead_pch,
-    )
-    recomputed_pch = recomputed.trip_pch
-    effective = effective_trip_pch_after_reassignment(
-        baseline_trip.published_pch, recomputed_pch,
-    )
-
-    if effective <= baseline_trip.published_pch:
+    if recomputed_pch <= baseline_trip.published_pch + tolerance_hours:
         return baseline_trip
 
     new_version = AssignmentVersion(
         seq=len(baseline_trip.versions) + 1,
         pch_value=recomputed_pch,
         label=(
-            f"Duty extension from iCal: block {packet_block:.2f}h → "
-            f"{actual_block:.2f}h"
+            f"Duty extension from iCal: recomputed {recomputed_pch:.2f} "
+            f"(block {rt.actual_block_hours:.2f}h, duty "
+            f"{_actual_duty_hours(rt):.2f}h)"
         ),
     )
     events.append(
@@ -382,11 +418,12 @@ def _apply_duty_extension(
             date=rt.first_dt_utc.date(),
             trip_id=rt.trip_id,
             detail=(
-                f"Block {packet_block:.2f}h → {actual_block:.2f}h; "
-                f"recomputed PCH {recomputed_pch} (published "
-                f"{baseline_trip.published_pch})"
+                f"Actual block {rt.actual_block_hours:.2f}h / duty "
+                f"{_actual_duty_hours(rt):.2f}h → recomputed PCH "
+                f"{recomputed_pch:.2f} (published "
+                f"{baseline_trip.published_pch:.2f})"
             ),
-            delta_pch=effective - baseline_trip.published_pch,
+            delta_pch=recomputed_pch - baseline_trip.published_pch,
         )
     )
     return replace(
