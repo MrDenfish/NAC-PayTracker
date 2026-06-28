@@ -286,3 +286,66 @@ def test_calendar_surfaces_callout_flag(monkeypatch):
     assert cell_june_16.assignment_id
     assert cell_june_16.assignment_id != "720/1780"
     assert cell_june_16.pch == Decimal("4.50")  # max(DPG 3.82, 4.50)
+
+
+def test_calendar_callout_aid_survives_stray_reserve_line_version(monkeypatch):
+    """Regression (June 27 bug): a PCH-only quick edit on a callout day copies
+    the reserve line designator (e.g. "1021") as the version's assignment_id.
+    That stray aid must NOT register as the winning aid — otherwise it overrode
+    the flown-trip callout id and the cell reverted from "720/..." to "1021"."""
+    from nac_pay.storage import (
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionType,
+    )
+
+    uid = "u_test_callout_stray_version"
+    # Two stray REASSIGNMENT rows (the double-save) + a CORRECTION, all carrying
+    # the reserve line "1021" as the aid — exactly the prod row shape.
+    store = UserAssignmentVersionStore(user_id=uid)
+    store.save(date_iso="2026-06-16", version_type=VersionType.REASSIGNMENT,
+               assignment_id="1021", entry_mode=VersionEntryMode.SIMPLE,
+               pch_value=Decimal("7.09"), notes="PCH adjusted via Day-pay editor")
+    store.save(date_iso="2026-06-16", version_type=VersionType.REASSIGNMENT,
+               assignment_id="1021", entry_mode=VersionEntryMode.SIMPLE,
+               pch_value=Decimal("7.09"), notes="PCH adjusted via Day-pay editor")
+    store.save(date_iso="2026-06-16", version_type=VersionType.CORRECTION,
+               correction_of=1, assignment_id="1021",
+               entry_mode=VersionEntryMode.SIMPLE, pch_value=Decimal("6.08"))
+
+    _pipeline.cache_clear()
+    real = _pipeline(2026, 6)
+    new_days: list[Day] = []
+    for day in real.updated_month.days:
+        if day.date == date(2026, 6, 16) and day.duty_type is DutyType.RSV:
+            new_days.append(
+                Day(
+                    date=day.date, duty_type=day.duty_type, pch_value=day.pch_value,
+                    reason_code=day.reason_code, premium_category=day.premium_category,
+                    workdays=day.workdays, callout_trip_pch=Decimal("6.08"),
+                    callout_trip_id="720/723/1780/1781", label="1021",
+                )
+            )
+        else:
+            new_days.append(day)
+    poked = Month(
+        pilot=real.updated_month.pilot, year=real.updated_month.year,
+        month=real.updated_month.month, line_value=real.updated_month.line_value,
+        trips=real.updated_month.trips, days=tuple(new_days),
+    )
+    poked_result = type(real)(
+        pilot=real.pilot, year=real.year, month=real.month, updated_month=poked,
+        engine_result=compute_pay(lower_month(poked)),
+        applied_events=real.applied_events,
+        validation_discrepancies=real.validation_discrepancies, feed=real.feed,
+        reconciliation=real.reconciliation, packet=real.packet,
+        packet_trip_count=real.packet_trip_count, fa_loaded=True, packet_loaded=True,
+    )
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked_result):
+        data = load_calendar(2026, 6, user_id=uid)
+
+    cell = next(c for week in data.weeks for c in week if c.date == date(2026, 6, 16))
+    # The flown trip — not the reserve line — is the surfaced new assignment.
+    assert cell.new_assignment_id == "720/723/1780/1781"
+    assert cell.duty_label == "CALLOUT"

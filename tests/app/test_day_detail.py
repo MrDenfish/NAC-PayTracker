@@ -159,3 +159,53 @@ def test_calendar_cells_link_to_day_route():
     assert 'href="/day/2026-06-17"' in r.text
     # OFF cells too (e.g. June 7)
     assert 'href="/day/2026-06-07"' in r.text
+
+
+def test_day_detail_callout_header_shows_flown_trip():
+    """Regression (June 27 bug): the day-detail Assignment header must surface
+    the flown callout trip (callout_trip_id) — like the calendar — not the bare
+    reserve line. Previously _build_day_detail only fell back to day.label, so
+    the day page showed "1021" while the calendar showed the flown trip."""
+    from datetime import date
+    from unittest.mock import patch
+
+    from nac_pay.app.services import _pipeline
+    from nac_pay.engine import compute_pay
+    from nac_pay.schedule import Day, DutyType, Month, lower_month
+
+    _pipeline.cache_clear()
+    real = _pipeline(2026, 6)
+    new_days = []
+    for day in real.updated_month.days:
+        if day.date == date(2026, 6, 16) and day.duty_type is DutyType.RSV:
+            new_days.append(
+                Day(
+                    date=day.date, duty_type=day.duty_type, pch_value=day.pch_value,
+                    reason_code=day.reason_code, premium_category=day.premium_category,
+                    workdays=day.workdays, callout_trip_pch=Decimal("6.08"),
+                    callout_trip_id="720/723/1780/1781", label="1021",
+                )
+            )
+        else:
+            new_days.append(day)
+    poked = Month(
+        pilot=real.updated_month.pilot, year=real.updated_month.year,
+        month=real.updated_month.month, line_value=real.updated_month.line_value,
+        trips=real.updated_month.trips, days=tuple(new_days),
+    )
+    poked_result = type(real)(
+        pilot=real.pilot, year=real.year, month=real.month, updated_month=poked,
+        engine_result=compute_pay(lower_month(poked)),
+        applied_events=real.applied_events,
+        validation_discrepancies=real.validation_discrepancies, feed=real.feed,
+        reconciliation=real.reconciliation, packet=real.packet,
+        packet_trip_count=real.packet_trip_count, fa_loaded=True, packet_loaded=True,
+    )
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked_result):
+        d = load_day(2026, 6, 16)
+
+    # Header surfaces the flown trip; the reserve line remains the history
+    # "Original" baseline (a distinct, non-empty designator).
+    assert d.assignment_id == "720/723/1780/1781"
+    assert d.duty_label == "CALLOUT"
