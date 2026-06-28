@@ -359,7 +359,8 @@ def day_reassign(
 ) -> RedirectResponse:
     """Append a pilot-recorded version (reassignment or correction).
 
-    Append-only — never edits or deletes an existing row. A CORRECTION
+    Append-only — this route never edits an existing row (removal is a
+    separate explicit action, see ``day_version_delete``). A CORRECTION
     must reference an existing seq; that seq is then treated as
     superseded by the engine's active-versions resolver, but the row
     survives in the audit history."""
@@ -548,6 +549,42 @@ def day_drop(
     return RedirectResponse(f"/day/{date_iso}?saved=drop", status_code=303)
 
 
+@app.post("/day/{date_iso}/version/{seq}/delete")
+def day_version_delete(
+    request: Request, date_iso: str, seq: int,
+) -> RedirectResponse:
+    """Hard-delete a pilot-recorded assignment version (and cascade to any
+    corrections that supersede it). Unlike the append-only save path, this
+    removes the row outright — for clearing a typo or a duplicate entry from
+    the assignment history. seq 0 (the FA/packet "Original") is not a stored
+    row and cannot be deleted."""
+
+    def _bail(err: str) -> RedirectResponse:
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"/day/{date_iso}?reassign_error={quote(err)}", status_code=303,
+        )
+
+    try:
+        date.fromisoformat(date_iso)
+    except ValueError:
+        raise HTTPException(400, f"Invalid date {date_iso!r}")
+
+    uid = _user_id(request)
+    if uid == DEFAULT_USER_ID:
+        return _bail("Default user cannot edit versions — use a real account.")
+    if seq < 1:
+        return _bail("The original assignment can't be deleted.")
+
+    deleted = UserAssignmentVersionStore(user_id=uid).delete(date_iso, seq)
+    if not deleted:
+        return _bail("No such version to delete.")
+    invalidate_caches()
+    return RedirectResponse(
+        f"/day/{date_iso}?saved=version_deleted", status_code=303,
+    )
+
+
 @app.get("/discrepancies", response_class=HTMLResponse)
 def discrepancies_view(
     request: Request,
@@ -667,6 +704,7 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
             saved=(saved_q == "1"),
             saved_reassign=(saved_q == "reassign"),
             saved_drop=(saved_q == "drop"),
+            saved_version_deleted=(saved_q == "version_deleted"),
             reassign_error=request.query_params.get("reassign_error", ""),
             correct_seq=correct_seq,
         )

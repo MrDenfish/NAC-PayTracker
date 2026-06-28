@@ -151,3 +151,76 @@ def test_correction_of_missing_seq_is_ignored():
     versions = s.list_for_date("2026-06-02")
     active, sup = active_versions(versions)
     assert active == versions and sup == set()
+
+
+# ── hard delete ────────────────────────────────────────────────────
+
+
+def _rsv(s, date_iso, **kw):
+    base = dict(version_type=VersionType.REASSIGNMENT, assignment_id="X",
+                entry_mode=VersionEntryMode.SIMPLE, pch_value=Decimal("5.0"))
+    base.update(kw)
+    return s.save(date_iso=date_iso, **base)
+
+
+def test_delete_removes_the_row():
+    s = _store("user-del-basic")
+    _rsv(s, "2026-06-02")
+    _rsv(s, "2026-06-02", pch_value=Decimal("6.0"))
+    assert s.delete("2026-06-02", 1) == [1]
+    remaining = [v.seq for v in s.list_for_date("2026-06-02")]
+    assert remaining == [2]
+
+
+def test_delete_cascades_to_corrections_of_the_target():
+    """Deleting a reassignment that a correction supersedes removes the
+    correction too — the log never points at a deleted seq."""
+    s = _store("user-del-cascade")
+    _rsv(s, "2026-06-02")                                   # v1
+    _rsv(s, "2026-06-02", version_type=VersionType.CORRECTION,
+         correction_of=1, pch_value=Decimal("5.2"))         # v2 corrects v1
+    deleted = s.delete("2026-06-02", 1)
+    assert deleted == [1, 2]
+    assert s.list_for_date("2026-06-02") == []
+
+
+def test_delete_correction_only_removes_itself():
+    s = _store("user-del-corr-only")
+    _rsv(s, "2026-06-02")                                   # v1
+    _rsv(s, "2026-06-02", version_type=VersionType.CORRECTION,
+         correction_of=1, pch_value=Decimal("5.2"))         # v2
+    assert s.delete("2026-06-02", 2) == [2]
+    assert [v.seq for v in s.list_for_date("2026-06-02")] == [1]
+
+
+def test_delete_missing_seq_is_noop():
+    s = _store("user-del-missing")
+    _rsv(s, "2026-06-02")
+    assert s.delete("2026-06-02", 99) == []
+    assert s.delete("2026-06-02", 0) == []
+    assert [v.seq for v in s.list_for_date("2026-06-02")] == [1]
+
+
+def test_delete_top_seq_frees_it_for_reuse():
+    """save() assigns seq = max(existing)+1, so deleting the highest seq
+    frees that number for the next save. Harmless: cascade already removed
+    any correction that referenced it, so no row points at a stale seq."""
+    s = _store("user-del-reuse")
+    _rsv(s, "2026-06-02")          # v1
+    _rsv(s, "2026-06-02")          # v2
+    s.delete("2026-06-02", 2)
+    v = _rsv(s, "2026-06-02")      # max is now 1 → next seq is 2 again
+    assert v.seq == 2
+    assert [x.seq for x in s.list_for_date("2026-06-02")] == [1, 2]
+
+
+def test_delete_middle_seq_does_not_reuse():
+    """Deleting a non-top seq leaves the max intact, so the next save still
+    advances past it (no reuse of the gap)."""
+    s = _store("user-del-gap")
+    _rsv(s, "2026-06-02")          # v1
+    _rsv(s, "2026-06-02")          # v2
+    _rsv(s, "2026-06-02")          # v3
+    s.delete("2026-06-02", 2)
+    v = _rsv(s, "2026-06-02")      # max is 3 → next is 4
+    assert v.seq == 4

@@ -156,8 +156,12 @@ class UserDocumentRow(Base):
 class UserAssignmentVersionRow(Base):
     """Pilot-recorded reassignment / correction for a calendar day.
 
-    Append-only — no row is ever deleted or edited after save. Composite
-    PK ``(user_id, date_iso, seq)`` with seq monotonic per (user, date).
+    Append-only on save and never edited; the sole removal path is an
+    explicit pilot ``delete`` (clears a typo/duplicate, cascading to its
+    corrections). Composite PK ``(user_id, date_iso, seq)`` with seq =
+    ``max(existing)+1`` per (user, date); deleting the current top seq frees
+    that number for reuse, which is safe because cascade removes any
+    correction that referenced it.
 
     `version_type=REASSIGNMENT` stacks on top of the trip's published
     value; `version_type=CORRECTION` references a prior seq via
