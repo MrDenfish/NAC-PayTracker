@@ -252,7 +252,7 @@
         <tr>
           <th>Actual (iCal)</th>
           <td class="num">{{ "%.2f"|format(data.actual_block_hours) }} h</td>
-          <td class="num">—</td>
+          <td class="num">{% if data.duty_hours is not none %}{{ "%.2f"|format(data.duty_hours) }} h{% else %}—{% endif %}</td>
           <td class="num">—</td>
         </tr>
         {% endif %}
@@ -267,6 +267,45 @@
         </tr>
         {% endif %}
       </tbody>
+    </table>
+
+    {% if data.duty_on %}
+    <table class="times-table" style="margin-top: 10px;">
+      <tbody>
+        <tr><th>Duty on</th><td class="num">{{ data.duty_on }}</td></tr>
+        <tr><th>Duty off</th><td class="num">{{ data.duty_off }}</td></tr>
+        <tr><th>Total duty</th><td class="num">{{ "%.2f"|format(data.duty_hours) }} h</td></tr>
+        <tr class="winning"><th>Duty rig (duty ÷ 2)</th><td class="num">{{ "%.2f"|format(data.duty_rig_pch) }} PCH</td></tr>
+      </tbody>
+    </table>
+    <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
+      Duty on = first departure − 1:00 report; duty off = last arrival + 0:15.
+      Times in Anchorage local. Auto-computed from iCal actuals.
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── Day PCH: how it's credited (greatest-of hierarchy) ───────── #}
+  {% if data.pch_candidates %}
+  <div class="card">
+    <h2 class="card-title">Day PCH — how it's credited</h2>
+    <table class="option-table">
+      <thead><tr><th>Source</th><th>PCH</th></tr></thead>
+      <tbody>
+        {% for c in data.pch_candidates %}
+        <tr class="{% if c.is_winning %}winning{% endif %}">
+          <td>{{ c.label }}{% if c.is_winning %} ← credited{% endif %}</td>
+          <td class="num">{{ "%.2f"|format(c.pch) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>Effective PCH = greatest</td>
+          <td class="num strong">{{ "%.2f"|format(data.effective_pch) }}</td>
+        </tr>
+      </tfoot>
     </table>
   </div>
   {% endif %}
@@ -292,13 +331,16 @@
           <td><code>NC{{ leg.flight_no }}</code></td>
           <td>{{ leg.origin }}–{{ leg.destination }}</td>
           <td>{{ leg.tail }}</td>
-          <td class="time-cell">{{ leg.dt_start_utc }}</td>
-          <td class="time-cell">{{ leg.dt_end_utc }}</td>
+          <td class="time-cell">{{ leg.out_local or leg.dt_start_utc }}</td>
+          <td class="time-cell">{{ leg.in_local or leg.dt_end_utc }}</td>
           <td class="num">{{ "%.2f"|format(leg.block_hours) }} h</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
+      Out / In in Anchorage local time.
+    </p>
   </div>
   {% endif %}
 
