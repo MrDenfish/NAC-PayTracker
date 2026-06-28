@@ -665,9 +665,11 @@ class DayLeg:
     origin: str
     destination: str
     tail: str
-    dt_start_utc: str         # ISO string for display
+    dt_start_utc: str         # ISO string for display (UTC)
     dt_end_utc: str
     block_hours: Decimal
+    out_local: str = ""       # Anchorage-local "HH:MM" for display
+    in_local: str = ""
 
 
 @dataclass(frozen=True)
@@ -863,6 +865,16 @@ class DayDetailData:
     day_pay_rows: tuple = ()
     day_pay_total: Decimal | None = None
 
+    # Duty window from iCal actuals + contractual padding (§3.E duty rig).
+    # Anchorage-local clock strings; duty_hours is the duration.
+    duty_on: str | None = None
+    duty_off: str | None = None
+    duty_hours: Decimal | None = None
+    duty_rig_pch: Decimal | None = None
+    # The day's effective PCH against its candidate sources (DPG /
+    # published-or-callout / flight-op / duty-rig); winner = the credited value.
+    pch_candidates: tuple[PchComponent, ...] = ()
+
 
 _WEEKDAY_FULL = (
     "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
@@ -993,6 +1005,10 @@ def load_day(
     # iCal legs on this date.
     legs: tuple[DayLeg, ...] = ()
     actual_block: Decimal | None = None
+    duty_on: str | None = None
+    duty_off: str | None = None
+    duty_hours: Decimal | None = None
+    duty_rig_pch: Decimal | None = None
     if pr.feed is not None:
         date_legs = sorted(
             (leg for leg in pr.feed.flight_legs if leg.dt_start_utc.date() == target),
@@ -1007,6 +1023,8 @@ def load_day(
                 dt_start_utc=leg.dt_start_utc.strftime("%Y-%m-%d %H:%MZ"),
                 dt_end_utc=leg.dt_end_utc.strftime("%Y-%m-%d %H:%MZ"),
                 block_hours=leg.block_hours,
+                out_local=leg.dt_start_utc.astimezone(_DOMICILE_TZ).strftime("%H:%M"),
+                in_local=leg.dt_end_utc.astimezone(_DOMICILE_TZ).strftime("%H:%M"),
             )
             for leg in date_legs
         )
@@ -1015,6 +1033,27 @@ def load_day(
                 (leg.block_hours for leg in date_legs),
                 Decimal("0"),
             )
+            # Duty window from iCal actuals + contractual padding: report
+            # REPORT_PAD before the first leg out, release TRIP_END_PAD after
+            # the last leg in. Times shown Anchorage-local; the duration (and
+            # duty rig = duty/2) is tz-independent. Auto-computed for display;
+            # the pilot can amend the credited value (see the greater-of path).
+            from datetime import timedelta as _td
+
+            from nac_pay.engine.constants import (
+                REPORT_PAD_HOURS,
+                TRIP_END_PAD_HOURS,
+            )
+            report_pad = _td(hours=float(REPORT_PAD_HOURS))
+            end_pad = _td(hours=float(TRIP_END_PAD_HOURS))
+            duty_start = date_legs[0].dt_start_utc - report_pad
+            duty_end = date_legs[-1].dt_end_utc + end_pad
+            duty_on = duty_start.astimezone(_DOMICILE_TZ).strftime("%H:%M")
+            duty_off = duty_end.astimezone(_DOMICILE_TZ).strftime("%H:%M")
+            duty_hours = (
+                Decimal((duty_end - duty_start).total_seconds()) / Decimal("3600")
+            )
+            duty_rig_pch = duty_hours / Decimal("2")
 
     # Matched packet trip via reconciliation.
     packet_trip: TripPairing | None = None
@@ -1100,6 +1139,10 @@ def load_day(
         packet_options=packet_options,
         day_pay_rows=day_pay_rows,
         day_pay_total=day_pay_total,
+        duty_on=duty_on,
+        duty_off=duty_off,
+        duty_hours=duty_hours,
+        duty_rig_pch=duty_rig_pch,
     )
 
 
@@ -1257,6 +1300,10 @@ def _build_day_detail(
     packet_options: tuple = (),
     day_pay_rows: tuple = (),
     day_pay_total: Decimal | None = None,
+    duty_on: str | None = None,
+    duty_off: str | None = None,
+    duty_hours: Decimal | None = None,
+    duty_rig_pch: Decimal | None = None,
 ) -> DayDetailData:
     user_versions = user_versions or []
     superseded_seqs = superseded_seqs or set()
@@ -1441,6 +1488,34 @@ def _build_day_detail(
         ):
             assignment_id = day_entry.callout_trip_id
 
+    # PCH candidate hierarchy — lay the credited (effective) PCH against the
+    # sources it's the greatest of: the reserve/daily guarantee, the assigned
+    # (published/callout) value, the flight-op (actual block), and the actual
+    # duty rig. Only meaningful when the day was flown (iCal legs present).
+    # winner = the candidate equal to the credited value, so the pilot can see
+    # *why* the day is worth what it is (e.g. callout 6.08 beats duty-rig 4.95).
+    pch_candidates: tuple[PchComponent, ...] = ()
+    if legs and effective is not None and not is_dropped:
+        raw: list[tuple[str, Decimal]] = []
+        if day_is_callout or kind == "reserve":
+            raw.append(("Reserve (DPG)", _DPG))
+        if day_is_callout and callout_pch is not None:
+            raw.append(("Assigned trip (published)", callout_pch))
+        elif published is not None:
+            raw.append(("Published", published))
+        if actual_block is not None and actual_block > 0:
+            raw.append(("Flight-op (actual block)", actual_block))
+        if duty_rig_pch is not None:
+            raw.append(("Duty-rig (actual)", duty_rig_pch))
+        eff_q = effective.quantize(Decimal("0.01"))
+        built: list[PchComponent] = []
+        seen_winner = False
+        for label, p in raw:
+            is_win = (not seen_winner) and p.quantize(Decimal("0.01")) == eff_q
+            seen_winner = seen_winner or is_win
+            built.append(PchComponent(label=label, pch=p, is_winning=is_win))
+        pch_candidates = tuple(built)
+
     return DayDetailData(
         pilot=pr.pilot,
         year=target.year,
@@ -1490,6 +1565,11 @@ def _build_day_detail(
         day_pay_rows=day_pay_rows,
         day_pay_total=day_pay_total,
         is_dropped=is_dropped,
+        duty_on=duty_on,
+        duty_off=duty_off,
+        duty_hours=duty_hours,
+        duty_rig_pch=duty_rig_pch,
+        pch_candidates=pch_candidates,
     )
 
 

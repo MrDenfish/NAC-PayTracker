@@ -209,3 +209,42 @@ def test_day_detail_callout_header_shows_flown_trip():
     # "Original" baseline (a distinct, non-empty designator).
     assert d.assignment_id == "720/723/1780/1781"
     assert d.duty_label == "CALLOUT"
+
+
+def test_load_day_duty_window_matches_padding():
+    """Duty window = first leg out − 1:00 report, last leg in + 0:15, with
+    duty rig = duty/2. Checked against the real June 12 iCal legs."""
+    from datetime import date
+
+    from nac_pay.app.services import _pipeline
+
+    _pipeline.cache_clear()
+    pr = _pipeline(2026, 6)
+    legs = sorted(
+        (l for l in pr.feed.flight_legs if l.dt_start_utc.date() == date(2026, 6, 12)),
+        key=lambda l: l.dt_start_utc,
+    )
+    span_h = (legs[-1].dt_end_utc - legs[0].dt_start_utc).total_seconds() / 3600
+    expected_duty = Decimal(str(span_h)) + Decimal("1.25")  # 1:00 + 0:15 pad
+
+    d = load_day(2026, 6, 12)
+    assert d.duty_on and d.duty_off          # non-empty local "HH:MM"
+    assert abs(d.duty_hours - expected_duty) < Decimal("0.001")
+    assert d.duty_rig_pch == d.duty_hours / Decimal("2")
+    # Duty always exceeds pure flying (ground time + padding).
+    assert d.duty_hours > d.actual_block_hours
+    # Legs carry an Anchorage-local out/in string.
+    assert all(leg.out_local and leg.in_local for leg in d.legs)
+
+
+def test_load_day_pch_candidates_hierarchy():
+    """A flown day exposes its PCH candidates with exactly one marked as the
+    credited (effective) value, and the footer equals effective_pch."""
+    d = load_day(2026, 6, 12)
+    assert d.pch_candidates
+    labels = [c.label for c in d.pch_candidates]
+    assert any("Flight-op" in x for x in labels)
+    assert any("Duty-rig" in x for x in labels)
+    winners = [c for c in d.pch_candidates if c.is_winning]
+    assert len(winners) == 1
+    assert winners[0].pch == d.effective_pch
