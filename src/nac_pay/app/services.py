@@ -851,6 +851,7 @@ class DayDetailData:
     reassign_form_defaults: ReassignFormDefaults = ReassignFormDefaults()
     saved_reassign: bool = False
     saved_drop: bool = False
+    saved_version_deleted: bool = False
     reassign_error: str = ""
 
     # Phase H — packet trip catalog for the assignment_id datalist
@@ -960,6 +961,7 @@ def load_day(
     saved: bool = False,
     saved_reassign: bool = False,
     saved_drop: bool = False,
+    saved_version_deleted: bool = False,
     reassign_error: str = "",
     correct_seq: int | None = None,
 ) -> DayDetailData:
@@ -1093,6 +1095,7 @@ def load_day(
         reassign_defaults=reassign_defaults,
         saved_reassign=saved_reassign,
         saved_drop=saved_drop,
+        saved_version_deleted=saved_version_deleted,
         reassign_error=reassign_error,
         packet_options=packet_options,
         day_pay_rows=day_pay_rows,
@@ -1249,6 +1252,7 @@ def _build_day_detail(
     reassign_defaults: ReassignFormDefaults | None = None,
     saved_reassign: bool = False,
     saved_drop: bool = False,
+    saved_version_deleted: bool = False,
     reassign_error: str = "",
     packet_options: tuple = (),
     day_pay_rows: tuple = (),
@@ -1480,6 +1484,7 @@ def _build_day_detail(
         reassign_form_defaults=reassign_defaults,
         saved_reassign=saved_reassign,
         saved_drop=saved_drop,
+        saved_version_deleted=saved_version_deleted,
         reassign_error=reassign_error,
         packet_trip_options=packet_options,
         day_pay_rows=day_pay_rows,

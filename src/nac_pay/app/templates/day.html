@@ -302,6 +302,13 @@
   </div>
   {% endif %}
 
+  {% if data.saved_version_deleted %}
+  <div class="banner banner--ok" style="margin-bottom: 12px;">
+    <strong>Version deleted.</strong>
+    <p>The entry (and any correction of it) was removed from the assignment history.</p>
+  </div>
+  {% endif %}
+
   {# ── Assignment history ─────────────────────────────────────── #}
   {% if data.versions %}
   <div class="card">
@@ -337,6 +344,14 @@
             {% elif v.user_version_type == 'REASSIGNMENT' %}
             <a class="correct-link" href="/day/{{ data.date_iso }}?correct={{ v.user_seq }}#reassign-form">Correct this</a>
             {% endif %}
+          {% endif %}
+          {% if v.user_seq is not none %}
+            <form method="post" class="version-delete-form"
+                  action="/day/{{ data.date_iso }}/version/{{ v.user_seq }}/delete"
+                  onsubmit="return confirm('Permanently delete v{{ v.user_seq }}? Any correction of it is removed too. This cannot be undone.');">
+              <button type="submit" class="version-delete-btn"
+                      title="Delete this version permanently">Delete</button>
+            </form>
           {% endif %}
         </span>
         {% if v.notes %}

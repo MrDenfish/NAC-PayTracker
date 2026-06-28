@@ -81,7 +81,12 @@ class UserAssignmentVersion:
 
 
 class UserAssignmentVersionStore:
-    """Per-user, per-date assignment-version log. Append-only."""
+    """Per-user, per-date assignment-version log.
+
+    Append-only on save (history is preserved; supersession is resolved at
+    read time). The one exception is ``delete`` — a pilot can hard-remove an
+    erroneous entry (typo / duplicate) outright, which cascades to its
+    corrections so the log never references a deleted seq."""
 
     def __init__(self, base_dir: Path | None = None, user_id: str | None = None):
         from .users import DEFAULT_USER_ID
@@ -206,6 +211,53 @@ class UserAssignmentVersionStore:
         for r in rows:
             out.setdefault(r.date_iso, []).append(self._row_to_record(r))
         return out
+
+    # ── Delete ─────────────────────────────────────────────────────
+
+    def delete(self, date_iso: str, seq: int) -> list[int]:
+        """Hard-delete a pilot-recorded version and cascade to any CORRECTION
+        rows that (transitively) supersede it, so no correction is ever left
+        pointing at a deleted seq. Returns the deleted seqs (sorted).
+
+        This is the ONE place the version log is not append-only: it exists so
+        a pilot can remove an erroneous entry (a typo or a duplicate save)
+        outright rather than only superseding it. seq 0 is the synthetic
+        "Original" (never a stored row), so deleting it is a no-op. Surviving
+        rows keep their seq (no renumber); deleting the current top seq frees
+        it for the next save, which is safe because the cascade removes any
+        correction that referenced the deleted row.
+        """
+        from .db import session_scope
+        from .db_models import UserAssignmentVersionRow
+
+        with session_scope() as sess:
+            rows = sess.execute(
+                select(UserAssignmentVersionRow).where(
+                    UserAssignmentVersionRow.user_id == self._user_id,
+                    UserAssignmentVersionRow.date_iso == date_iso,
+                )
+            ).scalars().all()
+            if not any(r.seq == seq for r in rows):
+                return []
+            # Cascade: the target plus every correction that corrects something
+            # already marked for deletion (handles correction-of-a-correction
+            # chains even though the UI blocks creating them).
+            to_delete = {seq}
+            changed = True
+            while changed:
+                changed = False
+                for r in rows:
+                    if (
+                        r.version_type == VersionType.CORRECTION.value
+                        and r.correction_of in to_delete
+                        and r.seq not in to_delete
+                    ):
+                        to_delete.add(r.seq)
+                        changed = True
+            for r in rows:
+                if r.seq in to_delete:
+                    sess.delete(r)
+        return sorted(to_delete)
 
     def _row_to_record(self, r) -> UserAssignmentVersion:
         def _dec(v) -> Decimal | None:

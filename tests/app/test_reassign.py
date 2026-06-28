@@ -322,3 +322,66 @@ def test_day_detail_pre_fills_for_correction(monkeypatch):
     # Hidden version_type and correction_of are wired
     assert 'name="version_type"' in body and 'value="CORRECTION"' in body
     assert 'name="correction_of"' in body and 'value="1"' in body
+
+
+# ── hard delete of a version (route) ─────────────────────────────────
+
+
+def test_version_delete_route_removes_and_cascades(monkeypatch):
+    """POST /day/<d>/version/<seq>/delete hard-removes the row and any
+    correction of it; the page redirects with saved=version_deleted."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "del-a@x.test")
+    # v1 reassignment, v2 corrects v1.
+    client.post(
+        "/day/2026-06-02/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "722/754", "pch_value": "7.09",
+              "reason_code": "REASSIGNMENT", "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    client.post(
+        "/day/2026-06-02/reassign",
+        data={"version_type": "CORRECTION", "correction_of": "1",
+              "entry_mode": "SIMPLE", "assignment_id": "722/754",
+              "pch_value": "6.08", "reason_code": "REASSIGNMENT",
+              "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    assert len(UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-02")) == 2
+
+    r = client.post("/day/2026-06-02/version/1/delete", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/day/2026-06-02?saved=version_deleted"
+    # Cascade: deleting v1 also removed the correction v2.
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-02") == []
+
+
+def test_version_delete_blocks_default_user():
+    client = TestClient(app)  # AUTH_REQUIRED unset → default user
+    r = client.post("/day/2026-06-02/version/1/delete", follow_redirects=False)
+    assert r.status_code == 303
+    assert "Default%20user" in r.headers["location"]
+
+
+def test_version_delete_rejects_seq_zero(monkeypatch):
+    client, _ = _bootstrap_user_with_june(monkeypatch, "del-b@x.test")
+    r = client.post("/day/2026-06-02/version/0/delete", follow_redirects=False)
+    assert r.status_code == 303
+    assert "reassign_error" in r.headers["location"]
+
+
+def test_version_delete_shows_banner_and_button(monkeypatch):
+    client, _ = _bootstrap_user_with_june(monkeypatch, "del-c@x.test")
+    client.post(
+        "/day/2026-06-02/reassign",
+        data={"version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+              "assignment_id": "722/754", "pch_value": "6.08",
+              "reason_code": "REASSIGNMENT", "premium_category": "NONE"},
+        follow_redirects=False,
+    )
+    # The history renders a Delete control for the user version.
+    body = client.get("/day/2026-06-02").text
+    assert "/day/2026-06-02/version/1/delete" in body
+    # The post-delete confirmation banner renders on the saved redirect target.
+    banner = client.get("/day/2026-06-02?saved=version_deleted").text
+    assert "Version deleted." in banner
