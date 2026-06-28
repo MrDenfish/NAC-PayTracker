@@ -65,6 +65,13 @@ class Chunk:
     workdays: int = 0
     label: str = ""
     premium_category: str = ""
+    # The amount this chunk contributes to the *forfeitable* floor base
+    # (Option 1's drop-cap "remaining"). Defaults to raw_pch. A reserve
+    # callout sets this to DPG: its base credit is the daily guarantee, while
+    # the involuntary excess (raw_pch − DPG) rides ON TOP as a protected
+    # FloorEvent — so counting raw_pch here too would double-count the excess
+    # when a voluntary drop forces the floor down to "remaining".
+    floor_base_pch: Decimal | None = None
 
 
 @dataclass(frozen=True)
