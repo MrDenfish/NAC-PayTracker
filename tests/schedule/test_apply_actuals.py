@@ -529,3 +529,70 @@ def test_integration_june_baseline_with_ical_actuals_runs_through_engine():
     assert result.topup_pch == D("0.00")
     # 65.78 × $124.59 = $8195.5302 → $8195.53
     assert result.total_pay == D("8195.53")
+
+
+# ── Auto duty-rig credit: padded duty + callout recompute ──────────────
+
+
+def _rt_with_span(trip_id, *, packet_pch, packet_block, packet_duty,
+                  actual_block, span_hours, on_date=date(2026, 6, 12)):
+    """A matched ReconciledTrip whose duty SPAN (first out → last in) is set
+    independently of block — to exercise a long-duty / normal-block case."""
+    packet = _trip_pairing(trip_id, packet_pch, packet_block, packet_duty)
+    start = datetime(on_date.year, on_date.month, on_date.day, 14, 0, tzinfo=timezone.utc)
+    end = start + _hours_to_timedelta(D(span_hours))
+    leg = _leg("768", start, end)
+    return ReconciledTrip(
+        flight_sequence=trip_id, legs=(leg,), packet_trip=packet,
+        match_status=MatchStatus.MATCHED, first_dt_utc=start, last_dt_utc=end,
+        actual_block_hours=D(actual_block),
+    )
+
+
+def test_duty_extension_triggers_on_long_duty_not_just_block():
+    """Block flown as scheduled (4.17h) but the duty SPAN is 13h (long ground
+    time). Padded duty 14.25h → rig 7.125 beats published 4.17 → version added,
+    even though block did not extend (the old block-only gate missed this)."""
+    baseline_trip = Trip(trip_id="766", published_pch=D("4.17"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17", span_hours="13.0")
+    updated, events = apply_actuals_to_month(
+        baseline, ReconciliationResult(trips=(rt,), matched=(rt,)))
+    trip = updated.trips[0]
+    assert len(trip.versions) == 1
+    assert trip.effective_pch == D("7.125")    # (13 + 1.25)/2
+    assert any(e.kind is AppliedEventKind.DUTY_EXTENSION for e in events)
+
+
+def test_callout_auto_credits_actual_recompute():
+    """A long callout auto-credits the §3.E recompute from actuals, not just
+    the published value. Duty span 12h → padded 13.25h → rig 6.625 > published
+    4.50 → callout_trip_pch = 6.625."""
+    callout_date = date(2026, 6, 12)
+    rsv = Day(date=callout_date, duty_type=DutyType.RSV, pch_value=D("3.82"),
+              reason_code=ReasonCode.FLOWN, workdays=1, label="RSV")
+    baseline = _empty_month(days=(rsv,))
+    rt = _rt_with_span("766", packet_pch="4.50", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="12.0", on_date=callout_date)
+    updated, events = apply_actuals_to_month(
+        baseline, ReconciliationResult(trips=(rt,), matched=(rt,)))
+    assert updated.days[0].callout_trip_pch == D("6.625")   # (12 + 1.25)/2
+    assert updated.days[0].callout_trip_id == "766"
+
+
+def test_callout_keeps_published_when_actuals_dont_beat_it():
+    """Short callout: published 4.50 stands when the actual recompute (4.17)
+    is below it — no spurious inflation."""
+    callout_date = date(2026, 6, 12)
+    rsv = Day(date=callout_date, duty_type=DutyType.RSV, pch_value=D("3.82"),
+              reason_code=ReasonCode.FLOWN, workdays=1, label="RSV")
+    baseline = _empty_month(days=(rsv,))
+    rt = _rt_with_span("766", packet_pch="4.50", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="4.17", on_date=callout_date)
+    updated, _ = apply_actuals_to_month(
+        baseline, ReconciliationResult(trips=(rt,), matched=(rt,)))
+    assert updated.days[0].callout_trip_pch == D("4.50")
