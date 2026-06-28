@@ -1500,7 +1500,17 @@ def _build_day_detail(
         if day_is_callout or kind == "reserve":
             raw.append(("Reserve (DPG)", _DPG))
         if day_is_callout and callout_pch is not None:
-            raw.append(("Assigned trip (published)", callout_pch))
+            # Show the callout trip's TRUE published value; the actual duty-rig
+            # / block appear as their own candidates, and whichever equals the
+            # credited effective PCH is marked the winner. (callout_pch is the
+            # already-credited greater-of, so fall back to it for old data that
+            # predates callout_published_pch.)
+            published_callout = (
+                day_entry.callout_published_pch
+                if day_entry.callout_published_pch is not None
+                else callout_pch
+            )
+            raw.append(("Assigned trip (published)", published_callout))
         elif published is not None:
             raw.append(("Published", published))
         if actual_block is not None and actual_block > 0:

@@ -118,6 +118,7 @@ def apply_actuals_to_month(
     duty_extension_by_index: dict[int, Trip] = {}
     pickups: list[Trip] = []
     callout_pch_by_date: dict[date_t, Decimal] = {}
+    callout_published_by_date: dict[date_t, Decimal] = {}
     callout_aid_by_date: dict[date_t, str] = {}
     events: list[AppliedEvent] = []
 
@@ -153,6 +154,7 @@ def apply_actuals_to_month(
             ):
                 callout_pch = recomputed
             callout_pch_by_date[first_date] = callout_pch
+            callout_published_by_date[first_date] = rt.published_pch
             callout_aid_by_date[first_date] = rt.trip_id
             excess = max(Decimal("0"), callout_pch - DPG)
             extended_note = (
@@ -231,6 +233,7 @@ def apply_actuals_to_month(
                 replace(
                     day,
                     callout_trip_pch=callout_pch_by_date[day.date],
+                    callout_published_pch=callout_published_by_date.get(day.date),
                     callout_trip_id=callout_aid_by_date.get(day.date),
                 )
             )

@@ -116,6 +116,12 @@ class Day:
     premium_category: PremiumCategory = PremiumCategory.NONE
     workdays: int = 1
     callout_trip_pch: Decimal | None = None
+    # The callout trip's PUBLISHED packet value, kept separate from
+    # callout_trip_pch (which is the *credited* value = greater of published
+    # and the §3.E recompute from actuals). Lets the day card show the true
+    # published alongside the actual duty-rig/block candidates. None for older
+    # data / when unknown.
+    callout_published_pch: Decimal | None = None
     # The flown trip id a reserve callout was assigned to (e.g. "720/1780"),
     # captured from the iCal reconciliation. Surfaced on the calendar as the
     # bold "new assignment" over the subtle reserve line. None when unknown.
