@@ -13,6 +13,7 @@ from .ical_feed import (
     UnknownEvent,
     parse_ical_feed,
 )
+from .ical_merge import merge_feed_bytes
 from .master_schedule import (
     DayCell,
     PilotMonthSchedule,
@@ -54,6 +55,7 @@ __all__ = [
     "UnknownEvent",
     "ValidationDiscrepancy",
     "parse_ical_feed",
+    "merge_feed_bytes",
     "parse_master_schedule",
     "parse_pay_stub",
     "parse_trip_pairing_packet",
