@@ -579,7 +579,8 @@ def test_callout_auto_credits_actual_recompute():
                        span_hours="12.0", on_date=callout_date)
     updated, events = apply_actuals_to_month(
         baseline, ReconciliationResult(trips=(rt,), matched=(rt,)))
-    assert updated.days[0].callout_trip_pch == D("6.625")   # (12 + 1.25)/2
+    assert updated.days[0].callout_trip_pch == D("6.625")   # (12 + 1.25)/2 credited
+    assert updated.days[0].callout_published_pch == D("4.50")  # true published kept
     assert updated.days[0].callout_trip_id == "766"
 
 
