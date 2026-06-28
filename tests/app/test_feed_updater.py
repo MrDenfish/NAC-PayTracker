@@ -247,3 +247,50 @@ def test_interval_seconds_env(monkeypatch):
     assert fu.interval_seconds() == fu.DEFAULT_INTERVAL_SECONDS
     monkeypatch.setenv("FEED_UPDATE_INTERVAL_SECONDS", "-5")
     assert fu.interval_seconds() == fu.DEFAULT_INTERVAL_SECONDS
+
+
+# ── merge-preserve (frozen legs survive the rolling-window overwrite) ──
+
+from datetime import datetime, timezone  # noqa: E402
+
+
+def _vevent(uid: str, start: str, end: str) -> bytes:
+    return (
+        f"BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:{start}\r\nDTEND:{end}\r\n"
+        f"SUMMARY:FLT - NC{uid} ANC-OME N1\r\nEND:VEVENT\r\n"
+    ).encode()
+
+
+def _vcal(*vevents: bytes) -> bytes:
+    return (
+        b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+        + b"".join(vevents)
+        + b"END:VCALENDAR\r\n"
+    )
+
+
+def test_update_merge_preserves_frozen_dropped_leg():
+    """A leg that aged out of the fetched feed but is already completed must
+    survive the save — BlueOne's rolling window can't erase flown history."""
+    uid = "merge-user"
+    _make_user(uid)
+    store = _set_up_month(uid, 2026, 6)
+    now = datetime(2026, 6, 28, 12, 0, tzinfo=timezone.utc)
+
+    # Stored feed has both legs (both completed before `now`).
+    store.save(
+        2026, 6, DocumentKind.ICAL_FEED, "feed.ics",
+        _vcal(
+            _vevent("720", "20260627T140000Z", "20260627T160000Z"),
+            _vevent("721", "20260627T170000Z", "20260627T190000Z"),
+        ),
+    )
+    # Fetch drops 720 (aged out).
+    incoming = _vcal(_vevent("721", "20260627T170000Z", "20260627T190000Z"))
+    with _client(lambda req: httpx.Response(200, content=incoming)) as c:
+        fu.update_user_feed(
+            uid, "https://feed.example/x.ics", today=JUNE22, now=now, client=c,
+        )
+
+    merged = store.get(2026, 6, DocumentKind.ICAL_FEED).path.read_bytes()
+    assert b"UID:720" in merged and b"UID:721" in merged

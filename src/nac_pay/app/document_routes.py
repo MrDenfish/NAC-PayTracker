@@ -146,6 +146,21 @@ async def documents_upload(
     store = UserDocumentsStore(get_data_dir(), user_id)
     if kind_enum is DocumentKind.PAY_STUB:
         store.save_stub(year, month, name, data)
+    elif kind_enum is DocumentKind.ICAL_FEED:
+        # Merge-preserve so a re-upload of a fresh (rolling-window) feed can't
+        # erase already-flown legs that have aged out of BlueOne. Same guard
+        # the hourly updater uses — protects feeds when auto-update is off.
+        from datetime import datetime, timezone
+
+        from nac_pay.parsers import merge_feed_bytes
+        existing = store.get(year, month, DocumentKind.ICAL_FEED)
+        existing_bytes = (
+            existing.path.read_bytes()
+            if existing is not None and existing.exists()
+            else None
+        )
+        data = merge_feed_bytes(existing_bytes, data, datetime.now(timezone.utc))
+        store.save(year, month, kind_enum, name, data)
     else:
         store.save(year, month, kind_enum, name, data)
 

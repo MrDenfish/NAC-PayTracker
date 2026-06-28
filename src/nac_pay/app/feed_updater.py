@@ -29,10 +29,11 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 
 import httpx
 
+from nac_pay.parsers import merge_feed_bytes
 from nac_pay.storage import (
     DEFAULT_USER_ID,
     DocumentKind,
@@ -146,6 +147,7 @@ def update_user_feed(
     feed_url: str,
     *,
     today: date,
+    now: datetime | None = None,
     client: httpx.Client | None = None,
 ) -> UserUpdate:
     """Fetch one user's feed and save it into each set-up target month.
@@ -159,6 +161,7 @@ def update_user_feed(
 
     store = UserDocumentsStore(get_data_dir(), user_id)
     months = target_months(today)
+    now = now or datetime.now(timezone.utc)
 
     try:
         data = fetch_ical(feed_url, client=client)
@@ -179,7 +182,16 @@ def update_user_feed(
             )
             continue
         try:
-            store.save(y, m, DocumentKind.ICAL_FEED, "feed.ics", data)
+            # Merge-preserve: keep frozen (completed) legs the fetch dropped
+            # so BlueOne's ~24h window can't erase flown history on overwrite.
+            existing = store.get(y, m, DocumentKind.ICAL_FEED)
+            existing_bytes = (
+                existing.path.read_bytes()
+                if existing is not None and existing.exists()
+                else None
+            )
+            merged = merge_feed_bytes(existing_bytes, data, now)
+            store.save(y, m, DocumentKind.ICAL_FEED, "feed.ics", merged)
             results.append(MonthUpdate(y, m, ok=True, detail="updated"))
         except Exception as exc:  # storage/IO failure — isolate to the month
             logger.warning("feed save failed for user %s %d-%02d: %s", user_id, y, m, exc)
@@ -191,6 +203,7 @@ def update_user_feed(
 def run_once(
     *,
     today: date | None = None,
+    now: datetime | None = None,
     client: httpx.Client | None = None,
 ) -> list[UserUpdate]:
     """One full sweep across every opted-in user. Per-user failures are
@@ -201,7 +214,9 @@ def run_once(
     for user_id, feed_url in feed_auto_update_profiles():
         try:
             updates.append(
-                update_user_feed(user_id, feed_url, today=today, client=client)
+                update_user_feed(
+                    user_id, feed_url, today=today, now=now, client=client
+                )
             )
         except Exception as exc:  # never let one user abort the sweep
             logger.exception("unexpected error updating user %s: %s", user_id, exc)
