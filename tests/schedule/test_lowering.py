@@ -211,3 +211,77 @@ def test_lowering_uses_effective_pch_from_assignment_versions():
     # The trip's chunk contributes 5.33 PCH (the protected original), not 4.00.
     trip_chunk = next(c for c in result.per_chunk if c.source_id == "DAY-720")
     assert trip_chunk.raw_pch == D("5.33")
+
+
+# ── PR #4: callout = protected trip, greater-of incl. amendment (Option A) ──
+
+
+def _reserve_days(days, *, reason=None, workdays=1):
+    from nac_pay.schedule import ReasonCode as _RC
+    return tuple(
+        Day(
+            date=date(2026, 5, d),
+            duty_type=DutyType.RSV,
+            pch_value=D("3.82"),
+            reason_code=reason or _RC.FLOWN,
+            workdays=workdays,
+            label=f"RSV-{d}",
+        )
+        for d in days
+    )
+
+
+def test_callout_honors_manual_amendment_greater_of():
+    """A pilot amendment lifts day.pch_value above the callout's published
+    value (e.g. a duty extension); the day must credit the greater-of, not the
+    published callout value (the old behavior ignored version PCH on callouts)."""
+    reserves = _reserve_days(range(1, 17))  # 16 reserve days
+    callout = Day(
+        date=date(2026, 5, 17), duty_type=DutyType.RSV, pch_value=D("7.50"),
+        reason_code=ReasonCode.FLOWN, workdays=1,
+        callout_trip_pch=D("6.08"), label="RSV-17-CALLOUT",
+    )  # pch_value 7.50 = post-amendment lift; published callout 6.08
+    month = Month(pilot=_pilot(), year=2026, month=5, line_value=D("65"),
+                  days=reserves + (callout,))
+    result = compute_pay(lower_month(month))
+    # 16*3.82 + 7.50 = 68.62 (would be 67.20 if the 6.08 callout were used).
+    assert result.option3_earned == D("68.62")
+    assert result.option1_floor == D("68.68")     # 65 + (7.50 - 3.82)
+    assert result.base_monthly_pch == D("68.68")
+
+
+def test_callout_with_drops_no_double_count():
+    """Callout + voluntary drops: the floor must not double-count the callout
+    excess. 10 reserves + callout(6.08) + 4 drops, line 65 → 44.28 (the old
+    code double-counted the 2.26 excess → 46.54)."""
+    reserves = _reserve_days(range(1, 11))             # 10 flown reserves
+    callout = Day(
+        date=date(2026, 5, 11), duty_type=DutyType.RSV, pch_value=D("3.82"),
+        reason_code=ReasonCode.FLOWN, workdays=1,
+        callout_trip_pch=D("6.08"), label="CALLOUT",
+    )
+    drops = _reserve_days(range(20, 24), reason=ReasonCode.VOLUNTARY_DROP, workdays=0)
+    month = Month(pilot=_pilot(), year=2026, month=5, line_value=D("65"),
+                  days=reserves + (callout,) + drops)
+    result = compute_pay(lower_month(month))
+    assert result.option3_earned == D("44.28")    # 38.20 + 6.08
+    assert result.option1_floor == D("44.28")     # 42.02 base + 2.26 on-top
+    assert result.base_monthly_pch == D("44.28")
+
+
+def test_callout_amended_with_drops_protects_full_value():
+    """The full worked example: callout amended to 7.50 + 4 drops, line 65.
+    Option A protects the whole involuntary value → 45.70 (not forfeited)."""
+    reserves = _reserve_days(range(1, 11))
+    callout = Day(
+        date=date(2026, 5, 11), duty_type=DutyType.RSV, pch_value=D("7.50"),
+        reason_code=ReasonCode.FLOWN, workdays=1,
+        callout_trip_pch=D("6.08"), label="CALLOUT",
+    )
+    drops = _reserve_days(range(20, 24), reason=ReasonCode.VOLUNTARY_DROP, workdays=0)
+    month = Month(pilot=_pilot(), year=2026, month=5, line_value=D("65"),
+                  days=reserves + (callout,) + drops)
+    result = compute_pay(lower_month(month))
+    assert result.option3_earned == D("45.70")    # 38.20 + 7.50
+    assert result.option1_floor == D("45.70")     # 42.02 base + 3.68 on-top
+    assert result.base_monthly_pch == D("45.70")

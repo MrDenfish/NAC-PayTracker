@@ -186,10 +186,16 @@ def _lower_day(
     multiplier = premium_multiplier(day.premium_category, day.custom_multiplier)
 
     if day.callout_trip_pch is not None:
-        # Reserve callout: §3.F day credit = max(DPG, callout_pch);
-        # §3.D involuntary excess on top of the floor.
+        # Reserve callout = a protected trip flown off reserve. Credit the
+        # greater-of: DPG, the assigned/published callout value, and any pilot
+        # amendment (apply_user_versions has already lifted day.pch_value to
+        # max(base, active versions) — e.g. a duty-extension recompute). The
+        # whole credited value is involuntary, so the excess over DPG rides
+        # ON TOP of the floor, protected (Option A); the day counts at DPG in
+        # the forfeitable base (floor_base_pch) so the excess isn't double
+        # counted when a voluntary drop forces the floor down.
         callout_pch = day.callout_trip_pch
-        raw_pch = max(DPG, callout_pch)
+        raw_pch = max(DPG, callout_pch, day.pch_value)
         chunks.append(
             Chunk(
                 source_id=_day_source_id(day),
@@ -200,9 +206,10 @@ def _lower_day(
                 workdays=day.workdays,
                 label=day.label or f"Reserve callout {day.date}",
                 premium_category=day.premium_category.value,
+                floor_base_pch=DPG,
             )
         )
-        excess = max(Decimal("0"), callout_pch - DPG)
+        excess = max(Decimal("0"), raw_pch - DPG)
         if excess > 0:
             events.append(
                 FloorEvent(

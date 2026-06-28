@@ -64,8 +64,16 @@ def compute_adjusted_floor(
     naive_reduced = starting_floor - total_drops
 
     if total_drops > 0 and chunks:
+        # A chunk's contribution to the forfeitable base is floor_base_pch when
+        # set (a callout counts at DPG; its excess is the on-top FloorEvent),
+        # else raw_pch. Open-time-kind chunks are excluded — they're wholly
+        # on-top.
         remaining_pre_on_top = sum(
-            (c.raw_pch for c in chunks if c.in_guarantee and c.kind not in _ON_TOP_CHUNK_KINDS),
+            (
+                (c.floor_base_pch if c.floor_base_pch is not None else c.raw_pch)
+                for c in chunks
+                if c.in_guarantee and c.kind not in _ON_TOP_CHUNK_KINDS
+            ),
             Decimal("0"),
         )
         floor_base = min(naive_reduced, remaining_pre_on_top)
