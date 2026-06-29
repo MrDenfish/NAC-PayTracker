@@ -577,6 +577,33 @@
         </div>
 
         <div class="reassign-detailed-group">
+          {# Leg-time entry — mirrors the iCal Legs table. Filling Out/In
+             auto-computes Block/Duty/TAFB below (still overridable). Useful
+             when the iCal legs have aged out of the feed and you're
+             reconstructing a flown trip by hand. These leg fields are
+             client-side helpers only — they are not submitted. #}
+          <div class="reassign-legs-group">
+            <span class="form-label">Legs — enter actual times to compute Block / Duty / TAFB</span>
+            <table class="legs-table" id="reassign-legs">
+              <thead>
+                <tr><th>Flight</th><th>Out</th><th>In</th><th></th></tr>
+              </thead>
+              <tbody id="reassign-legs-body">
+                <tr class="reassign-leg-row">
+                  <td><input type="text" class="leg-flight" maxlength="8" placeholder="720"></td>
+                  <td><input type="time" class="leg-out"></td>
+                  <td><input type="time" class="leg-in"></td>
+                  <td><button type="button" class="leg-remove" title="Remove leg" tabindex="-1">×</button></td>
+                </tr>
+              </tbody>
+            </table>
+            <button type="button" id="reassign-add-leg" class="btn btn--secondary">+ Add leg</button>
+            <p class="form-hint">
+              Block = Σ(In−Out); Duty = (first Out − 1:00 report) → (last In + 0:15);
+              TAFB = first Out → last In. Times roll past midnight in order.
+            </p>
+          </div>
+
           <div class="reassign-grid">
             <label>
               <span class="form-label">Block hours</span>
@@ -725,6 +752,70 @@
         setField("duty_hours", opt.dataset.duty);
         setField("tafb_hours", opt.dataset.tafb);
         setField("workdays", opt.dataset.workdays);
+      });
+    })();
+
+    // Leg-time entry — compute Block / Duty / TAFB from per-leg Out/In times.
+    // Pure client-side helper; the leg fields are not submitted (only the
+    // resulting block/duty/tafb go to the server's §3.E recompute).
+    (function () {
+      var body = document.getElementById("reassign-legs-body");
+      var addBtn = document.getElementById("reassign-add-leg");
+      if (!body || !addBtn) return;
+      var REPORT_PAD = 60, TRIP_END_PAD = 15; // minutes (1:00 / 0:15)
+
+      function toMin(v) {           // "HH:MM" -> minutes of day, or null
+        if (!v) return null;
+        var p = v.split(":");
+        if (p.length !== 2) return null;
+        var h = parseInt(p[0], 10), m = parseInt(p[1], 10);
+        if (isNaN(h) || isNaN(m)) return null;
+        return h * 60 + m;
+      }
+      function setOut(name, hours) {
+        var el = document.querySelector('[name="' + name + '"]');
+        if (el) el.value = hours.toFixed(2);
+      }
+      function recompute() {
+        var rows = body.querySelectorAll(".reassign-leg-row");
+        var prevAbs = null, firstOut = null, lastIn = null, block = 0, any = false;
+        for (var i = 0; i < rows.length; i++) {
+          var out = toMin(rows[i].querySelector(".leg-out").value);
+          var inn = toMin(rows[i].querySelector(".leg-in").value);
+          if (out === null || inn === null) continue;
+          var outAbs = out;
+          if (prevAbs !== null) { while (outAbs < prevAbs) outAbs += 1440; }
+          var inAbs = inn;
+          while (inAbs < outAbs) inAbs += 1440;   // arrival after departure
+          block += (inAbs - outAbs);
+          if (firstOut === null) firstOut = outAbs;
+          lastIn = inAbs;
+          prevAbs = inAbs;
+          any = true;
+        }
+        if (!any) return;
+        setOut("block_hours", block / 60);
+        setOut("duty_hours", ((lastIn + TRIP_END_PAD) - (firstOut - REPORT_PAD)) / 60);
+        setOut("tafb_hours", (lastIn - firstOut) / 60);
+      }
+      function newRow() {
+        var tr = body.querySelector(".reassign-leg-row").cloneNode(true);
+        tr.querySelectorAll("input").forEach(function (el) { el.value = ""; });
+        return tr;
+      }
+      addBtn.addEventListener("click", function () {
+        body.appendChild(newRow());
+      });
+      body.addEventListener("input", recompute);
+      body.addEventListener("click", function (e) {
+        if (!e.target.classList.contains("leg-remove")) return;
+        var row = e.target.closest(".reassign-leg-row");
+        if (body.querySelectorAll(".reassign-leg-row").length > 1) {
+          row.remove();
+        } else {
+          row.querySelectorAll("input").forEach(function (el) { el.value = ""; });
+        }
+        recompute();
       });
     })();
   </script>

@@ -777,6 +777,14 @@ a.day-cell:hover {
   margin-left: 8px;
 }
 .correct-link:hover { text-decoration: underline; }
+.reassign-legs-group { margin-bottom: 14px; }
+.reassign-legs-group .leg-flight { width: 5rem; }
+.reassign-legs-group .leg-out, .reassign-legs-group .leg-in { width: 7rem; }
+.reassign-legs-group .leg-remove {
+  background: none; border: none; color: var(--danger, #c0392b);
+  font-size: 16px; cursor: pointer; padding: 0 4px;
+}
+#reassign-add-leg { margin-top: 4px; }
 .version-delete-form { display: inline; margin: 0; }
 .version-delete-btn {
   font-size: 12px;
