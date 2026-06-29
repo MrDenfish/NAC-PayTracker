@@ -912,6 +912,66 @@ def _clock_span_hours(out_s: str, in_s: str) -> Decimal:
     return Decimal(span) / Decimal("60")
 
 
+def _duty_from_clock_legs(legs):
+    """Compute the duty window from pilot-entered legs (out/in "HH:MM"),
+    mirroring the form's client-side math: sort by departure, start after the
+    largest circular gap (the off-duty wrap → minimal contiguous window), pad
+    report 1:00 before first out and 0:15 after last in. Returns
+    (duty_on, duty_off, duty_hours, duty_rig_pch, actual_block) or None.
+    """
+    def _m(s):
+        try:
+            h, mm = s.split(":")
+            return int(h) * 60 + int(mm)
+        except Exception:
+            return None
+    parsed = []
+    for lg in legs:
+        o, i = _m(lg.out_local), _m(lg.in_local)
+        if o is None or i is None:
+            continue
+        dur = i - o
+        if dur < 0:
+            dur += 1440
+        parsed.append((o, dur))
+    if not parsed:
+        return None
+    from nac_pay.engine.constants import REPORT_PAD_HOURS, TRIP_END_PAD_HOURS
+    block_min = sum(d for _, d in parsed)
+    parsed.sort(key=lambda x: x[0])
+    n = len(parsed)
+    start, max_gap = 0, -1
+    for j in range(n):
+        cur, nxt = parsed[j], parsed[(j + 1) % n]
+        next_out = nxt[0] + (1440 if j + 1 >= n else 0)
+        gap = next_out - (cur[0] + cur[1])
+        if gap > max_gap:
+            max_gap, start = gap, (j + 1) % n
+    first_out = last_in = prev_in = None
+    for k in range(n):
+        o, dur = parsed[(start + k) % n]
+        out_abs = o
+        if prev_in is not None:
+            while out_abs < prev_in:
+                out_abs += 1440
+        in_abs = out_abs + dur
+        if first_out is None:
+            first_out = out_abs
+        last_in = prev_in = in_abs
+    report = int(REPORT_PAD_HOURS * 60)
+    end = int(TRIP_END_PAD_HOURS * 60)
+    on_min, off_min = first_out - report, last_in + end
+    duty_hours = Decimal(off_min - on_min) / Decimal("60")
+
+    def _fmt(mn):
+        mn %= 1440
+        return f"{mn // 60:02d}:{mn % 60:02d}"
+    return (
+        _fmt(on_min), _fmt(off_min), duty_hours,
+        duty_hours / Decimal("2"), Decimal(block_min) / Decimal("60"),
+    )
+
+
 def _manual_day_legs(version_legs) -> tuple["DayLeg", ...]:
     """Render pilot-entered VersionLegs as DayLegs (source = Manual) for the
     Legs card; per-leg block is computed from the entered clocks. Sorted by
@@ -1551,10 +1611,15 @@ def _build_day_detail(
             if winner.assignment_id and winner.assignment_id != assignment_id:
                 assignment_id = winner.assignment_id
             # If the winning version carries pilot-entered legs, show THOSE in
-            # the Legs card (source = Manual) — the pilot's corrected/complete
-            # set supersedes the (possibly aged-out) iCal legs.
+            # the Legs card (source = Manual) AND drive the "actual" times from
+            # them — the pilot's corrected/complete set supersedes the
+            # (possibly aged-out) iCal feed for block / duty window / duty rig.
             if manual_legs_by_seq.get(winner.seq):
-                legs = _manual_day_legs(manual_legs_by_seq[winner.seq])
+                mlegs = manual_legs_by_seq[winner.seq]
+                legs = _manual_day_legs(mlegs)
+                dw = _duty_from_clock_legs(mlegs)
+                if dw is not None:
+                    duty_on, duty_off, duty_hours, duty_rig_pch, actual_block = dw
         # On an iCal callout the flown trip IS the assignment — surface
         # callout_trip_id (mirror the calendar's _build_cell) unless a genuine
         # reassignment above already replaced the reserve-line label. The
@@ -1610,6 +1675,11 @@ def _build_day_detail(
                 else callout_pch
             )
             raw.append(("Assigned trip (published)", published_callout))
+        elif sched_packet is not None and (kind == "reserve" or trip is None):
+            # Manual callout / reassignment to a packet trip (no iCal callout):
+            # the assigned trip's published value comes from the packet resolved
+            # by the assignment id, not the reserve base (day.pch_value).
+            raw.append(("Assigned trip (published)", sched_packet.trip_pch_value))
         elif published is not None:
             raw.append(("Published", published))
         if actual_block is not None and actual_block > 0:
