@@ -436,3 +436,26 @@ def test_reassign_detailed_skips_incomplete_legs(monkeypatch):
     )
     legs = UserAssignmentVersionStore(user_id=uid).list_legs_for_date("2026-06-02")
     assert [lg.flight for lg in next(iter(legs.values()))] == ["722"]
+
+
+def test_manual_legs_display_sorted_by_departure(monkeypatch):
+    """Legs entered out of order (later flight first) display chronologically."""
+    from nac_pay.app.services import load_day
+    client, uid = _bootstrap_user_with_june(monkeypatch, "legsort@x.test")
+    client.post(
+        "/day/2026-06-02/reassign",
+        data={
+            "version_type": "REASSIGNMENT", "entry_mode": "DETAILED",
+            "assignment_id": "722/754",
+            "block_hours": "5.00", "duty_hours": "10.00", "tafb_hours": "10.00",
+            "deadhead_pch": "0", "workdays": "1",
+            "reason_code": "REASSIGNMENT", "premium_category": "NONE",
+            "leg_flight": ["754", "722"],          # entered later-first
+            "leg_out": ["11:00", "06:00"],
+            "leg_in": ["13:00", "09:00"],
+        },
+        follow_redirects=False,
+    )
+    d = load_day(2026, 6, 2, user_id=uid)
+    manual = [leg for leg in d.legs if leg.source == "Manual"]
+    assert [leg.flight_no for leg in manual] == ["722", "754"]   # sorted by out

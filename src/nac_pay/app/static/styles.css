@@ -785,6 +785,8 @@ a.day-cell:hover {
   font-size: 16px; cursor: pointer; padding: 0 4px;
 }
 #reassign-add-leg { margin-top: 4px; }
+.reassign-legs-group input::placeholder { color: #b0b6bf; font-style: italic; }
+.form-warn { color: var(--danger, #c0392b); font-size: 12px; margin: 6px 0 0; }
 .leg-source { font-size: 11px; padding: 1px 6px; border-radius: 10px; }
 .leg-source--ical { background: #e4e6eb; color: #5b6471; }
 .leg-source--manual { background: #dbeafe; color: #1e40af; }

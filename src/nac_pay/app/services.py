@@ -913,7 +913,9 @@ def _clock_span_hours(out_s: str, in_s: str) -> Decimal:
 
 def _manual_day_legs(version_legs) -> tuple["DayLeg", ...]:
     """Render pilot-entered VersionLegs as DayLegs (source = Manual) for the
-    Legs card; per-leg block is computed from the entered clocks."""
+    Legs card; per-leg block is computed from the entered clocks. Sorted by
+    departure so the card reads chronologically regardless of entry order."""
+    ordered = sorted(version_legs, key=lambda lg: lg.out_local or "")
     return tuple(
         DayLeg(
             flight_no=lg.flight, origin="", destination="", tail="",
@@ -921,7 +923,7 @@ def _manual_day_legs(version_legs) -> tuple["DayLeg", ...]:
             block_hours=_clock_span_hours(lg.out_local, lg.in_local),
             out_local=lg.out_local, in_local=lg.in_local, source="Manual",
         )
-        for lg in version_legs
+        for lg in ordered
     )
 
 _REASON_LABELS = {
