@@ -2462,10 +2462,22 @@ def load_discrepancies(
                     )
                 )
 
-    # 3. Unmatched iCal trips (apply_actuals UNMATCHED_TRIP_REVIEW)
+    # 3. Unmatched iCal trips (apply_actuals UNMATCHED_TRIP_REVIEW) — but a
+    # date the pilot has already categorized with an active version (e.g. a
+    # recorded callout for legs the feed couldn't match to the packet) is
+    # resolved, so suppress the review for those dates.
     from nac_pay.schedule import AppliedEventKind
+    from nac_pay.storage import UserAssignmentVersionStore, active_versions
+    addressed_dates: set[str] = set()
+    for date_iso, vs in UserAssignmentVersionStore(
+        user_id=user_id,
+    ).list_for_month(year, month).items():
+        if active_versions(vs)[0]:
+            addressed_dates.add(date_iso)
     for ev in pr.applied_events:
         if ev.kind is not AppliedEventKind.UNMATCHED_TRIP_REVIEW:
+            continue
+        if ev.date.isoformat() in addressed_dates:
             continue
         items.append(
             DiscrepancyItem(
