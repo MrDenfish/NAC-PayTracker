@@ -190,6 +190,48 @@ def test_unmatched_trip_links_to_day_detail():
     assert item.action_label == "View day"
 
 
+def test_unmatched_trip_suppressed_when_pilot_recorded_a_version():
+    """A date the pilot has categorized with an active version (e.g. a manual
+    callout for legs the feed couldn't match) is resolved — its
+    UNMATCHED_TRIP_REVIEW should not appear on the discrepancies page."""
+    from decimal import Decimal
+
+    from nac_pay.storage import (
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionType,
+    )
+
+    uid = "u_test_disc_resolved"
+    UserAssignmentVersionStore(user_id=uid).save(
+        date_iso="2026-06-15", version_type=VersionType.RESERVE_CALLOUT,
+        assignment_id="720/721/1780/1781", entry_mode=VersionEntryMode.SIMPLE,
+        pch_value=Decimal("6.08"),
+    )
+    _pipeline.cache_clear()
+    real = _pipeline(2026, 6)   # default user has bundled docs; patched below
+    fake_applied = (
+        AppliedEvent(
+            kind=AppliedEventKind.UNMATCHED_TRIP_REVIEW,
+            date=date(2026, 6, 15), trip_id=None,
+            detail="Flew sequence 1780/1781", delta_pch=None,
+        ),
+    )
+    poked = type(real)(
+        pilot=real.pilot, year=real.year, month=real.month,
+        updated_month=real.updated_month, engine_result=real.engine_result,
+        applied_events=fake_applied, validation_discrepancies=(),
+        feed=real.feed, reconciliation=real.reconciliation, packet=real.packet,
+        packet_trip_count=real.packet_trip_count, fa_loaded=True, packet_loaded=True,
+    )
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        d = load_discrepancies(2026, 6, user_id=uid)
+    assert not any(
+        i.kind is DiscrepancyKind.UNMATCHED_TRIP and i.date == date(2026, 6, 15)
+        for i in d.items
+    )
+
+
 def test_packet_validation_links_to_pay_breakdown():
     _pipeline.cache_clear()
     real = _pipeline(2026, 6)
