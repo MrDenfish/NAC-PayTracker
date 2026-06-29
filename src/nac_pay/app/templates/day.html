@@ -346,7 +346,7 @@
       <tbody>
         {% for leg in data.legs %}
         <tr>
-          <td><code>NC{{ leg.flight_no }}</code></td>
+          <td>{% if leg.flight_no %}<code>NC{{ leg.flight_no }}</code>{% else %}<span class="subtle">—</span>{% endif %}</td>
           <td>{{ leg.origin }}{% if leg.destination %}–{{ leg.destination }}{% endif %}</td>
           <td>{{ leg.tail }}</td>
           <td class="time-cell">{{ leg.out_local or leg.dt_start_utc }}</td>
@@ -367,7 +367,8 @@
       enter the times you flew.</p>
     {% endif %}
     {% if data.editable %}
-    <a href="/day/{{ data.date_iso }}?amend=1#reassign-form" class="btn btn--secondary">
+    <a href="/day/{{ data.date_iso }}?amend=1#reassign-form"
+       class="btn btn--secondary" style="display: inline-block; margin-top: 10px;">
       Amend / add legs
     </a>
     {% endif %}
@@ -604,14 +605,14 @@
               <tbody id="reassign-legs-body">
                 {% for lg in defaults.legs %}
                 <tr class="reassign-leg-row">
-                  <td><input type="text" name="leg_flight" class="leg-flight" maxlength="8" placeholder="720" value="{{ lg.flight }}"></td>
+                  <td><input type="text" name="leg_flight" class="leg-flight" maxlength="8" placeholder="e.g. 720" value="{{ lg.flight }}"></td>
                   <td><input type="time" name="leg_out" class="leg-out" value="{{ lg.out }}"></td>
                   <td><input type="time" name="leg_in" class="leg-in" value="{{ lg['in'] }}"></td>
                   <td><button type="button" class="leg-remove" title="Remove leg" tabindex="-1">×</button></td>
                 </tr>
                 {% else %}
                 <tr class="reassign-leg-row">
-                  <td><input type="text" name="leg_flight" class="leg-flight" maxlength="8" placeholder="720"></td>
+                  <td><input type="text" name="leg_flight" class="leg-flight" maxlength="8" placeholder="e.g. 720"></td>
                   <td><input type="time" name="leg_out" class="leg-out"></td>
                   <td><input type="time" name="leg_in" class="leg-in"></td>
                   <td><button type="button" class="leg-remove" title="Remove leg" tabindex="-1">×</button></td>
@@ -620,10 +621,12 @@
               </tbody>
             </table>
             <button type="button" id="reassign-add-leg" class="btn btn--secondary">+ Add leg</button>
+            <p id="reassign-legs-warn" class="form-warn" style="display: none;"></p>
             <p class="form-hint">
               Pre-filled from the iCal feed — edit any, add the missing legs.
-              Block = Σ(In−Out); Duty = (first Out − 1:00 report) → (last In + 0:15);
-              TAFB = first Out → last In. Times roll past midnight in order.
+              Legs are sorted by departure before computing, so order of entry
+              doesn't matter. Block = Σ(In−Out); Duty = (first Out − 1:00 report)
+              → (last In + 0:15); TAFB = first Out → last In.
             </p>
           </div>
 
@@ -799,27 +802,54 @@
         var el = document.querySelector('[name="' + name + '"]');
         if (el) el.value = hours.toFixed(2);
       }
+      function warn(msg) {
+        var el = document.getElementById("reassign-legs-warn");
+        if (el) { el.textContent = msg || ""; el.style.display = msg ? "" : "none"; }
+      }
       function recompute() {
         var rows = body.querySelectorAll(".reassign-leg-row");
-        var prevAbs = null, firstOut = null, lastIn = null, block = 0, any = false;
+        var legs = [];
         for (var i = 0; i < rows.length; i++) {
           var out = toMin(rows[i].querySelector(".leg-out").value);
           var inn = toMin(rows[i].querySelector(".leg-in").value);
           if (out === null || inn === null) continue;
-          var outAbs = out;
-          if (prevAbs !== null) { while (outAbs < prevAbs) outAbs += 1440; }
-          var inAbs = inn;
-          while (inAbs < outAbs) inAbs += 1440;   // arrival after departure
-          block += (inAbs - outAbs);
+          var dur = inn - out;
+          if (dur < 0) dur += 1440;          // leg crosses midnight
+          legs.push({ out: out, dur: dur });
+        }
+        warn("");
+        if (!legs.length) return;
+        // Block is order-independent (sum of leg durations).
+        var block = 0;
+        legs.forEach(function (l) { block += l.dur; });
+        // Order the legs of ONE duty period regardless of entry order: sort by
+        // departure clock, then start the sequence right after the largest
+        // circular gap (the off-duty wrap). That yields the minimal contiguous
+        // window, so Duty/TAFB are correct even when legs were added out of
+        // order — and a real trip's duty can't exceed ~16h.
+        legs.sort(function (a, b) { return a.out - b.out; });
+        var n = legs.length, startIdx = 0, maxGap = -1;
+        for (var j = 0; j < n; j++) {
+          var cur = legs[j], nxt = legs[(j + 1) % n];
+          var nextOut = nxt.out + (j + 1 >= n ? 1440 : 0);
+          var gap = nextOut - (cur.out + cur.dur);   // arrival → next departure
+          if (gap > maxGap) { maxGap = gap; startIdx = (j + 1) % n; }
+        }
+        var firstOut = null, lastIn = null, prevIn = null;
+        for (var k = 0; k < n; k++) {
+          var l = legs[(startIdx + k) % n];
+          var outAbs = l.out;
+          if (prevIn !== null) { while (outAbs < prevIn) outAbs += 1440; }
+          var inAbs = outAbs + l.dur;
           if (firstOut === null) firstOut = outAbs;
           lastIn = inAbs;
-          prevAbs = inAbs;
-          any = true;
+          prevIn = inAbs;
         }
-        if (!any) return;
+        var duty = ((lastIn + TRIP_END_PAD) - (firstOut - REPORT_PAD)) / 60;
         setOut("block_hours", block / 60);
-        setOut("duty_hours", ((lastIn + TRIP_END_PAD) - (firstOut - REPORT_PAD)) / 60);
+        setOut("duty_hours", duty);
         setOut("tafb_hours", (lastIn - firstOut) / 60);
+        if (duty > 16) warn("Duty is " + duty.toFixed(2) + " h — over 16; check the leg times.");
       }
       function newRow() {
         var tr = body.querySelector(".reassign-leg-row").cloneNode(true);
