@@ -1503,8 +1503,13 @@ def _build_day_detail(
     # iCal legs are missing (aged out of BlueOne's rolling feed). For a trip
     # day use the matched packet_trip; for a callout look up the flown trip.
     sched_packet = packet_trip
-    if sched_packet is None and day_is_callout and day_entry.callout_trip_id:
-        sched_packet = pr.packet.get(day_entry.callout_trip_id)
+    if sched_packet is None and assignment_id:
+        # Resolve the packet trip directly from the active assignment id (FA
+        # trip / iCal callout trip / manual callout aid) via subsequence match
+        # — independent of the feed, so this engages even when the iCal legs
+        # (and the reconciliation match) have aged out of the rolling feed.
+        from nac_pay.schedule.apply_actuals import packet_trip_for_aid
+        sched_packet = packet_trip_for_aid(assignment_id, pr.packet)
     sched_duty_on = (sched_packet.sched_duty_on or None) if sched_packet else None
     sched_duty_off = (sched_packet.sched_duty_off or None) if sched_packet else None
     sched_duty_rig_pch = (

@@ -339,6 +339,30 @@ def _flying_segments(aid: str) -> tuple[str, ...]:
     return segs
 
 
+def packet_trip_for_aid(aid: str, packet: dict) -> "TripPairing | None":
+    """Resolve the packet trip an FA / assignment aid refers to, by ordered
+    subsequence of '/'-segments — the same matching the feed reconciliation
+    uses, but driven by the assignment id alone. Works with NO iCal legs, so
+    the day view can reconstruct a packet duty window once the feed has aged
+    out. Exact key wins; else the LONGEST (most specific) packet trip whose
+    segments contain the aid's flying segments in order. None for no match or
+    a purely-reserve aid (e.g. a bare reserve line)."""
+    if not aid:
+        return None
+    if aid in packet:
+        return packet[aid]
+    aid_segs = _flying_segments(aid)
+    if not aid_segs:
+        return None
+    best = None
+    best_len = -1
+    for key, tp in packet.items():
+        key_segs = key.split("/")
+        if _is_ordered_subsequence(aid_segs, key_segs) and len(key_segs) > best_len:
+            best, best_len = tp, len(key_segs)
+    return best
+
+
 def _is_ordered_subsequence(needle: tuple[str, ...], haystack: list[str]) -> bool:
     if not needle:
         return False

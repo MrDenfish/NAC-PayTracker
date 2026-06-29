@@ -597,3 +597,27 @@ def test_callout_keeps_published_when_actuals_dont_beat_it():
     updated, _ = apply_actuals_to_month(
         baseline, ReconciliationResult(trips=(rt,), matched=(rt,)))
     assert updated.days[0].callout_trip_pch == D("4.50")
+
+
+# ── packet_trip_for_aid: resolve packet by FA aid (feed-independent) ────
+
+
+def test_packet_trip_for_aid_subsequence_match():
+    from nac_pay.schedule.apply_actuals import packet_trip_for_aid
+
+    packet = {
+        "768/768/769": _trip_pairing("768/768/769", "4.17"),
+        "720/721/1780/1781": _trip_pairing("720/721/1780/1781", "8.00"),
+    }
+    # Short FA aid resolves to its full packet sequence by subsequence.
+    assert packet_trip_for_aid("768", packet).trip_id == "768/768/769"
+    # Exact key wins.
+    assert packet_trip_for_aid("720/721/1780/1781", packet).trip_id == "720/721/1780/1781"
+    # A flown subset (e.g. legs survived, others aged out) still matches.
+    assert packet_trip_for_aid("721/1780/1781", packet).trip_id == "720/721/1780/1781"
+    # A reserve designator tail is stripped before matching.
+    assert packet_trip_for_aid("768/R1", packet).trip_id == "768/768/769"
+    # A bare reserve line (no flying segments) matches nothing.
+    assert packet_trip_for_aid("1021", packet) is None
+    # An unknown trip matches nothing.
+    assert packet_trip_for_aid("999", packet) is None
