@@ -269,13 +269,29 @@
       </tbody>
     </table>
 
+    {% if data.sched_duty_on %}
+    <table class="times-table" style="margin-top: 10px;">
+      <tbody>
+        <tr><th>Duty on (scheduled)</th><td class="num">{{ data.sched_duty_on }}</td></tr>
+        <tr><th>Duty off (scheduled)</th><td class="num">{{ data.sched_duty_off }}</td></tr>
+        {% if data.sched_duty_rig_pch is not none %}
+        <tr><th>Duty rig (scheduled)</th><td class="num">{{ "%.2f"|format(data.sched_duty_rig_pch) }} PCH</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+    <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
+      Scheduled report → release from the Trip Pairing packet (local) — the
+      reliable duty window when iCal actuals are missing.
+    </p>
+    {% endif %}
+
     {% if data.duty_on %}
     <table class="times-table" style="margin-top: 10px;">
       <tbody>
-        <tr><th>Duty on</th><td class="num">{{ data.duty_on }}</td></tr>
-        <tr><th>Duty off</th><td class="num">{{ data.duty_off }}</td></tr>
+        <tr><th>Duty on (actual)</th><td class="num">{{ data.duty_on }}</td></tr>
+        <tr><th>Duty off (actual)</th><td class="num">{{ data.duty_off }}</td></tr>
         <tr><th>Total duty</th><td class="num">{{ "%.2f"|format(data.duty_hours) }} h</td></tr>
-        <tr class="winning"><th>Duty rig (duty ÷ 2)</th><td class="num">{{ "%.2f"|format(data.duty_rig_pch) }} PCH</td></tr>
+        <tr><th>Duty rig (duty ÷ 2)</th><td class="num">{{ "%.2f"|format(data.duty_rig_pch) }} PCH</td></tr>
       </tbody>
     </table>
     <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">

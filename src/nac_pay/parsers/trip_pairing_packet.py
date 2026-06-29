@@ -51,6 +51,13 @@ class TripPairing:
 
     page_index: int               # zero-based; for debugging back to PDF
 
+    # Scheduled duty window in LOCAL time, from the summary row's "L Day Show"
+    # / "L Day Duty Off" (report → release; their span == duty_hours). Lets the
+    # day view reconstruct a duty window from the packet when iCal legs are
+    # missing (aged out of BlueOne's rolling feed). "HH:MM", "" if not parsed.
+    sched_duty_on: str = ""
+    sched_duty_off: str = ""
+
 
 # ── Public entry point ──────────────────────────────────────────────────
 def parse_trip_pairing_packet(pdf_path: str) -> dict[str, TripPairing]:
@@ -104,7 +111,7 @@ def _parse_trip_page(text: str, page_idx: int) -> TripPairing | None:
     summary = _extract_summary_row(text)
     if summary is None:
         return None
-    total_dh, duty_hrs, dpg_pch, block_hrs, tafb_hrs = summary
+    total_dh, duty_hrs, dpg_pch, block_hrs, tafb_hrs, sched_on, sched_off = summary
 
     flight_op = _decimal_match(_FLT_OP_RE, text)
     duty_rig = _decimal_match(_DUTY_RIG_RE, text)
@@ -136,12 +143,25 @@ def _parse_trip_page(text: str, page_idx: int) -> TripPairing | None:
         trip_pch_value=trip_val,
         dh_plus_trip_pch=dh_plus_trip,
         page_index=page_idx,
+        sched_duty_on=sched_on,
+        sched_duty_off=sched_off,
     )
 
 
-def _extract_summary_row(text: str) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal] | None:
-    """Find the summary header line and return (Total DH, Duty, DPG, Block, TAFB)
-    from the line directly below it. Times are converted to decimal hours."""
+def _extract_summary_row(
+    text: str,
+) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal, str, str] | None:
+    """Find the summary header line and return
+    (Total DH, Duty, DPG, Block, TAFB, sched_duty_on, sched_duty_off) from the
+    line directly below it. Times are decimal hours; the duty window is the
+    "HH:MM" LOCAL clock from "L Day Show" / "L Day Duty Off" ("" if absent).
+
+    Data row shape (13 tokens):
+        <Z Show d t> <Z Duty Off d t> <L Day Show d t> <L Day Duty Off d t>
+        <Total DH> <Total Flt Duty> <DPG> <Sch. Block> <TAFB>
+    The last 5 are the totals; the four leading date-time PAIRS are the
+    Zulu/local show & duty-off clocks.
+    """
     lines = text.splitlines()
     for i, line in enumerate(lines):
         if _SUMMARY_HDR_RE.search(line):
@@ -150,8 +170,6 @@ def _extract_summary_row(text: str) -> tuple[Decimal, Decimal, Decimal, Decimal,
             row = lines[i + 1].split()
             if len(row) < 5:
                 return None
-            # The last 5 tokens of the data row are: Total DH, Total Flt Duty,
-            # DPG, Sch. Block, TAFB. (Earlier tokens are 4 date-time pairs.)
             total_dh = _hhmm_to_hours(row[-5])
             duty = _hhmm_to_hours(row[-4])
             try:
@@ -160,8 +178,31 @@ def _extract_summary_row(text: str) -> tuple[Decimal, Decimal, Decimal, Decimal,
                 return None
             block = _hhmm_to_hours(row[-2])
             tafb = _hhmm_to_hours(row[-1])
-            return total_dh, duty, dpg, block, tafb
+            # L Day Show = row[-9] (date) row[-8] (time); L Day Duty Off =
+            # row[-7] row[-6]. Only present when the full 4 pairs precede the
+            # totals (≥ 13 tokens); degrade gracefully otherwise.
+            sched_on = sched_off = ""
+            if len(row) >= 13:
+                sched_on = _norm_clock(row[-8])
+                sched_off = _norm_clock(row[-6])
+            return total_dh, duty, dpg, block, tafb, sched_on, sched_off
     return None
+
+
+def _norm_clock(token: str) -> str:
+    """Normalize a "H:MM" / "HH:MM" clock token to zero-padded "HH:MM" ("" on
+    anything unparseable)."""
+    parts = token.split(":")
+    if len(parts) != 2:
+        return ""
+    try:
+        h = int(parts[0])
+        m = int(parts[1])
+    except ValueError:
+        return ""
+    if not (0 <= h < 24 and 0 <= m < 60):
+        return ""
+    return f"{h:02d}:{m:02d}"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────

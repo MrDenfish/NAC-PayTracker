@@ -871,6 +871,11 @@ class DayDetailData:
     duty_off: str | None = None
     duty_hours: Decimal | None = None
     duty_rig_pch: Decimal | None = None
+    # Scheduled duty window from the packet (local "HH:MM") + its rig — the
+    # reconstruct-from-packet fallback shown when iCal legs are missing.
+    sched_duty_on: str | None = None
+    sched_duty_off: str | None = None
+    sched_duty_rig_pch: Decimal | None = None
     # The day's effective PCH against its candidate sources (DPG /
     # published-or-callout / flight-op / duty-rig); winner = the credited value.
     pch_candidates: tuple[PchComponent, ...] = ()
@@ -1494,8 +1499,24 @@ def _build_day_detail(
     # duty rig. Only meaningful when the day was flown (iCal legs present).
     # winner = the candidate equal to the credited value, so the pilot can see
     # *why* the day is worth what it is (e.g. callout 6.08 beats duty-rig 4.95).
+    # Scheduled duty window from the packet — the reconstruct fallback when
+    # iCal legs are missing (aged out of BlueOne's rolling feed). For a trip
+    # day use the matched packet_trip; for a callout look up the flown trip.
+    sched_packet = packet_trip
+    if sched_packet is None and day_is_callout and day_entry.callout_trip_id:
+        sched_packet = pr.packet.get(day_entry.callout_trip_id)
+    sched_duty_on = (sched_packet.sched_duty_on or None) if sched_packet else None
+    sched_duty_off = (sched_packet.sched_duty_off or None) if sched_packet else None
+    sched_duty_rig_pch = (
+        sched_packet.duty_hours / Decimal("2")
+        if sched_packet is not None and sched_packet.duty_hours > 0
+        else None
+    )
+
     pch_candidates: tuple[PchComponent, ...] = ()
-    if legs and effective is not None and not is_dropped:
+    if effective is not None and not is_dropped and (
+        legs or sched_duty_rig_pch is not None
+    ):
         raw: list[tuple[str, Decimal]] = []
         if day_is_callout or kind == "reserve":
             raw.append(("Reserve (DPG)", _DPG))
@@ -1517,6 +1538,10 @@ def _build_day_detail(
             raw.append(("Flight-op (actual block)", actual_block))
         if duty_rig_pch is not None:
             raw.append(("Duty-rig (actual)", duty_rig_pch))
+        elif sched_duty_rig_pch is not None:
+            # No iCal actuals (legs missing) — fall back to the packet's
+            # scheduled duty rig so a duty-rig candidate still shows.
+            raw.append(("Duty-rig (scheduled)", sched_duty_rig_pch))
         eff_q = effective.quantize(Decimal("0.01"))
         built: list[PchComponent] = []
         seen_winner = False
@@ -1579,6 +1604,9 @@ def _build_day_detail(
         duty_off=duty_off,
         duty_hours=duty_hours,
         duty_rig_pch=duty_rig_pch,
+        sched_duty_on=sched_duty_on,
+        sched_duty_off=sched_duty_off,
+        sched_duty_rig_pch=sched_duty_rig_pch,
         pch_candidates=pch_candidates,
     )
 
