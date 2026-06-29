@@ -224,3 +224,38 @@ def test_delete_middle_seq_does_not_reuse():
     s.delete("2026-06-02", 2)
     v = _rsv(s, "2026-06-02")      # max is 3 → next is 4
     assert v.seq == 4
+
+
+# ── manual legs (per-version, for the merged Legs display) ──────────
+
+
+def test_save_and_list_legs():
+    from nac_pay.storage import VersionLeg
+    s = _store("user-legs")
+    v = _rsv(s, "2026-06-02")
+    s.save_legs("2026-06-02", v.seq, [
+        VersionLeg("720", "06:41", "09:00"),
+        VersionLeg("721", "10:00", "12:00"),
+    ])
+    legs = s.list_legs_for_date("2026-06-02")
+    assert [lg.flight for lg in legs[v.seq]] == ["720", "721"]
+    assert legs[v.seq][0].out_local == "06:41"
+
+
+def test_save_legs_replaces_prior_set():
+    from nac_pay.storage import VersionLeg
+    s = _store("user-legs-replace")
+    v = _rsv(s, "2026-06-02")
+    s.save_legs("2026-06-02", v.seq, [VersionLeg("720", "06:00", "09:00")])
+    s.save_legs("2026-06-02", v.seq, [VersionLeg("999", "01:00", "02:00")])
+    legs = s.list_legs_for_date("2026-06-02")
+    assert [lg.flight for lg in legs[v.seq]] == ["999"]
+
+
+def test_delete_version_cascades_its_legs():
+    from nac_pay.storage import VersionLeg
+    s = _store("user-legs-cascade")
+    v = _rsv(s, "2026-06-02")
+    s.save_legs("2026-06-02", v.seq, [VersionLeg("720", "06:00", "09:00")])
+    s.delete("2026-06-02", v.seq)
+    assert s.list_legs_for_date("2026-06-02") == {}

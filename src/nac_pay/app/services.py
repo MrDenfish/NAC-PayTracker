@@ -670,6 +670,7 @@ class DayLeg:
     block_hours: Decimal
     out_local: str = ""       # Anchorage-local "HH:MM" for display
     in_local: str = ""
+    source: str = "iCal"      # "iCal" (feed) or "Manual" (pilot-entered)
 
 
 @dataclass(frozen=True)
@@ -772,6 +773,10 @@ class ReassignFormDefaults:
     # "Restore assignment" action, pre-filled with the original PCH). Saving
     # files a CORRECTION that supersedes the drop, reverting the forfeit.
     is_restore: bool = False
+    # Pre-filled legs for the Detailed leg table — the iCal legs (so the pilot
+    # only adds what's missing and Block/Duty/TAFB compute from the full set),
+    # or the corrected version's own legs. Each: {"flight","out","in"}.
+    legs: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -886,6 +891,38 @@ _WEEKDAY_FULL = (
 )
 _WEEKDAY_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _DPG = Decimal("3.82")
+
+
+def _clock_span_hours(out_s: str, in_s: str) -> Decimal:
+    """Hours from an "HH:MM" out clock to an "HH:MM" in clock (rolls past
+    midnight). 0 on unparseable input."""
+    def _m(s: str):
+        try:
+            h, mm = s.split(":")
+            return int(h) * 60 + int(mm)
+        except Exception:
+            return None
+    o, i = _m(out_s), _m(in_s)
+    if o is None or i is None:
+        return Decimal("0")
+    span = i - o
+    if span < 0:
+        span += 1440
+    return Decimal(span) / Decimal("60")
+
+
+def _manual_day_legs(version_legs) -> tuple["DayLeg", ...]:
+    """Render pilot-entered VersionLegs as DayLegs (source = Manual) for the
+    Legs card; per-leg block is computed from the entered clocks."""
+    return tuple(
+        DayLeg(
+            flight_no=lg.flight, origin="", destination="", tail="",
+            dt_start_utc="", dt_end_utc="",
+            block_hours=_clock_span_hours(lg.out_local, lg.in_local),
+            out_local=lg.out_local, in_local=lg.in_local, source="Manual",
+        )
+        for lg in version_legs
+    )
 
 _REASON_LABELS = {
     "FLOWN": "Flown",
@@ -1080,9 +1117,9 @@ def load_day(
 
     # Phase G: load all user-recorded versions for this date (active +
     # superseded) so the history block can show the full audit trail.
-    user_versions = UserAssignmentVersionStore(
-        user_id=user_id,
-    ).list_for_date(target.isoformat())
+    _av_store = UserAssignmentVersionStore(user_id=user_id)
+    user_versions = _av_store.list_for_date(target.isoformat())
+    manual_legs_by_seq = _av_store.list_legs_for_date(target.isoformat())
     active, superseded_seqs = active_versions(user_versions)
 
     # Build the "who supersedes whom" backref map for display.
@@ -1106,6 +1143,7 @@ def load_day(
         restore_pch = None
     reassign_defaults = _build_reassign_defaults(
         user_versions, correct_seq, restore_pch,
+        ical_legs=legs, manual_legs_by_seq=manual_legs_by_seq,
     )
 
     # Packet trip catalog for the assignment_id <datalist>. Sorted by id
@@ -1148,6 +1186,7 @@ def load_day(
         duty_off=duty_off,
         duty_hours=duty_hours,
         duty_rig_pch=duty_rig_pch,
+        manual_legs_by_seq=manual_legs_by_seq,
     )
 
 
@@ -1235,17 +1274,31 @@ def _build_day_pay_rows(
     return tuple(rows), total
 
 
+def _ical_legs_prefill(ical_legs) -> tuple:
+    return tuple(
+        {"flight": lg.flight_no, "out": lg.out_local, "in": lg.in_local}
+        for lg in (ical_legs or ())
+    )
+
+
 def _build_reassign_defaults(
     user_versions: list,
     correct_seq: int | None,
     restore_pch: Decimal | None = None,
+    *,
+    ical_legs: tuple = (),
+    manual_legs_by_seq: dict | None = None,
 ) -> ReassignFormDefaults:
-    """Pre-fill the form when correcting a prior version."""
+    """Pre-fill the form. Fresh: seed the Detailed leg table with the iCal legs
+    (pilot adds only what's missing). Correcting: seed with that version's own
+    legs (falling back to the iCal legs)."""
+    manual_legs_by_seq = manual_legs_by_seq or {}
+    ical_prefill = _ical_legs_prefill(ical_legs)
     if correct_seq is None:
-        return ReassignFormDefaults()
+        return ReassignFormDefaults(legs=ical_prefill)
     target = next((uv for uv in user_versions if uv.seq == correct_seq), None)
     if target is None:
-        return ReassignFormDefaults()
+        return ReassignFormDefaults(legs=ical_prefill)
     from nac_pay.storage import VersionType as _VT
     if target.version_type is _VT.CORRECTION:
         # The route also rejects this, but defensively skip the pre-fill
@@ -1264,13 +1317,23 @@ def _build_reassign_defaults(
             pch_value=str(restore_pch) if restore_pch is not None else "",
             reason_code="FLOWN",
             is_restore=True,
+            legs=ical_prefill,
         )
+    target_legs = manual_legs_by_seq.get(target.seq)
+    legs_prefill = (
+        tuple(
+            {"flight": lg.flight, "out": lg.out_local, "in": lg.in_local}
+            for lg in target_legs
+        )
+        if target_legs else ical_prefill
+    )
     return ReassignFormDefaults(
         version_type="CORRECTION",
         correction_of=target.seq,
         correcting_seq_label=f"v{target.seq}",
         entry_mode=target.entry_mode.value,
         assignment_id=target.assignment_id,
+        legs=legs_prefill,
         pch_value=str(target.pch_value) if target.entry_mode.value == "SIMPLE" else "",
         block_hours=str(target.block_hours) if target.block_hours is not None else "",
         duty_hours=str(target.duty_hours) if target.duty_hours is not None else "",
@@ -1309,8 +1372,10 @@ def _build_day_detail(
     duty_off: str | None = None,
     duty_hours: Decimal | None = None,
     duty_rig_pch: Decimal | None = None,
+    manual_legs_by_seq: dict | None = None,
 ) -> DayDetailData:
     user_versions = user_versions or []
+    manual_legs_by_seq = manual_legs_by_seq or {}
     superseded_seqs = superseded_seqs or set()
     superseded_by_seq = superseded_by_seq or {}
     reassign_defaults = reassign_defaults or ReassignFormDefaults()
@@ -1482,6 +1547,11 @@ def _build_day_detail(
             # assignment — same guard as the calendar winning-aid logic.
             if winner.assignment_id and winner.assignment_id != assignment_id:
                 assignment_id = winner.assignment_id
+            # If the winning version carries pilot-entered legs, show THOSE in
+            # the Legs card (source = Manual) — the pilot's corrected/complete
+            # set supersedes the (possibly aged-out) iCal legs.
+            if manual_legs_by_seq.get(winner.seq):
+                legs = _manual_day_legs(manual_legs_by_seq[winner.seq])
         # On an iCal callout the flown trip IS the assignment — surface
         # callout_trip_id (mirror the calendar's _build_cell) unless a genuine
         # reassignment above already replaced the reserve-line label. The

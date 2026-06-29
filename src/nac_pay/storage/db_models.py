@@ -205,3 +205,29 @@ class UserAssignmentVersionRow(Base):
     premium_category: Mapped[str] = mapped_column(String(32), default="NONE", nullable=False)
     notes: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class UserVersionLegRow(Base):
+    """Per-leg actual times the pilot entered for a DETAILED version (the
+    reassign "Legs" table). Stored for display/audit — the day view merges
+    these (source = Manual) with the iCal legs (source = iCal). The version's
+    block/duty/TAFB aggregates (computed from these) drive pay; these rows are
+    the human-readable backing. Deleted with their version (cascade).
+
+    New table — created automatically by ``Base.metadata.create_all`` on first
+    engine use, so no migration is needed on existing databases."""
+
+    __tablename__ = "user_version_legs"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    date_iso: Mapped[str] = mapped_column(String(10), primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    """Leg order within the version (0-based)."""
+
+    flight: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    out_local: Mapped[str] = mapped_column(String(5), default="", nullable=False)
+    in_local: Mapped[str] = mapped_column(String(5), default="", nullable=False)

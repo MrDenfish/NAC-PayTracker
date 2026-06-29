@@ -82,6 +82,7 @@ from .assignment_versions import (  # noqa: E402
     UserAssignmentVersion,
     UserAssignmentVersionStore,
     VersionEntryMode,
+    VersionLeg,
     VersionType,
     active_versions,
 )
@@ -112,6 +113,7 @@ __all__ = [
     "PilotProfileStore",
     "User",
     "UserAssignmentVersion",
+    "VersionLeg",
     "UserAssignmentVersionStore",
     "UserDocumentsStore",
     "UserStore",

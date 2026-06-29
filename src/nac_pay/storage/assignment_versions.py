@@ -22,6 +22,7 @@ from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 
+from sqlalchemy import delete as _sa_delete
 from sqlalchemy import select
 
 
@@ -78,6 +79,16 @@ class UserAssignmentVersion:
     premium_category: str
     notes: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class VersionLeg:
+    """One actual leg the pilot entered for a DETAILED version (flight + local
+    out/in clocks). Backs the merged "Legs" display (source = Manual)."""
+
+    flight: str
+    out_local: str
+    in_local: str
 
 
 class UserAssignmentVersionStore:
@@ -228,7 +239,7 @@ class UserAssignmentVersionStore:
         correction that referenced the deleted row.
         """
         from .db import session_scope
-        from .db_models import UserAssignmentVersionRow
+        from .db_models import UserAssignmentVersionRow, UserVersionLegRow
 
         with session_scope() as sess:
             rows = sess.execute(
@@ -257,7 +268,55 @@ class UserAssignmentVersionStore:
             for r in rows:
                 if r.seq in to_delete:
                     sess.delete(r)
+            # Drop the manual legs of every deleted version too.
+            sess.execute(
+                _sa_delete(UserVersionLegRow).where(
+                    UserVersionLegRow.user_id == self._user_id,
+                    UserVersionLegRow.date_iso == date_iso,
+                    UserVersionLegRow.seq.in_(to_delete),
+                )
+            )
         return sorted(to_delete)
+
+    # ── Manual legs (per DETAILED version, for the merged Legs display) ──
+
+    def save_legs(self, date_iso: str, seq: int, legs: list[VersionLeg]) -> None:
+        """Replace the stored manual legs for one version with ``legs``."""
+        from .db import session_scope
+        from .db_models import UserVersionLegRow
+
+        with session_scope() as sess:
+            sess.execute(
+                _sa_delete(UserVersionLegRow).where(
+                    UserVersionLegRow.user_id == self._user_id,
+                    UserVersionLegRow.date_iso == date_iso,
+                    UserVersionLegRow.seq == seq,
+                )
+            )
+            for i, lg in enumerate(legs):
+                sess.add(UserVersionLegRow(
+                    user_id=self._user_id, date_iso=date_iso, seq=seq, idx=i,
+                    flight=lg.flight, out_local=lg.out_local, in_local=lg.in_local,
+                ))
+
+    def list_legs_for_date(self, date_iso: str) -> dict[int, list[VersionLeg]]:
+        """Manual legs for a date, grouped by version seq, ordered by idx."""
+        from .db import session_scope
+        from .db_models import UserVersionLegRow
+
+        with session_scope() as sess:
+            rows = sess.execute(
+                select(UserVersionLegRow).where(
+                    UserVersionLegRow.user_id == self._user_id,
+                    UserVersionLegRow.date_iso == date_iso,
+                ).order_by(UserVersionLegRow.seq, UserVersionLegRow.idx)
+            ).scalars().all()
+        out: dict[int, list[VersionLeg]] = {}
+        for r in rows:
+            out.setdefault(r.seq, []).append(
+                VersionLeg(flight=r.flight, out_local=r.out_local, in_local=r.in_local)
+            )
+        return out
 
     def _row_to_record(self, r) -> UserAssignmentVersion:
         def _dec(v) -> Decimal | None:

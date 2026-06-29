@@ -285,7 +285,7 @@ def test_day_detail_shows_reassignment_form_for_trip_day(monkeypatch):
     r = client.get("/day/2026-06-02")
     assert r.status_code == 200
     body = r.text
-    assert "Reassign / record a new version" in body or "Correcting" in body
+    assert "Reassign / amend" in body or "Correcting" in body
     assert 'name="entry_mode"' in body
     assert "Simple" in body and "Detailed" in body
 
@@ -385,3 +385,54 @@ def test_version_delete_shows_banner_and_button(monkeypatch):
     # The post-delete confirmation banner renders on the saved redirect target.
     banner = client.get("/day/2026-06-02?saved=version_deleted").text
     assert "Version deleted." in banner
+
+
+# ── Detailed-mode legs: stored + shown as Manual in the Legs view ──────
+
+
+def test_reassign_detailed_legs_stored_and_shown_as_manual(monkeypatch):
+    from nac_pay.app.services import load_day
+    client, uid = _bootstrap_user_with_june(monkeypatch, "legs@x.test")
+    r = client.post(
+        "/day/2026-06-02/reassign",
+        data={
+            "version_type": "REASSIGNMENT", "entry_mode": "DETAILED",
+            "assignment_id": "722/754",
+            "block_hours": "6.00", "duty_hours": "12.00", "tafb_hours": "14.00",
+            "deadhead_pch": "0", "workdays": "1",
+            "reason_code": "REASSIGNMENT", "premium_category": "NONE",
+            "leg_flight": ["722", "754"],
+            "leg_out": ["06:00", "10:00"],
+            "leg_in": ["09:00", "12:00"],
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    legs = UserAssignmentVersionStore(user_id=uid).list_legs_for_date("2026-06-02")
+    assert legs and [lg.flight for lg in next(iter(legs.values()))] == ["722", "754"]
+    # The day view surfaces them tagged Manual.
+    d = load_day(2026, 6, 2, user_id=uid)
+    assert any(leg.source == "Manual" for leg in d.legs)
+    assert any(leg.flight_no == "722" for leg in d.legs)
+
+
+def test_reassign_detailed_skips_incomplete_legs(monkeypatch):
+    """A leg row missing its In time is not stored."""
+    from nac_pay.app.services import load_day
+    client, uid = _bootstrap_user_with_june(monkeypatch, "legs2@x.test")
+    client.post(
+        "/day/2026-06-02/reassign",
+        data={
+            "version_type": "REASSIGNMENT", "entry_mode": "DETAILED",
+            "assignment_id": "722/754",
+            "block_hours": "3.00", "duty_hours": "6.00", "tafb_hours": "6.00",
+            "deadhead_pch": "0", "workdays": "1",
+            "reason_code": "REASSIGNMENT", "premium_category": "NONE",
+            "leg_flight": ["722", "754"],
+            "leg_out": ["06:00", "10:00"],
+            "leg_in": ["09:00", ""],     # second leg incomplete
+        },
+        follow_redirects=False,
+    )
+    legs = UserAssignmentVersionStore(user_id=uid).list_legs_for_date("2026-06-02")
+    assert [lg.flight for lg in next(iter(legs.values()))] == ["722"]
