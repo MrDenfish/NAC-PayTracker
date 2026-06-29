@@ -485,3 +485,35 @@ def test_tie_break_latest_amendment_wins_and_shows_its_legs(monkeypatch):
     d = load_day(2026, 6, 2, user_id=uid)
     # The later version's legs are surfaced (Manual), not the iCal fallback.
     assert any(leg.source == "Manual" and leg.flight_no == "722" for leg in d.legs)
+
+
+def test_manual_callout_legs_drive_actual_duty_and_published(monkeypatch):
+    """When a manual callout carries legs, the day's ACTUAL duty window /
+    block / duty-rig come from those legs (not the aged-out iCal feed), and the
+    'Assigned trip (published)' candidate is the packet trip's value."""
+    from decimal import Decimal
+
+    from nac_pay.app.services import load_day
+    client, uid = _bootstrap_user_with_june(monkeypatch, "mcallout@x.test")
+    client.post(
+        "/day/2026-06-27/reassign",
+        data={
+            "version_type": "REASSIGNMENT", "entry_mode": "DETAILED",
+            "called_in": "on", "assignment_id": "720/721/1780/1781",
+            "block_hours": "6.15", "duty_hours": "9.95", "tafb_hours": "10.73",
+            "deadhead_pch": "0", "workdays": "1",
+            "reason_code": "FLOWN", "premium_category": "NONE",
+            "leg_flight": ["720", "721", "1780", "1781"],
+            "leg_out": ["06:45", "09:05", "11:18", "13:47"],
+            "leg_in": ["08:07", "10:37", "12:53", "15:27"],
+        },
+        follow_redirects=False,
+    )
+    d = load_day(2026, 6, 27, user_id=uid)
+    # Actual duty window from the manual legs (06:45 − 1:00 report → 15:27 + 0:15).
+    assert d.duty_on == "05:45" and d.duty_off == "15:42"
+    assert abs(d.duty_rig_pch - Decimal("4.975")) < Decimal("0.001")
+    cands = {c.label: c.pch for c in d.pch_candidates}
+    assert any("Assigned trip" in lbl for lbl in cands)
+    fo = next(p for lbl, p in cands.items() if "Flight-op" in lbl)
+    assert abs(fo - Decimal("6.15")) < Decimal("0.01")
