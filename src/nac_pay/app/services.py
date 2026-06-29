@@ -966,10 +966,20 @@ def _duty_from_clock_legs(legs):
     def _fmt(mn):
         mn %= 1440
         return f"{mn // 60:02d}:{mn % 60:02d}"
-    return (
-        _fmt(on_min), _fmt(off_min), duty_hours,
-        duty_hours / Decimal("2"), Decimal(block_min) / Decimal("60"),
-    )
+    # off_min (last block-in + release) is the duty END. The duty START is the
+    # report time, which is NOT first-out − pad when the flight pushed late —
+    # the pilot reports at the scheduled time. The caller derives duty-on from
+    # the version's stored duty_hours (the form computes it from the editable
+    # report field): duty_on = duty_off − duty_hours. The legs-only on/hours/rig
+    # below are the fallback when no version duty is available.
+    return {
+        "duty_on": _fmt(on_min),
+        "duty_off": _fmt(off_min),
+        "off_min": off_min,
+        "duty_hours": duty_hours,
+        "duty_rig": duty_hours / Decimal("2"),
+        "block": Decimal(block_min) / Decimal("60"),
+    }
 
 
 def _manual_day_legs(version_legs) -> tuple["DayLeg", ...]:
@@ -1619,7 +1629,24 @@ def _build_day_detail(
                 legs = _manual_day_legs(mlegs)
                 dw = _duty_from_clock_legs(mlegs)
                 if dw is not None:
-                    duty_on, duty_off, duty_hours, duty_rig_pch, actual_block = dw
+                    duty_off = dw["duty_off"]
+                    actual_block = (
+                        winner.block_hours
+                        if winner.block_hours is not None else dw["block"]
+                    )
+                    if winner.duty_hours is not None:
+                        # Duty start = report (baked into the stored duty_hours
+                        # via the form's editable check-in field), not
+                        # first-out − pad. duty_on = duty_off − duty_hours.
+                        duty_hours = winner.duty_hours
+                        duty_rig_pch = winner.duty_hours / Decimal("2")
+                        on_min = dw["off_min"] - int(winner.duty_hours * 60)
+                        on_min %= 1440
+                        duty_on = f"{on_min // 60:02d}:{on_min % 60:02d}"
+                    else:
+                        duty_on = dw["duty_on"]
+                        duty_hours = dw["duty_hours"]
+                        duty_rig_pch = dw["duty_rig"]
         # On an iCal callout the flown trip IS the assignment — surface
         # callout_trip_id (mirror the calendar's _build_cell) unless a genuine
         # reassignment above already replaced the reserve-line label. The

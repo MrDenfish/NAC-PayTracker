@@ -517,3 +517,30 @@ def test_manual_callout_legs_drive_actual_duty_and_published(monkeypatch):
     assert any("Assigned trip" in lbl for lbl in cands)
     fo = next(p for lbl, p in cands.items() if "Flight-op" in lbl)
     assert abs(fo - Decimal("6.15")) < Decimal("0.01")
+
+
+def test_duty_on_anchors_to_report_not_actual_blockout(monkeypatch):
+    """Duty-on comes from the report/check-in (baked into duty_hours), not
+    actual block-out − 1:00. Flight pushed late (06:45) but report was 04:41,
+    so Duty-on must be 04:41 — not 05:45."""
+    from decimal import Decimal
+
+    from nac_pay.app.services import load_day
+    client, uid = _bootstrap_user_with_june(monkeypatch, "report@x.test")
+    client.post(
+        "/day/2026-06-27/reassign",
+        data={
+            "version_type": "REASSIGNMENT", "entry_mode": "DETAILED",
+            "called_in": "on", "assignment_id": "720/721/1780/1781",
+            "block_hours": "6.15", "duty_hours": "11.0167", "tafb_hours": "10.77",
+            "deadhead_pch": "0", "workdays": "1",
+            "reason_code": "FLOWN", "premium_category": "NONE",
+            "leg_flight": ["720", "1781"],
+            "leg_out": ["06:45", "13:47"],   # first actual out 06:45
+            "leg_in": ["08:07", "15:27"],    # last in 15:27 → release 15:42
+        },
+        follow_redirects=False,
+    )
+    d = load_day(2026, 6, 27, user_id=uid)
+    assert d.duty_off == "15:42"
+    assert d.duty_on == "04:41"          # report, not 06:45 − 1:00 = 05:45

@@ -622,11 +622,20 @@
             </table>
             <button type="button" id="reassign-add-leg" class="btn btn--secondary">+ Add leg</button>
             <p id="reassign-legs-warn" class="form-warn" style="display: none;"></p>
+            <label class="reassign-report">
+              <span class="form-label">Report / check-in (local)</span>
+              <input type="time" id="reassign-report"
+                     value="{{ data.sched_duty_on or '' }}">
+              <span class="form-hint">
+                Defaults to the scheduled check-in (1:00 before scheduled
+                departure). Duty starts here, not at actual block-out — edit it
+                if the company changed your show time.
+              </span>
+            </label>
             <p class="form-hint">
-              Pre-filled from the iCal feed — edit any, add the missing legs.
-              Legs are sorted by departure before computing, so order of entry
-              doesn't matter. Block = Σ(In−Out); Duty = (first Out − 1:00 report)
-              → (last In + 0:15); TAFB = first Out → last In.
+              Pre-filled from the iCal feed — edit any, add the missing legs;
+              order doesn't matter (sorted by departure). Block = Σ(In−Out);
+              Duty = Report → (last In + 0:15); TAFB = Report → last In.
             </p>
           </div>
 
@@ -845,11 +854,18 @@
           lastIn = inAbs;
           prevIn = inAbs;
         }
-        var duty = ((lastIn + TRIP_END_PAD) - (firstOut - REPORT_PAD)) / 60;
+        // Duty STARTS at the report/check-in time (default = scheduled, 1:00
+        // before scheduled departure), NOT at actual block-out — the pilot
+        // reports on the schedule even if the flight pushes late. The report
+        // field overrides; fall back to first-out − 1:00 when it's blank.
+        var reportEl = document.getElementById("reassign-report");
+        var reportMin = reportEl ? toMin(reportEl.value) : null;
+        var front = (reportMin !== null) ? reportMin : (firstOut - REPORT_PAD);
+        var duty = ((lastIn + TRIP_END_PAD) - front) / 60;
         setOut("block_hours", block / 60);
         setOut("duty_hours", duty);
-        setOut("tafb_hours", (lastIn - firstOut) / 60);
-        if (duty > 16) warn("Duty is " + duty.toFixed(2) + " h — over 16; check the leg times.");
+        setOut("tafb_hours", (lastIn - front) / 60);
+        if (duty > 16) warn("Duty is " + duty.toFixed(2) + " h — over 16; check the times.");
       }
       function newRow() {
         var tr = body.querySelector(".reassign-leg-row").cloneNode(true);
@@ -860,6 +876,8 @@
         body.appendChild(newRow());
       });
       body.addEventListener("input", recompute);
+      var reportEl = document.getElementById("reassign-report");
+      if (reportEl) reportEl.addEventListener("input", recompute);
       body.addEventListener("click", function (e) {
         if (!e.target.classList.contains("leg-remove")) return;
         var row = e.target.closest(".reassign-leg-row");
