@@ -352,6 +352,11 @@ def day_reassign(
     tafb_hours: str = Form(""),
     deadhead_pch: str = Form("0"),
     workdays: str = Form("1"),
+    # Detailed-mode legs (parallel lists; the JS computes block/duty/TAFB from
+    # them client-side — here we persist them for the merged "Legs" display).
+    leg_flight: list[str] = Form([]),
+    leg_out: list[str] = Form([]),
+    leg_in: list[str] = Form([]),
     # Labels
     reason_code: str = Form("FLOWN"),
     premium_category: str = Form("NONE"),
@@ -456,7 +461,7 @@ def day_reassign(
     if pch_dec <= 0:
         return _bail("PCH must be positive.")
 
-    store.save(
+    saved = store.save(
         date_iso=date_iso,
         version_type=vt,
         correction_of=correction_of_int,
@@ -470,6 +475,23 @@ def day_reassign(
         premium_category=premium_category.strip() or "NONE",
         notes=notes.strip()[:500],
     )
+
+    # Persist any complete legs the pilot entered (DETAILED mode), for the
+    # merged "Legs" display tagged as Manual. Partial rows are skipped.
+    if em is VersionEntryMode.DETAILED:
+        from nac_pay.storage import VersionLeg
+        legs = [
+            VersionLeg(
+                flight=(leg_flight[i].strip() if i < len(leg_flight) else ""),
+                out_local=out.strip(),
+                in_local=leg_in[i].strip(),
+            )
+            for i, out in enumerate(leg_out)
+            if i < len(leg_in) and out.strip() and leg_in[i].strip()
+        ]
+        if legs:
+            store.save_legs(date_iso, saved.seq, legs)
+
     invalidate_caches()
     return RedirectResponse(
         f"/day/{date_iso}?saved=reassign", status_code=303,

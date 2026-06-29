@@ -88,7 +88,7 @@ def test_form_is_available_on_off_days(monkeypatch):
     client, _ = _bootstrap(monkeypatch, "off-form@x.test")
     r = client.get("/day/2026-06-07")
     body = r.text
-    assert "Reassign / record a new version" in body or "Correcting" in body
+    assert "Reassign / amend" in body or "Correcting" in body
     assert 'action="/day/2026-06-07/reassign"' in body
 
 

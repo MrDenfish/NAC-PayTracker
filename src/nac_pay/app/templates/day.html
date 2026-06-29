@@ -326,10 +326,11 @@
   </div>
   {% endif %}
 
-  {# ── Legs from iCal ─────────────────────────────────────────── #}
-  {% if data.legs %}
+  {# ── Legs (iCal feed + manual entry) ─────────────────────────── #}
+  {% if data.legs or data.editable %}
   <div class="card">
-    <h2 class="card-title">Legs (iCal)</h2>
+    <h2 class="card-title">Legs</h2>
+    {% if data.legs %}
     <table class="legs-table">
       <thead>
         <tr>
@@ -339,24 +340,37 @@
           <th>Out</th>
           <th>In</th>
           <th>Block</th>
+          <th>Source</th>
         </tr>
       </thead>
       <tbody>
         {% for leg in data.legs %}
         <tr>
           <td><code>NC{{ leg.flight_no }}</code></td>
-          <td>{{ leg.origin }}–{{ leg.destination }}</td>
+          <td>{{ leg.origin }}{% if leg.destination %}–{{ leg.destination }}{% endif %}</td>
           <td>{{ leg.tail }}</td>
           <td class="time-cell">{{ leg.out_local or leg.dt_start_utc }}</td>
           <td class="time-cell">{{ leg.in_local or leg.dt_end_utc }}</td>
           <td class="num">{{ "%.2f"|format(leg.block_hours) }} h</td>
+          <td><span class="leg-source leg-source--{{ leg.source|lower }}">{{ leg.source }}</span></td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
     <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
-      Out / In in Anchorage local time.
+      Out / In in Anchorage local time. <strong>iCal</strong> = from the feed;
+      <strong>Manual</strong> = entered in an amendment.
     </p>
+    {% else %}
+    <p class="subtle">No legs recorded from the iCal feed for this day
+      (they may have aged out of the feed). Use <em>Amend / add legs</em> to
+      enter the times you flew.</p>
+    {% endif %}
+    {% if data.editable %}
+    <a href="/day/{{ data.date_iso }}?amend=1#reassign-form" class="btn btn--secondary">
+      Amend / add legs
+    </a>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -498,7 +512,7 @@
         {% elif is_correction %}
           ✎ Correcting {{ defaults.correcting_seq_label }}
         {% else %}
-          + Reassign / record a new version
+          + Reassign / amend
         {% endif %}
       </summary>
 
@@ -577,28 +591,37 @@
         </div>
 
         <div class="reassign-detailed-group">
-          {# Leg-time entry — mirrors the iCal Legs table. Filling Out/In
-             auto-computes Block/Duty/TAFB below (still overridable). Useful
-             when the iCal legs have aged out of the feed and you're
-             reconstructing a flown trip by hand. These leg fields are
-             client-side helpers only — they are not submitted. #}
+          {# Leg-time entry — mirrors the Legs table. Pre-filled with the iCal
+             legs (edit/override any, add the missing ones); Block/Duty/TAFB
+             below auto-compute from the FULL set. The leg inputs ARE submitted
+             (leg_flight/leg_out/leg_in) and stored for the merged Legs view. #}
           <div class="reassign-legs-group">
-            <span class="form-label">Legs — enter actual times to compute Block / Duty / TAFB</span>
+            <span class="form-label">Legs — actual times (Block / Duty / TAFB compute from these)</span>
             <table class="legs-table" id="reassign-legs">
               <thead>
                 <tr><th>Flight</th><th>Out</th><th>In</th><th></th></tr>
               </thead>
               <tbody id="reassign-legs-body">
+                {% for lg in defaults.legs %}
                 <tr class="reassign-leg-row">
-                  <td><input type="text" class="leg-flight" maxlength="8" placeholder="720"></td>
-                  <td><input type="time" class="leg-out"></td>
-                  <td><input type="time" class="leg-in"></td>
+                  <td><input type="text" name="leg_flight" class="leg-flight" maxlength="8" placeholder="720" value="{{ lg.flight }}"></td>
+                  <td><input type="time" name="leg_out" class="leg-out" value="{{ lg.out }}"></td>
+                  <td><input type="time" name="leg_in" class="leg-in" value="{{ lg['in'] }}"></td>
                   <td><button type="button" class="leg-remove" title="Remove leg" tabindex="-1">×</button></td>
                 </tr>
+                {% else %}
+                <tr class="reassign-leg-row">
+                  <td><input type="text" name="leg_flight" class="leg-flight" maxlength="8" placeholder="720"></td>
+                  <td><input type="time" name="leg_out" class="leg-out"></td>
+                  <td><input type="time" name="leg_in" class="leg-in"></td>
+                  <td><button type="button" class="leg-remove" title="Remove leg" tabindex="-1">×</button></td>
+                </tr>
+                {% endfor %}
               </tbody>
             </table>
             <button type="button" id="reassign-add-leg" class="btn btn--secondary">+ Add leg</button>
             <p class="form-hint">
+              Pre-filled from the iCal feed — edit any, add the missing legs.
               Block = Σ(In−Out); Duty = (first Out − 1:00 report) → (last In + 0:15);
               TAFB = first Out → last In. Times roll past midnight in order.
             </p>
@@ -816,6 +839,38 @@
           row.querySelectorAll("input").forEach(function (el) { el.value = ""; });
         }
         recompute();
+      });
+      recompute();   // compute from any pre-filled (iCal) legs on load
+    })();
+
+    // "Amend / add legs" entry point (?amend=1): open the form, select
+    // Detailed mode, and scroll to it.
+    (function () {
+      if (!/[?&]amend=1\b/.test(window.location.search)) return;
+      var details = document.querySelector(".reassign-details");
+      if (details) details.open = true;
+      var detailed = document.querySelector('input[name="entry_mode"][value="DETAILED"]');
+      if (detailed) { detailed.checked = true; detailed.dispatchEvent(new Event("change", {bubbles: true})); }
+      var form = document.getElementById("reassign-form");
+      if (form) form.scrollIntoView();
+    })();
+
+    // Detailed mode: require Block / Duty / TAFB before saving (they
+    // auto-compute from legs, but guard against an incomplete entry).
+    (function () {
+      var form = document.querySelector(".reassign-form");
+      if (!form) return;
+      form.addEventListener("submit", function (e) {
+        var detailed = form.querySelector('input[name="entry_mode"][value="DETAILED"]');
+        if (!detailed || !detailed.checked) return;
+        var missing = ["block_hours", "duty_hours", "tafb_hours"].filter(function (n) {
+          var el = form.querySelector('[name="' + n + '"]');
+          return !el || !el.value.trim();
+        });
+        if (missing.length) {
+          e.preventDefault();
+          alert("Enter complete legs (Out and In) — Block, Duty and TAFB must all be filled before saving.");
+        }
       });
     })();
   </script>
