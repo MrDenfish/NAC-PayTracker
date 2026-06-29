@@ -62,6 +62,21 @@ def test_may_flt_766_raw_times_extract_correctly(may_packet):
     assert trip.total_dh_hours == D("0")
 
 
+def test_may_flt_766_scheduled_duty_window(may_packet):
+    """L Day Show / L Day Duty Off parse to local HH:MM, and their span equals
+    the printed duty — the reconstruct-from-packet fallback source."""
+    trip = may_packet["766/766/767"]
+    assert trip.sched_duty_on and trip.sched_duty_off       # both "HH:MM"
+    assert len(trip.sched_duty_on) == 5 and trip.sched_duty_on[2] == ":"
+
+    def _mins(s: str) -> int:
+        h, m = s.split(":")
+        return int(h) * 60 + int(m)
+
+    span_min = (_mins(trip.sched_duty_off) - _mins(trip.sched_duty_on)) % (24 * 60)
+    assert D(span_min) == trip.duty_hours * D("60")
+
+
 def test_may_raw_trip_id_keeps_trailing_slashes(may_packet):
     """raw_trip_id preserves the packet form, trip_id strips them."""
     trip = may_packet["766/766/767"]

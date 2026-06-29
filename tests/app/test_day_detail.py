@@ -248,3 +248,13 @@ def test_load_day_pch_candidates_hierarchy():
     winners = [c for c in d.pch_candidates if c.is_winning]
     assert len(winners) == 1
     assert winners[0].pch == d.effective_pch
+
+
+def test_load_day_exposes_scheduled_duty_window_from_packet():
+    """Reconstruct-from-packet: a day with a matched packet trip carries the
+    scheduled duty window (local HH:MM) + scheduled duty rig, independent of
+    iCal legs — the reliable fallback when feed legs have aged out."""
+    d = load_day(2026, 6, 12)
+    assert d.sched_duty_on and d.sched_duty_off
+    assert len(d.sched_duty_on) == 5 and d.sched_duty_on[2] == ":"
+    assert d.sched_duty_rig_pch is not None and d.sched_duty_rig_pch > 0
