@@ -459,3 +459,29 @@ def test_manual_legs_display_sorted_by_departure(monkeypatch):
     d = load_day(2026, 6, 2, user_id=uid)
     manual = [leg for leg in d.legs if leg.source == "Manual"]
     assert [leg.flight_no for leg in manual] == ["722", "754"]   # sorted by out
+
+
+def test_tie_break_latest_amendment_wins_and_shows_its_legs(monkeypatch):
+    """Two active versions tied on PCH: the LATER one is effective, and its
+    legs show — a fresh re-entry of the same value supersedes an older one by
+    recency (the June 27 'v2 still effective / new legs hidden' bug)."""
+    from nac_pay.app.services import load_day
+    client, uid = _bootstrap_user_with_june(monkeypatch, "tie@x.test")
+    common = {
+        "version_type": "REASSIGNMENT", "entry_mode": "DETAILED",
+        "assignment_id": "722/754", "reason_code": "REASSIGNMENT",
+        "premium_category": "NONE", "deadhead_pch": "0", "workdays": "1",
+        "block_hours": "5.00", "duty_hours": "10.00", "tafb_hours": "10.00",
+    }
+    # v1: same PCH inputs, no legs.
+    client.post("/day/2026-06-02/reassign", data=dict(common), follow_redirects=False)
+    # v2: same PCH, WITH legs.
+    client.post(
+        "/day/2026-06-02/reassign",
+        data=dict(common, leg_flight=["722", "754"],
+                  leg_out=["06:00", "10:00"], leg_in=["09:00", "12:00"]),
+        follow_redirects=False,
+    )
+    d = load_day(2026, 6, 2, user_id=uid)
+    # The later version's legs are surfaced (Manual), not the iCal fallback.
+    assert any(leg.source == "Manual" and leg.flight_no == "722" for leg in d.legs)

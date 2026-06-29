@@ -576,8 +576,9 @@ def load_calendar(
             continue
         if any(v.version_type is _VT.RESERVE_CALLOUT for v in active):
             callout_by_date.add(date_iso)
-        # Highest pch wins; earliest seq breaks ties.
-        winner = max(active, key=lambda v: (v.pch_value, -v.seq))
+        # Highest pch wins; on a tie the LATEST amendment wins (seq), so a
+        # fresh re-entry of the same value becomes effective over an older one.
+        winner = max(active, key=lambda v: (v.pch_value, v.seq))
         eff = trip_by_date.get(date_t.fromisoformat(date_iso)) \
             or day_by_date.get(date_t.fromisoformat(date_iso))
         # A genuine reassignment names a DIFFERENT id than the day's own
@@ -1541,7 +1542,7 @@ def _build_day_detail(
     else:
         if active_versions_today:
             winner = max(
-                active_versions_today, key=lambda v: (v.pch_value, -v.seq)
+                active_versions_today, key=lambda v: (v.pch_value, v.seq)
             )
             # Only a genuine reassignment to a DIFFERENT id overrides the
             # header. A PCH-only quick edit copies the current id (the reserve
@@ -1775,14 +1776,16 @@ def _build_history(
 
     # Mark the effective row. A company-approved DROP forfeits the assignment,
     # so it wins regardless of PCH (the latest active drop, by seq). Otherwise
-    # the effective row is the highest non-superseded PCH; earliest seq ties.
+    # the effective row is the highest non-superseded PCH; on a tie the LATEST
+    # seq wins (matches the calendar/header winner — a fresh re-entry of the
+    # same value becomes effective).
     candidates = [r for r in rows if not r.is_superseded]
     if candidates:
         drops = [r for r in candidates if r.user_version_type == "DROP"]
         if drops:
             winner = max(drops, key=lambda r: r.seq)
         else:
-            winner = max(candidates, key=lambda r: (r.pch_value, -r.seq))
+            winner = max(candidates, key=lambda r: (r.pch_value, r.seq))
         rows = [replace(r, is_effective=(r is winner)) for r in rows]
     return tuple(rows)
 
