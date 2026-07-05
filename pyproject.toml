@@ -27,6 +27,8 @@ app = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
     "ruff>=0.6",
 ]
 
@@ -40,7 +42,9 @@ packages = ["src/nac_pay"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-ra -q"
+# --timeout=60 guards against any single test hanging the run.
+# Parallelism (-n auto) is intentionally NOT enabled here yet; see Phase 2/3.
+addopts = "-ra -q --timeout=60"
 
 [tool.ruff]
 line-length = 100
