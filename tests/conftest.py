@@ -17,8 +17,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _isolated_storage_dir():
-    with tempfile.TemporaryDirectory(prefix="nac-pay-test-") as tmp:
+def _isolated_storage_dir(worker_id):
+    # ``worker_id`` comes from pytest-xdist: "master" for a serial run, else
+    # "gw0"/"gw1"/… — one per parallel worker process. Each worker is a
+    # separate process, so TemporaryDirectory() already yields a distinct
+    # path (and thus a distinct SQLite file) per worker; embedding worker_id
+    # in the prefix makes that per-worker isolation explicit and traceable in
+    # any leftover temp dirs, and keeps it correct even if this path ever
+    # becomes deterministic.
+    with tempfile.TemporaryDirectory(prefix=f"nac-pay-test-{worker_id}-") as tmp:
         os.environ["NAC_PAY_DATA_DIR"] = tmp
         # Explicitly clear any DATABASE_URL override that might be set in
         # the developer's shell — tests always use SQLite under the temp dir.
