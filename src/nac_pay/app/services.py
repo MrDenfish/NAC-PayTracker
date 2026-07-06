@@ -52,6 +52,7 @@ from nac_pay.schedule import (
     AppliedEvent,
     Day,
     DutyType,
+    FeedReassignment,
     Month,
     PilotProfile,
     Position,
@@ -67,6 +68,7 @@ from nac_pay.storage import (
     DayOverride,
     DayOverrideStore,
     DocumentKind,
+    FeedReassignmentDecisionStore,
     PersistedPilotProfile,
     PilotProfileStore,
     User,
@@ -186,6 +188,10 @@ class PipelineResult:
     # Phase H — date_iso → count of active (non-superseded) pilot
     # reassignment versions. Drives the calendar badge.
     user_version_counts: dict[str, int] = field(default_factory=dict)
+    # Company reroutes detected from the feed (auto-applied §3.E.1.b
+    # reassignments, gated by pilot confirm/reject). Drives the calendar
+    # "confirm" badge and the day-page confirm/reject card.
+    feed_reassignments: tuple[FeedReassignment, ...] = ()
 
 
 def available_months(user_id: str | None = None) -> tuple[tuple[int, int, str], ...]:
@@ -278,6 +284,42 @@ def _filter_feed_to_month(feed: ParsedFeed, year: int, month: int) -> ParsedFeed
     )
 
 
+# ── Parsed-document cache ────────────────────────────────────────────────
+# PDF parsing (pdfminer/pdfplumber) is by far the most expensive step in the
+# pipeline. Its output depends ONLY on the file bytes, yet ``_pipeline`` is
+# cleared by ``invalidate_caches()`` on every save — which would otherwise
+# re-parse the same static PDFs on every request/edit. So parsing lives in
+# its own cache keyed on (path, mtime_ns, size): unchanged docs reuse the
+# parse; a replaced/revised file (new mtime or size) re-parses automatically.
+# NOT cleared by ``invalidate_caches()`` — only the file identity invalidates
+# it. Safe because both parsers return dicts of frozen dataclasses (immutable
+# values); we still hand back a shallow ``dict`` copy so no caller can mutate
+# the shared cache entry.
+
+@lru_cache(maxsize=16)
+def _parse_master_schedule_cached(
+    path: str, _mtime_ns: int, _size: int
+) -> dict[str, object]:
+    return parse_master_schedule(path)
+
+
+@lru_cache(maxsize=16)
+def _parse_trip_pairing_packet_cached(
+    path: str, _mtime_ns: int, _size: int
+) -> dict[str, TripPairing]:
+    return parse_trip_pairing_packet(path)
+
+
+def _parse_master_schedule(path: str):
+    st = Path(path).stat()
+    return dict(_parse_master_schedule_cached(path, st.st_mtime_ns, st.st_size))
+
+
+def _parse_trip_pairing_packet(path: str) -> dict[str, TripPairing]:
+    st = Path(path).stat()
+    return dict(_parse_trip_pairing_packet_cached(path, st.st_mtime_ns, st.st_size))
+
+
 @lru_cache(maxsize=64)
 def _pipeline(
     year: int,
@@ -298,7 +340,7 @@ def _pipeline(
     pilot = persisted.profile
     pilot_code = pilot.pilot_id
 
-    fa_grids = parse_master_schedule(str(fa_path))
+    fa_grids = _parse_master_schedule(str(fa_path))
     sched = fa_grids.get(pilot_code)
     if sched is None:
         raise ValueError(
@@ -307,7 +349,7 @@ def _pipeline(
         )
     baseline, _warnings = month_from_master_schedule(sched, pilot)
 
-    packet = parse_trip_pairing_packet(str(packet_path))
+    packet = _parse_trip_pairing_packet(str(packet_path))
     validation = tuple(validate_trip_pairing_packet(packet))
 
     feed: ParsedFeed | None = None
@@ -322,9 +364,16 @@ def _pipeline(
         feed = _filter_feed_to_month(feed, year, month)
 
     if reconciliation is not None:
-        updated, applied = apply_actuals_to_month(baseline, reconciliation)
+        feed_decisions = FeedReassignmentDecisionStore(
+            user_id=user_id
+        ).decisions_for_month(year, month)
+        updated, applied, feed_reassignments = apply_actuals_to_month(
+            baseline, reconciliation,
+            packet=packet,
+            feed_reassignment_decisions=feed_decisions,
+        )
     else:
-        updated, applied = baseline, ()
+        updated, applied, feed_reassignments = baseline, (), ()
 
     # Phase G: fold pilot-recorded assignment versions onto matching
     # trips (reassignments + corrections). The store keeps the full
@@ -367,6 +416,7 @@ def _pipeline(
         fa_loaded=True,
         packet_loaded=True,
         user_version_counts=user_version_counts,
+        feed_reassignments=tuple(feed_reassignments),
     )
 
 
@@ -513,6 +563,9 @@ class CalendarCell:
     # Company-approved drop: the scheduled assignment was forfeited (0 PCH).
     # The cell shows a DROPPED tag; the FA-original aid stays visible.
     is_dropped: bool = False
+    # A feed-detected company reassignment is auto-applied but awaiting the
+    # pilot's confirm/reject. Drives an amber "confirm" badge on the cell.
+    needs_confirm: bool = False
 
 
 @dataclass(frozen=True)
@@ -605,6 +658,18 @@ def load_calendar(
         if label is not None:
             premium_label_by_date[date_iso] = label
 
+    # Feed-detected company reassignments: show the new flight as the active
+    # assignment (over the FA original) and flag PROPOSED ones for confirm.
+    # A pilot user-version winner takes precedence over the feed's proposal.
+    feed_confirm_dates: set[str] = set()
+    for fr in pr.feed_reassignments:
+        if not fr.applied:
+            continue
+        date_iso = fr.date.isoformat()
+        winning_aid_by_date.setdefault(date_iso, fr.signature)
+        if fr.status == "PROPOSED":
+            feed_confirm_dates.add(date_iso)
+
     base_rate = pr.pilot.hourly_rate
 
     cal = _cal.Calendar(firstweekday=_cal.MONDAY)
@@ -616,7 +681,8 @@ def load_calendar(
                         winning_aid_by_date.get(d.isoformat()),
                         premium_label_by_date.get(d.isoformat()),
                         base_rate,
-                        d.isoformat() in callout_by_date)
+                        d.isoformat() in callout_by_date,
+                        d.isoformat() in feed_confirm_dates)
             for d in week_dates
         )
         weeks.append(cells)
@@ -870,6 +936,10 @@ class DayDetailData:
     # PCH · rate = amount). One row per chunk crediting this date.
     day_pay_rows: tuple = ()
     day_pay_total: Decimal | None = None
+
+    # Feed-detected company reassignment on this date (None if none). Drives
+    # the confirm/reject card; carries the new routing + max-PCH protection.
+    feed_reassignment: FeedReassignment | None = None
 
     # Duty window from iCal actuals + contractual padding (§3.E duty rig).
     # Anchorage-local clock strings; duty_hours is the duration.
@@ -1125,8 +1195,16 @@ def load_day(
     duty_hours: Decimal | None = None
     duty_rig_pch: Decimal | None = None
     if pr.feed is not None:
+        # Attribute a leg to the day by its **Anchorage-local** departure date,
+        # not the UTC date — an AK-evening departure (out ~16:00+ local) is
+        # already the next calendar day in UTC, so a UTC filter dropped the
+        # later legs of an evening trip (only the first leg would show). Local
+        # matches how the reconciliation groups a trip onto its day.
         date_legs = sorted(
-            (leg for leg in pr.feed.flight_legs if leg.dt_start_utc.date() == target),
+            (
+                leg for leg in pr.feed.flight_legs
+                if _local_date(leg.dt_start_utc) == target
+            ),
             key=lambda leg: leg.dt_start_utc,
         )
         legs = tuple(
@@ -1185,6 +1263,11 @@ def load_day(
     # Applied events on this date.
     events_today = tuple(e for e in pr.applied_events if e.date == target)
 
+    # Feed-detected company reassignment on this date (confirm/reject card).
+    feed_reassignment = next(
+        (fr for fr in pr.feed_reassignments if fr.date == target), None,
+    )
+
     # Check for an existing pilot override on this date.
     override = override_store(user_id).load_all().get(target.isoformat())
 
@@ -1242,6 +1325,7 @@ def load_day(
         legs=legs,
         actual_block=actual_block,
         events_today=events_today,
+        feed_reassignment=feed_reassignment,
         has_override=override is not None,
         saved=saved,
         user_versions=user_versions,
@@ -1428,6 +1512,7 @@ def _build_day_detail(
     legs: tuple[DayLeg, ...],
     actual_block: Decimal | None,
     events_today: tuple[AppliedEvent, ...],
+    feed_reassignment: FeedReassignment | None = None,
     has_override: bool = False,
     saved: bool = False,
     user_versions: list | None = None,
@@ -1774,6 +1859,7 @@ def _build_day_detail(
         packet_trip_options=packet_options,
         day_pay_rows=day_pay_rows,
         day_pay_total=day_pay_total,
+        feed_reassignment=feed_reassignment,
         is_dropped=is_dropped,
         duty_on=duty_on,
         duty_off=duty_off,
@@ -2668,6 +2754,7 @@ def _build_cell(
     premium_label: str | None = None,
     base_rate: Decimal | None = None,
     has_user_callout: bool = False,
+    needs_confirm: bool = False,
 ) -> CalendarCell:
     in_month = d.month == month
     is_weekend = d.weekday() >= 5
@@ -2725,6 +2812,7 @@ def _build_cell(
             new_assignment_id=new_assignment_id,
             premium_label=premium_label,
             pay_dollars=_pay_for(trip.effective_pch, mult),
+            needs_confirm=needs_confirm,
         )
 
     if day is not None:

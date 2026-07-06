@@ -27,6 +27,8 @@ app = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
     "ruff>=0.6",
 ]
 
@@ -40,7 +42,10 @@ packages = ["src/nac_pay"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-ra -q"
+# --timeout=60 guards against any single test hanging the run.
+# -n auto runs tests across all cores; each xdist worker is a separate
+# process with its own isolated temp data dir / SQLite file (see conftest).
+addopts = "-ra -q --timeout=60 -n auto"
 
 [tool.ruff]
 line-length = 100

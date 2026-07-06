@@ -186,9 +186,11 @@ def _matched_trip(
 def _unmatched_trip(
     flight_sequence: str = "9999",
     on_date: date = date(2026, 6, 12),
+    actual_block: str = "2.5",
 ) -> ReconciledTrip:
+    block = D(actual_block)
     start = datetime(on_date.year, on_date.month, on_date.day, 14, 30, tzinfo=timezone.utc)
-    end = start + _hours_to_timedelta(D("2.5"))
+    end = start + _hours_to_timedelta(block)
     leg = _leg(flight_sequence, start, end)
     return ReconciledTrip(
         flight_sequence=flight_sequence,
@@ -197,7 +199,7 @@ def _unmatched_trip(
         match_status=MatchStatus.UNMATCHED_NO_PACKET,
         first_dt_utc=start,
         last_dt_utc=end,
-        actual_block_hours=D("2.5"),
+        actual_block_hours=block,
     )
 
 
@@ -234,7 +236,7 @@ def test_duty_extension_adds_version_when_block_extends():
     )
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
 
-    updated, events = apply_actuals_to_month(baseline, reconciliation)
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
 
     assert len(updated.trips) == 1
     updated_trip = updated.trips[0]
@@ -260,7 +262,7 @@ def test_no_event_when_actual_block_matches_packet():
     rt = _matched_trip("766", actual_block="4.17")
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
 
-    updated, events = apply_actuals_to_month(baseline, reconciliation)
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
 
     assert updated.trips[0].versions == ()
     assert all(e.kind is not AppliedEventKind.DUTY_EXTENSION for e in events)
@@ -279,7 +281,7 @@ def test_sub_tolerance_extension_does_not_trigger():
     rt = _matched_trip("766", actual_block="4.20")    # +0.03h over 4.17
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
 
-    updated, events = apply_actuals_to_month(baseline, reconciliation)
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
     assert updated.trips[0].versions == ()
 
 
@@ -303,7 +305,7 @@ def test_reserve_callout_sets_callout_trip_pch():
     rt = _matched_trip("766", actual_block="4.17", packet_pch="4.50", on_date=callout_date)
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
 
-    updated, events = apply_actuals_to_month(baseline, reconciliation)
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
 
     assert len(updated.days) == 1
     assert updated.days[0].date == callout_date
@@ -357,7 +359,7 @@ def test_reserve_callout_through_engine_matches_worked_check():
     )
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
 
-    updated, _ = apply_actuals_to_month(baseline, reconciliation)
+    updated, _, _ = apply_actuals_to_month(baseline, reconciliation)
     result = compute_pay(lower_month(updated))
 
     assert result.option1_floor == D("65.68")     # 65 floor + 0.68 excess
@@ -376,7 +378,7 @@ def test_open_time_pickup_adds_new_trip_at_bid_period_default():
     rt = _matched_trip("999", packet_pch="3.82")
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
 
-    updated, events = apply_actuals_to_month(baseline, reconciliation)
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
 
     assert len(updated.trips) == 1
     new_trip = updated.trips[0]
@@ -426,7 +428,7 @@ def test_same_aid_on_different_dates_disambiguates_by_date():
     )
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
 
-    updated, events = apply_actuals_to_month(baseline, reconciliation)
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
 
     # Both Trips survive; only the June-17 one has a version.
     assert len(updated.trips) == 2
@@ -466,7 +468,7 @@ def test_falls_back_to_first_available_when_no_baseline_dates():
         packet_duty="9.15",
     )
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
-    updated, _ = apply_actuals_to_month(baseline, reconciliation)
+    updated, _, _ = apply_actuals_to_month(baseline, reconciliation)
 
     # First trip gets the version; second is untouched.
     assert len(updated.trips[0].versions) == 1
@@ -483,7 +485,7 @@ def test_unmatched_trip_logged_but_not_added():
     rt = _unmatched_trip(flight_sequence="9999/9998")
     reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
 
-    updated, events = apply_actuals_to_month(baseline, reconciliation)
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
 
     assert updated.trips == ()
     assert updated.days == ()
@@ -492,6 +494,141 @@ def test_unmatched_trip_logged_but_not_added():
     assert review[0].trip_id is None
     assert review[0].delta_pch is None
     assert "9999/9998" in review[0].detail
+
+
+# ── Feed-detected company reassignment (reroute) ────────────────────────
+
+
+def _scheduled_trip(trip_id="730/732", pch="4.50", on=date(2026, 6, 12)) -> Trip:
+    return Trip(
+        trip_id=trip_id,
+        published_pch=D(pch),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+        dates=(on,),
+    )
+
+
+def test_feed_reassignment_applied_on_scheduled_day_pays_greater():
+    """An unmatched feed trip (company reroute) landing on a day that already
+    carries an FA-scheduled trip becomes a reassignment: a version is
+    attached and the day pays max(original, recomputed) — protected, never
+    below published. Default (no decision) = PROPOSED."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on)      # not in packet
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, events, reassigns = apply_actuals_to_month(baseline, reconciliation)
+
+    trip = updated.trips[0]
+    assert len(trip.versions) == 1
+    assert trip.effective_pch >= D("4.50")               # protected floor
+
+    assert len(reassigns) == 1
+    fr = reassigns[0]
+    assert fr.signature == "730/730/731"
+    assert fr.original_aid == "730/732"
+    assert fr.original_pch == D("4.50")
+    assert fr.status == "PROPOSED"
+    assert fr.applied is True
+    assert fr.effective_pch == trip.effective_pch
+    assert fr.effective_pch == max(fr.original_pch, fr.new_pch)
+
+    ev = [e for e in events if e.kind is AppliedEventKind.FEED_REASSIGNMENT]
+    assert len(ev) == 1
+    assert ev[0].trip_id == "730/730/731"
+    # It's a reassignment, NOT a bare unmatched-review log.
+    assert all(e.kind is not AppliedEventKind.UNMATCHED_TRIP_REVIEW for e in events)
+
+
+def test_feed_reassignment_recompute_can_exceed_published():
+    """When the reroute's recomputed PCH beats the published value, the day
+    pays the recompute (uplift)."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "3.00", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="5.00")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, _events, reassigns = apply_actuals_to_month(baseline, reconciliation)
+
+    fr = reassigns[0]
+    assert fr.new_pch >= D("5.00")                        # flight-op = actual block
+    assert fr.effective_pch == fr.new_pch                 # beats published 3.00
+    assert updated.trips[0].effective_pch == fr.new_pch
+
+
+def test_feed_reassignment_borrows_tafb_from_original_packet():
+    """The reroute isn't in the packet, so trip-rig borrows the ORIGINAL
+    trip's TAFB from the packet (passed in). Here a large original TAFB makes
+    trip-rig the winning §3.E component (49.0h ÷ 4.90 = 10.00)."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="2.5")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    packet = {"730/732": _trip_pairing("730/732", "4.50", block="4.17", duty="49.0")}
+
+    _updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation, packet=packet,
+    )
+
+    assert reassigns[0].new_pch == D("10.00")            # 49.0 / 4.90 trip-rig
+    assert reassigns[0].effective_pch == D("10.00")
+
+
+def test_feed_reassignment_rejected_reverts_to_fa_original():
+    """A REJECTED decision suppresses the reassignment: no version is
+    attached, the day pays the FA original, and applied is False."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on)
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {("2026-06-12", "730/730/731"): "REJECTED"}
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation, feed_reassignment_decisions=decisions,
+    )
+
+    assert updated.trips[0].versions == ()
+    assert updated.trips[0].effective_pch == D("4.50")
+    fr = reassigns[0]
+    assert fr.status == "REJECTED"
+    assert fr.applied is False
+    assert fr.effective_pch == D("4.50")
+
+
+def test_feed_reassignment_confirmed_status_still_applies():
+    """A CONFIRMED decision keeps the reassignment applied and marks it
+    confirmed (clears the calendar's confirm badge)."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on)
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {("2026-06-12", "730/730/731"): "CONFIRMED"}
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation, feed_reassignment_decisions=decisions,
+    )
+
+    assert len(updated.trips[0].versions) == 1
+    assert reassigns[0].status == "CONFIRMED"
+    assert reassigns[0].applied is True
+
+
+def test_unmatched_trip_on_unscheduled_day_stays_review():
+    """An unmatched feed trip on a day with NO scheduled trip is a genuine
+    charter/mystery — still logged for review, not auto-applied. The
+    scheduled trip on a different date is left untouched."""
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", date(2026, 6, 10)),))
+    rt = _unmatched_trip("8888", on_date=date(2026, 6, 12))     # different day
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, events, reassigns = apply_actuals_to_month(baseline, reconciliation)
+
+    assert reassigns == ()
+    assert updated.trips[0].versions == ()
+    assert any(e.kind is AppliedEventKind.UNMATCHED_TRIP_REVIEW for e in events)
+    assert all(e.kind is not AppliedEventKind.FEED_REASSIGNMENT for e in events)
 
 
 # ── End-to-end integration: real June data ─────────────────────────────
@@ -515,7 +652,7 @@ def test_integration_june_baseline_with_ical_actuals_runs_through_engine():
     feed = parse_ical_feed(str(ICAL))
     packet = parse_trip_pairing_packet(str(JUNE_PACKET))
     reconciliation = reconcile_feed_to_packet(feed, packet)
-    updated, applied = apply_actuals_to_month(baseline, reconciliation)
+    updated, applied, _ = apply_actuals_to_month(baseline, reconciliation)
 
     # Apply was a no-op: 7 baseline trips + 8 baseline RSV days preserved
     # exactly. No events fired.
@@ -558,7 +695,7 @@ def test_duty_extension_triggers_on_long_duty_not_just_block():
     baseline = _empty_month(trips=(baseline_trip,))
     rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
                        packet_duty="7.0833", actual_block="4.17", span_hours="13.0")
-    updated, events = apply_actuals_to_month(
+    updated, events, _ = apply_actuals_to_month(
         baseline, ReconciliationResult(trips=(rt,), matched=(rt,)))
     trip = updated.trips[0]
     assert len(trip.versions) == 1
@@ -577,7 +714,7 @@ def test_callout_auto_credits_actual_recompute():
     rt = _rt_with_span("766", packet_pch="4.50", packet_block="4.17",
                        packet_duty="7.0833", actual_block="4.17",
                        span_hours="12.0", on_date=callout_date)
-    updated, events = apply_actuals_to_month(
+    updated, events, _ = apply_actuals_to_month(
         baseline, ReconciliationResult(trips=(rt,), matched=(rt,)))
     assert updated.days[0].callout_trip_pch == D("6.625")   # (12 + 1.25)/2 credited
     assert updated.days[0].callout_published_pch == D("4.50")  # true published kept
@@ -594,7 +731,7 @@ def test_callout_keeps_published_when_actuals_dont_beat_it():
     rt = _rt_with_span("766", packet_pch="4.50", packet_block="4.17",
                        packet_duty="7.0833", actual_block="4.17",
                        span_hours="4.17", on_date=callout_date)
-    updated, _ = apply_actuals_to_month(
+    updated, _, _ = apply_actuals_to_month(
         baseline, ReconciliationResult(trips=(rt,), matched=(rt,)))
     assert updated.days[0].callout_trip_pch == D("4.50")
 

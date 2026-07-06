@@ -75,6 +75,14 @@ class AppliedEventKind(StrEnum):
     RESERVE_CALLOUT = "RESERVE_CALLOUT"
     OPEN_TIME_PICKUP = "OPEN_TIME_PICKUP"
     UNMATCHED_TRIP_REVIEW = "UNMATCHED_TRIP_REVIEW"
+    FEED_REASSIGNMENT = "FEED_REASSIGNMENT"
+
+
+# Decision states for a feed-detected reassignment. No stored decision =
+# PROPOSED; the pilot confirms or rejects on the day page.
+REASSIGN_PROPOSED = "PROPOSED"
+REASSIGN_CONFIRMED = "CONFIRMED"
+REASSIGN_REJECTED = "REJECTED"
 
 
 @dataclass(frozen=True)
@@ -90,16 +98,49 @@ class AppliedEvent:
         return f"{self.date} {self.kind.value}: {self.detail}{sign}"
 
 
+@dataclass(frozen=True)
+class FeedReassignment:
+    """A company mid-month reroute detected from the iCal feed.
+
+    The feed shows a trip whose routing isn't in the packet, landing on a day
+    that already carries an FA-scheduled trip — a §3.E.1.b reassignment. The
+    new flight becomes the active assignment on the calendar; pay is
+    ``max(original published, recomputed-from-actuals)`` so it never reduces.
+    ``status`` gates the UI: PROPOSED shows a confirm badge, CONFIRMED clears
+    it, REJECTED suppresses the reassignment (calendar reverts to the FA
+    original) and ``applied`` is False.
+    """
+
+    date: date_t
+    signature: str          # new flight sequence, e.g. "730/730/731"
+    original_aid: str       # the FA-scheduled trip id it replaces
+    original_pch: Decimal
+    new_pch: Decimal        # recomputed from actuals (TAFB borrowed from original)
+    effective_pch: Decimal  # what the day pays = max(original, new) (or original if rejected)
+    status: str             # PROPOSED | CONFIRMED | REJECTED
+    applied: bool           # False when REJECTED
+
+
 def apply_actuals_to_month(
     baseline: Month,
     reconciliation: ReconciliationResult,
     *,
     duty_extension_tolerance_hours: Decimal = _DUTY_EXTENSION_TOLERANCE_HOURS,
-) -> tuple[Month, tuple[AppliedEvent, ...]]:
+    packet: dict | None = None,
+    feed_reassignment_decisions: dict[tuple[str, str], str] | None = None,
+) -> tuple[Month, tuple[AppliedEvent, ...], tuple[FeedReassignment, ...]]:
     """Apply mid-month events from a reconciliation onto a baseline Month.
 
-    Returns the updated Month and a tuple of AppliedEvent records.
+    Returns the updated Month, a tuple of AppliedEvent records, and a tuple of
+    FeedReassignment records (company reroutes detected from the feed).
+
+    ``packet`` (the parsed Trip Pairing Packet, keyed by trip_id) lets a
+    feed-detected reassignment borrow the original trip's TAFB / workdays /
+    deadhead when recomputing PCH for the new routing. ``feed_reassignment_
+    decisions`` maps ``(date_iso, signature)`` → ``"CONFIRMED"``/``"REJECTED"``
+    (absence = PROPOSED); a REJECTED reassignment is suppressed.
     """
+    decisions = feed_reassignment_decisions or {}
     # Index baseline trips by aid → list of indexes (handles duplicate aids).
     aid_to_indexes: dict[str, list[int]] = {}
     for idx, trip in enumerate(baseline.trips):
@@ -200,29 +241,112 @@ def apply_actuals_to_month(
                 )
             )
 
-    # ── Unmatched reconciled trips: log only ─────────────────────────────
+    # ── Unmatched reconciled trips ───────────────────────────────────────
+    # An unmatched feed trip that lands on a day already carrying an
+    # FA-scheduled Trip is a COMPANY REASSIGNMENT / reroute (§3.E.1.b): the
+    # new routing isn't in the packet, but the day was scheduled. Auto-apply
+    # it as an AssignmentVersion (new flight active, pay max(original, new)),
+    # gated by the pilot's confirm/reject decision. Anything else (no
+    # scheduled trip on that date) stays a log-only review item.
+    reassign_version_by_index: dict[int, AssignmentVersion] = {}
+    consumed_for_reassign: set[int] = set()
+    feed_reassignments: list[FeedReassignment] = []
     for rt in reconciliation.unmatched:
+        first_date = rt.first_dt_utc.date()
+        idx = _baseline_trip_index_for_date(
+            baseline.trips, first_date, matched_indexes | consumed_for_reassign,
+        )
+        if idx is None:
+            events.append(
+                AppliedEvent(
+                    kind=AppliedEventKind.UNMATCHED_TRIP_REVIEW,
+                    date=first_date,
+                    trip_id=None,
+                    detail=(
+                        f"Flew sequence {rt.flight_sequence} ({len(rt.legs)} legs, "
+                        f"actual_block={rt.actual_block_hours:.2f}h) — not in packet; "
+                        "needs pilot categorization (charter? non-bid reassignment?)"
+                    ),
+                    delta_pch=None,
+                )
+            )
+            continue
+
+        consumed_for_reassign.add(idx)
+        baseline_trip = baseline.trips[idx]
+        signature = rt.flight_sequence
+        original_packet = (
+            packet_trip_for_aid(baseline_trip.trip_id, packet)
+            if packet else None
+        )
+        new_pch = _recomputed_reroute_pch(rt, original_packet)
+        decision = decisions.get((first_date.isoformat(), signature))
+
+        if decision == REASSIGN_REJECTED:
+            feed_reassignments.append(
+                FeedReassignment(
+                    date=first_date, signature=signature,
+                    original_aid=baseline_trip.trip_id,
+                    original_pch=baseline_trip.published_pch,
+                    new_pch=new_pch,
+                    effective_pch=baseline_trip.published_pch,
+                    status=REASSIGN_REJECTED, applied=False,
+                )
+            )
+            events.append(
+                AppliedEvent(
+                    kind=AppliedEventKind.FEED_REASSIGNMENT,
+                    date=first_date, trip_id=signature,
+                    detail=(
+                        f"Company reassignment {signature} rejected — showing "
+                        f"Final Award {baseline_trip.trip_id}"
+                    ),
+                    delta_pch=None,
+                )
+            )
+            continue
+
+        status = decision if decision == REASSIGN_CONFIRMED else REASSIGN_PROPOSED
+        effective = max(baseline_trip.published_pch, new_pch)
+        reassign_version_by_index[idx] = AssignmentVersion(
+            seq=0,  # real seq assigned during rebuild (after any duty extension)
+            pch_value=new_pch,
+            label=f"Company reassignment (feed): {signature}",
+        )
+        feed_reassignments.append(
+            FeedReassignment(
+                date=first_date, signature=signature,
+                original_aid=baseline_trip.trip_id,
+                original_pch=baseline_trip.published_pch,
+                new_pch=new_pch, effective_pch=effective,
+                status=status, applied=True,
+            )
+        )
         events.append(
             AppliedEvent(
-                kind=AppliedEventKind.UNMATCHED_TRIP_REVIEW,
-                date=rt.first_dt_utc.date(),
-                trip_id=None,
+                kind=AppliedEventKind.FEED_REASSIGNMENT,
+                date=first_date, trip_id=signature,
                 detail=(
-                    f"Flew sequence {rt.flight_sequence} ({len(rt.legs)} legs, "
-                    f"actual_block={rt.actual_block_hours:.2f}h) — not in packet; "
-                    "needs pilot categorization (charter? non-bid reassignment?)"
+                    f"Company reassignment to {signature} "
+                    f"(recomputed {new_pch:.2f} vs published "
+                    f"{baseline_trip.published_pch:.2f}); paying {effective:.2f}"
+                    + (" — confirmed" if status == REASSIGN_CONFIRMED
+                       else " — needs confirmation")
                 ),
-                delta_pch=None,
+                delta_pch=effective - baseline_trip.published_pch,
             )
         )
 
     # ── Rebuild trip list preserving baseline order ──────────────────────
     final_trips: list[Trip] = []
     for idx, trip in enumerate(baseline.trips):
-        if idx in duty_extension_by_index:
-            final_trips.append(duty_extension_by_index[idx])
-        else:
-            final_trips.append(trip)
+        t = duty_extension_by_index.get(idx, trip)
+        if idx in reassign_version_by_index:
+            version = replace(
+                reassign_version_by_index[idx], seq=len(t.versions) + 1,
+            )
+            t = replace(t, versions=t.versions + (version,))
+        final_trips.append(t)
     final_trips.extend(pickups)
 
     # ── Rebuild day list, replacing RSV days that received a callout ─────
@@ -245,7 +369,7 @@ def apply_actuals_to_month(
         trips=tuple(final_trips),
         days=tuple(final_days),
     )
-    return updated_month, tuple(events)
+    return updated_month, tuple(events), tuple(feed_reassignments)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -253,6 +377,54 @@ def apply_actuals_to_month(
 
 def _is_reserve_day(day: Day) -> bool:
     return day.duty_type.value == "RSV"
+
+
+def _baseline_trip_index_for_date(
+    baseline_trips: tuple[Trip, ...],
+    target_date: date_t,
+    excluded: set[int],
+) -> int | None:
+    """First not-yet-consumed baseline Trip index whose dates include
+    ``target_date``. Used to attach a feed-detected company reassignment to
+    the FA-scheduled trip it replaces. ``excluded`` holds indexes already
+    claimed by a matched trip or an earlier reassignment so two feed trips on
+    one day don't fight over the same baseline trip."""
+    for idx, trip in enumerate(baseline_trips):
+        if idx in excluded:
+            continue
+        if target_date in trip.dates:
+            return idx
+    return None
+
+
+def _recomputed_reroute_pch(
+    rt: ReconciledTrip,
+    original_packet: "TripPairing | None",
+) -> Decimal:
+    """§3.E PCH for a company reroute, recomputed from ACTUAL iCal times.
+
+    Flight-op = actual block, duty-rig = padded actual duty ÷ 2. The reroute
+    isn't in the packet, so trip-rig / cumulative-DPG / deadhead borrow the
+    ORIGINAL trip's packet values (it's the same assignment re-routed) when
+    available; otherwise TAFB falls back to the actual duty and workdays to
+    the calendar days the legs touch."""
+    block = rt.actual_block_hours
+    duty = _actual_duty_hours(rt)
+    if original_packet is not None:
+        tafb = original_packet.tafb_hours
+        workdays = original_packet.workdays
+        deadhead = original_packet.deadhead_pch
+    else:
+        tafb = duty
+        workdays = rt.calendar_days_touched
+        deadhead = Decimal("0")
+    return components_from_times(
+        block_hours=block,
+        duty_hours=duty,
+        tafb_hours=tafb,
+        workdays=workdays,
+        deadhead=deadhead,
+    ).trip_pch
 
 
 def _find_baseline_aid_for_packet_trip(

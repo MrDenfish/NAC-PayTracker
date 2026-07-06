@@ -61,6 +61,53 @@
     </div>
   </div>
 
+  {# ── Feed-detected company reassignment (confirm / reject) ──────── #}
+  {% if data.feed_reassignment %}
+  {% set fr = data.feed_reassignment %}
+  <div class="card card--confirm">
+    <h2 class="card-title">Company reassignment detected</h2>
+    {% if fr.status == "REJECTED" %}
+    <p class="subtle">
+      You rejected the feed's <strong>{{ fr.signature }}</strong> reassignment —
+      the calendar shows the Final Award original
+      <strong>{{ fr.original_aid }}</strong> ({{ "%.2f"|format(fr.original_pch) }} PCH).
+    </p>
+    <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post">
+      <input type="hidden" name="signature" value="{{ fr.signature }}">
+      <button type="submit" class="btn btn--primary">Apply {{ fr.signature }} instead</button>
+    </form>
+    {% else %}
+    <p>
+      The schedule feed shows this day was reassigned from
+      <strong>{{ fr.original_aid }}</strong> to
+      <strong>{{ fr.signature }}</strong>. Paying the greater of the two
+      (§3.E.1.b): original {{ "%.2f"|format(fr.original_pch) }} vs. recomputed
+      {{ "%.2f"|format(fr.new_pch) }} →
+      <strong>{{ "%.2f"|format(fr.effective_pch) }} PCH</strong>.
+    </p>
+    {% if fr.status == "CONFIRMED" %}
+    <p class="subtle">Confirmed. <span class="confirm-check">✓</span></p>
+    <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">
+      <input type="hidden" name="signature" value="{{ fr.signature }}">
+      <button type="submit" class="btn btn--secondary">Undo — revert to {{ fr.original_aid }}</button>
+    </form>
+    {% else %}
+    <p class="subtle">Auto-applied and awaiting your confirmation.</p>
+    <div class="confirm-actions">
+      <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post">
+        <input type="hidden" name="signature" value="{{ fr.signature }}">
+        <button type="submit" class="btn btn--primary">Confirm {{ fr.signature }}</button>
+      </form>
+      <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">
+        <input type="hidden" name="signature" value="{{ fr.signature }}">
+        <button type="submit" class="btn btn--secondary">Reject — keep {{ fr.original_aid }}</button>
+      </form>
+    </div>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+
   {# ── Day pay breakdown (Phase I.7) ────────────────────────────── #}
   {% if data.day_pay_rows %}
   <div class="card">

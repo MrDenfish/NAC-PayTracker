@@ -89,6 +89,22 @@ def test_month_attribution_uses_alaska_local_date_not_utc():
     assert s._filter_reconciliation_to_month(recon, 2026, 7).trips == ()
 
 
+def test_day_view_attributes_evening_leg_to_local_day():
+    """Regression: the day-view Legs card filtered legs by UTC date, so an
+    AK-evening departure (already the next day in UTC) fell off its own day —
+    only the first leg of an evening trip rendered. load_day now filters by
+    local date via ``_local_date``. July 5 22:30 AKDT == July 6 06:30 UTC →
+    must attribute to July 5, alongside the earlier same-day legs."""
+    from datetime import date as date_t
+
+    # 14:30 AKDT (first leg) and 22:30 AKDT (evening leg, next UTC day) —
+    # both belong to July 5 locally.
+    midday_utc = datetime(2026, 7, 5, 22, 30, tzinfo=timezone.utc)
+    evening_utc = datetime(2026, 7, 6, 6, 30, tzinfo=timezone.utc)
+    assert s._local_date(midday_utc) == date_t(2026, 7, 5)
+    assert s._local_date(evening_utc) == date_t(2026, 7, 5)
+
+
 def test_feed_filter_uses_alaska_local_date_at_boundary():
     # July 1 07:00 UTC == June 30 23:00 AKDT → a June event.
     boundary = FlightLegEvent(
