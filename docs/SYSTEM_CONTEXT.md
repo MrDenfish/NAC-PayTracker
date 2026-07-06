@@ -285,6 +285,8 @@ A **bundled-docs fallback** in `docs/` is used only by the default user in local
 
 ### Trip Pairing Packet
 - Per-trip page shows raw times (Sch. Block, Duty, TAFB, Total DH), the four component PCH values, and the **TRIP PCH VALUE**. Used for the validation check and as the PCH source when reconciling feed legs.
+- **Normally one packet per month, static once published.** Parsing output depends only on the file bytes, so it is cached by `(path, mtime, size)` (see `services.py` — parse cache separate from the per-request `_pipeline` cache).
+- **Exception — revised mid-month schedule (~2–3×/year, DEFERRED):** occasionally the company changes the schedule for part of a month; the change is known *before* the month starts and ships as its own **dedicated second Trip Pairing PDF**. So that month has **two** packets, each authoritative for a different span of days. Handling (which packet applies to which dates, and how to reconcile across the split) is **not yet implemented** — revisit when it first occurs. The parse cache is already safe for this (two distinct files → two distinct cache entries); only the app-level "which packet for which day" selection is outstanding.
 
 ### iCal feed (live)
 Event types are distinguished by a **summary prefix**. Known formats:

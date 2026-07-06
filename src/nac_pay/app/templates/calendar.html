@@ -40,6 +40,9 @@
     <span class="legend-item legend-item--note">
       <span class="flag-icon">⚡</span> callout
     </span>
+    <span class="legend-item legend-item--note">
+      <span class="flag-icon flag-icon--confirm">⚠ confirm</span> feed reassignment
+    </span>
   </div>
   {% endif %}
 
@@ -70,6 +73,10 @@
             {% if cell.user_reassignment_count > 0 %}
             <span class="flag-icon flag-icon--user-reassign"
                   title="{{ cell.user_reassignment_count }} pilot-recorded reassignment{{ '' if cell.user_reassignment_count == 1 else 's' }}">↻{{ cell.user_reassignment_count }}</span>
+            {% endif %}
+            {% if cell.needs_confirm %}
+            <span class="flag-icon flag-icon--confirm"
+                  title="company reassignment from the feed — open the day to confirm or reject">⚠ confirm</span>
             {% endif %}
           </span>
         </div>

@@ -87,6 +87,11 @@ from .assignment_versions import (  # noqa: E402
     active_versions,
 )
 from .overrides import DayOverride, DayOverrideStore  # noqa: E402
+from .feed_reassignments import (  # noqa: E402
+    STATUS_CONFIRMED,
+    STATUS_REJECTED,
+    FeedReassignmentDecisionStore,
+)
 from .profile import (  # noqa: E402
     PersistedPilotProfile,
     PilotProfileStore,
@@ -108,7 +113,10 @@ __all__ = [
     "DayOverrideStore",
     "DocumentKind",
     "DocumentRecord",
+    "FeedReassignmentDecisionStore",
     "JsonStore",
+    "STATUS_CONFIRMED",
+    "STATUS_REJECTED",
     "PersistedPilotProfile",
     "PilotProfileStore",
     "User",

@@ -8,6 +8,7 @@ engine's Chunk / FloorEvent vocabulary.
 from .apply_actuals import (
     AppliedEvent,
     AppliedEventKind,
+    FeedReassignment,
     apply_actuals_to_month,
 )
 from .apply_overrides import apply_overrides_to_month
@@ -34,6 +35,7 @@ from .models import (
 __all__ = [
     "AppliedEvent",
     "AppliedEventKind",
+    "FeedReassignment",
     "AssignmentVersion",
     "ConversionWarning",
     "Day",

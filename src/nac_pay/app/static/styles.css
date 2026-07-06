@@ -460,6 +460,18 @@ html, body {
   font-weight: 700;
 }
 
+/* Feed-detected company reassignment awaiting pilot confirm/reject */
+.flag-icon--confirm {
+  background: #fff3d6;
+  color: #92600a;
+  border: 1px solid #f0c46a;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 /* Phase H.1 — pilot's new assignment in bold above the FA original */
 .aid-new {
   font-weight: 700;
@@ -1329,6 +1341,19 @@ a.day-cell:hover {
   filter: brightness(1.1);
   color: #ffffff;
 }
+
+/* Feed-detected company reassignment — confirm/reject card */
+.card--confirm {
+  border: 1px solid #f0c46a;
+  background: #fffbf2;
+}
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.confirm-actions form { margin: 0; }
+.confirm-check { color: #2e7d32; font-weight: 700; }
 
 /* ── Documents ──────────────────────────────────────────────── */
 

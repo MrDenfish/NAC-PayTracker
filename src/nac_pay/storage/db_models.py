@@ -231,3 +231,37 @@ class UserVersionLegRow(Base):
     flight: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     out_local: Mapped[str] = mapped_column(String(5), default="", nullable=False)
     in_local: Mapped[str] = mapped_column(String(5), default="", nullable=False)
+
+
+class FeedReassignmentDecisionRow(Base):
+    """Pilot confirm/reject decision on a feed-detected reassignment.
+
+    A company mid-month reroute shows up in the iCal feed as a trip whose
+    routing isn't in the Trip Pairing Packet, landing on a day that already
+    carries an FA-scheduled trip (see ``schedule.apply_actuals``). The
+    pipeline auto-applies it as a §3.E.1.b reassignment (new flight active,
+    pay ``max(original, recomputed)``) but marks it PROPOSED until the pilot
+    acts. This table records only that decision — the reassignment itself is
+    re-derived from the feed every pipeline run, so no row here = PROPOSED.
+
+    ``signature`` is the new flight sequence (e.g. ``"730/730/731"``); a fresh
+    company reroute to a different sequence is a new signature = a new
+    proposal the pilot must act on again. Composite PK
+    ``(user_id, date_iso, signature)``.
+
+    New table — created by ``Base.metadata.create_all`` on first engine use,
+    so no migration is needed on existing databases."""
+
+    __tablename__ = "feed_reassignment_decisions"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    date_iso: Mapped[str] = mapped_column(String(10), primary_key=True)
+    signature: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    """CONFIRMED or REJECTED. Absence of a row means PROPOSED."""
+
+    decided_at: Mapped[str] = mapped_column(String(40), nullable=False)
