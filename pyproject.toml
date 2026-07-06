@@ -43,8 +43,9 @@ packages = ["src/nac_pay"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 # --timeout=60 guards against any single test hanging the run.
-# Parallelism (-n auto) is intentionally NOT enabled here yet; see Phase 2/3.
-addopts = "-ra -q --timeout=60"
+# -n auto runs tests across all cores; each xdist worker is a separate
+# process with its own isolated temp data dir / SQLite file (see conftest).
+addopts = "-ra -q --timeout=60 -n auto"
 
 [tool.ruff]
 line-length = 100
