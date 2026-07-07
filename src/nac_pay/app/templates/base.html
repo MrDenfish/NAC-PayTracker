@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}NAC Pay Tracker{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v={{ static_v }}">
-  <script src="https://unpkg.com/htmx.org@2.0.4"
-          integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
-          crossorigin="anonymous"></script>
+  {% include "_pwa_head.html" %}
 </head>
 <body>
+  <div id="offline-banner" class="offline-banner" hidden>
+    Offline — showing your last synced data. Editing needs a connection.
+  </div>
+  <div id="offline-status" class="offline-status" role="status" aria-live="polite" hidden></div>
   <header class="topbar">
     <div class="brand">NAC Pay Tracker</div>
     {# Carry the month the user is currently viewing onto the month-scoped
@@ -39,5 +41,7 @@
     <span class="dot">·</span>
     <span>Engine v0.1.0</span>
   </footer>
+
+  {% include "_pwa_scripts.html" %}
 </body>
 </html>

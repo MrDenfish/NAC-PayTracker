@@ -14,7 +14,10 @@ from starlette.responses import RedirectResponse, Response
 from .dependencies import auth_required
 
 _PUBLIC_PATHS: frozenset[str] = frozenset(
-    {"/login", "/signup", "/forgot", "/api/health", "/logout"}
+    # /sw.js + /manifest.webmanifest are static-like PWA control files that
+    # the browser may fetch outside an authed page context.
+    {"/login", "/signup", "/forgot", "/api/health", "/logout",
+     "/sw.js", "/manifest.webmanifest"}
 )
 _PUBLIC_PREFIXES: tuple[str, ...] = (
     "/verify/", "/reset/", "/static/", "/webhooks/",
