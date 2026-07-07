@@ -81,6 +81,10 @@ _ONBOARDING_PUBLIC_PATHS: frozenset[str] = frozenset(
         "/forgot",
         "/logout",
         "/api/health",
+        # PWA control files + the per-user pre-warm list.
+        "/sw.js",
+        "/manifest.webmanifest",
+        "/offline-manifest.json",
     }
 )
 _ONBOARDING_PUBLIC_PREFIXES: tuple[str, ...] = (

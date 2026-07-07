@@ -1,0 +1,10 @@
+{# PWA install metadata — shared by base.html, the auth layout, and the
+   onboarding layout so the app is installable from the first screen a user
+   sees. Each layout's Jinja2Templates registers the `static_v` global.
+   Served from root: see app/pwa.py (/manifest.webmanifest, /sw.js). #}
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="NAC Pay">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png?v={{ static_v }}">

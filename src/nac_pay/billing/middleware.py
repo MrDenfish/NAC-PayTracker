@@ -29,6 +29,11 @@ _BILLING_PUBLIC_PATHS: frozenset[str] = frozenset(
         "/forgot",
         "/logout",
         "/api/health",
+        # PWA control files + the per-user pre-warm list must not be gated by
+        # subscription state (offline-manifest is still auth-gated for the id).
+        "/sw.js",
+        "/manifest.webmanifest",
+        "/offline-manifest.json",
     }
 )
 _BILLING_PUBLIC_PREFIXES: tuple[str, ...] = (

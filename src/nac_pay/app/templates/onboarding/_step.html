@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Setup — NAC Pay Tracker{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v={{ static_v }}">
+  {% include "_pwa_head.html" %}
 </head>
 <body class="auth-body">
   <main class="auth-shell">
@@ -23,5 +24,6 @@
       <button type="submit" class="link-button">Skip for now — I'll set this up later</button>
     </form>
   </main>
+  {% include "_pwa_scripts.html" %}
 </body>
 </html>

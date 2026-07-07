@@ -40,6 +40,7 @@ from .auth_routes import router as auth_router
 from .billing_routes import router as billing_router
 from .document_routes import router as document_router
 from .onboarding_routes import router as onboarding_router
+from .pwa import router as pwa_router
 
 from .feed_updater import feed_update_loop, updater_enabled
 from .services import (
@@ -132,6 +133,7 @@ app.include_router(auth_router)
 app.include_router(billing_router)
 app.include_router(document_router)
 app.include_router(onboarding_router)
+app.include_router(pwa_router)
 
 
 @app.get("/api/health")
