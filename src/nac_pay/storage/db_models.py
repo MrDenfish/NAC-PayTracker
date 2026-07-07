@@ -264,4 +264,13 @@ class FeedReassignmentDecisionRow(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     """CONFIRMED or REJECTED. Absence of a row means PROPOSED."""
 
+    pch_value: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    """Optional pilot-entered PCH for the reassignment, as a decimal string.
+
+    The company sometimes assigns a value the iCal feed can't express (e.g.
+    July 6: 5.17), so the pilot can override the recomputed PCH at confirm
+    time. Applied as ``max(published, this)`` — never reduces pay. NULL =
+    use the recomputed value. Added after the table shipped, so ``db.py``
+    back-fills the column on existing databases (create_all won't ALTER)."""
+
     decided_at: Mapped[str] = mapped_column(String(40), nullable=False)

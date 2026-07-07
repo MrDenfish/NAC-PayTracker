@@ -128,9 +128,10 @@ class FeedReassignment:
     original_aid: str       # the FA-scheduled trip id it replaces
     original_pch: Decimal
     new_pch: Decimal        # recomputed from actuals (TAFB borrowed from original)
-    effective_pch: Decimal  # what the day pays = max(original, new) (or original if rejected)
+    effective_pch: Decimal  # what the day pays = max(original, new/override) (or original if rejected)
     status: str             # PROPOSED | CONFIRMED | REJECTED
     applied: bool           # False when REJECTED
+    override_pch: Decimal | None = None  # pilot-entered company PCH, if any
 
 
 def apply_actuals_to_month(
@@ -140,6 +141,7 @@ def apply_actuals_to_month(
     duty_extension_tolerance_hours: Decimal = _DUTY_EXTENSION_TOLERANCE_HOURS,
     packet: dict | None = None,
     feed_reassignment_decisions: dict[tuple[str, str], str] | None = None,
+    feed_reassignment_pch_overrides: dict[tuple[str, str], Decimal] | None = None,
 ) -> tuple[Month, tuple[AppliedEvent, ...], tuple[FeedReassignment, ...]]:
     """Apply mid-month events from a reconciliation onto a baseline Month.
 
@@ -151,8 +153,12 @@ def apply_actuals_to_month(
     deadhead when recomputing PCH for the new routing. ``feed_reassignment_
     decisions`` maps ``(date_iso, signature)`` → ``"CONFIRMED"``/``"REJECTED"``
     (absence = PROPOSED); a REJECTED reassignment is suppressed.
+    ``feed_reassignment_pch_overrides`` maps ``(date_iso, signature)`` → a
+    pilot-entered company PCH that replaces the recomputed value (still
+    protected: the day pays ``max(published, override)``).
     """
     decisions = feed_reassignment_decisions or {}
+    pch_overrides = feed_reassignment_pch_overrides or {}
     # Index baseline trips by aid → list of indexes (handles duplicate aids).
     aid_to_indexes: dict[str, list[int]] = {}
     for idx, trip in enumerate(baseline.trips):
@@ -329,11 +335,20 @@ def apply_actuals_to_month(
             continue
 
         status = decision if decision == REASSIGN_CONFIRMED else REASSIGN_PROPOSED
-        effective = max(baseline_trip.published_pch, new_pch)
+        # A pilot-entered company PCH (CONFIRMED only) replaces the recomputed
+        # value as the reassignment's asserted worth — the company sometimes
+        # assigns a PCH the feed can't express. Still protected: pay the
+        # greater of published and the credited (override-or-recomputed) value.
+        override = pch_overrides.get((first_date.isoformat(), signature))
+        credited = override if override is not None else new_pch
+        effective = max(baseline_trip.published_pch, credited)
         reassign_version_by_index[idx] = AssignmentVersion(
             seq=0,  # real seq assigned during rebuild (after any duty extension)
-            pch_value=new_pch,
-            label=f"Company reassignment (feed): {signature}",
+            pch_value=credited,
+            label=(
+                f"Company reassignment (feed): {signature}"
+                + (" · company PCH" if override is not None else "")
+            ),
         )
         feed_reassignments.append(
             FeedReassignment(
@@ -342,6 +357,7 @@ def apply_actuals_to_month(
                 original_pch=baseline_trip.published_pch,
                 new_pch=new_pch, effective_pch=effective,
                 status=status, applied=True,
+                override_pch=override,
             )
         )
         events.append(
@@ -350,8 +366,12 @@ def apply_actuals_to_month(
                 date=first_date, trip_id=signature,
                 detail=(
                     f"Company reassignment to {signature} "
-                    f"(recomputed {new_pch:.2f} vs published "
-                    f"{baseline_trip.published_pch:.2f}); paying {effective:.2f}"
+                    + (
+                        f"(company PCH {override:.2f} vs published "
+                        if override is not None
+                        else f"(recomputed {new_pch:.2f} vs published "
+                    )
+                    + f"{baseline_trip.published_pch:.2f}); paying {effective:.2f}"
                     + (" — confirmed" if status == REASSIGN_CONFIRMED
                        else " — needs confirmation")
                 ),

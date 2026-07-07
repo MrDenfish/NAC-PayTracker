@@ -364,13 +364,14 @@ def _pipeline(
         feed = _filter_feed_to_month(feed, year, month)
 
     if reconciliation is not None:
-        feed_decisions = FeedReassignmentDecisionStore(
-            user_id=user_id
-        ).decisions_for_month(year, month)
+        _reassign_store = FeedReassignmentDecisionStore(user_id=user_id)
+        feed_decisions = _reassign_store.decisions_for_month(year, month)
+        feed_pch_overrides = _reassign_store.pch_overrides_for_month(year, month)
         updated, applied, feed_reassignments = apply_actuals_to_month(
             baseline, reconciliation,
             packet=packet,
             feed_reassignment_decisions=feed_decisions,
+            feed_reassignment_pch_overrides=feed_pch_overrides,
         )
     else:
         updated, applied, feed_reassignments = baseline, (), ()
@@ -1732,6 +1733,19 @@ def _build_day_detail(
                         duty_on = dw["duty_on"]
                         duty_hours = dw["duty_hours"]
                         duty_rig_pch = dw["duty_rig"]
+        # A feed-detected company reassignment (applied, not rejected) makes the
+        # new routing the active assignment — surface its signature, the same as
+        # the calendar cell, unless a pilot user-version above already replaced
+        # the id. The history baseline above kept the FA original, and the
+        # trip's effective PCH already folds this version in.
+        if (
+            feed_reassignment is not None
+            and feed_reassignment.applied
+            and trip is not None
+            and assignment_id == trip.trip_id
+        ):
+            assignment_id = feed_reassignment.signature
+
         # On an iCal callout the flown trip IS the assignment — surface
         # callout_trip_id (mirror the calendar's _build_cell) unless a genuine
         # reassignment above already replaced the reserve-line label. The

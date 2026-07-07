@@ -72,30 +72,62 @@
       the calendar shows the Final Award original
       <strong>{{ fr.original_aid }}</strong> ({{ "%.2f"|format(fr.original_pch) }} PCH).
     </p>
-    <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post">
+    <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post"
+          class="reassign-pch-form">
       <input type="hidden" name="signature" value="{{ fr.signature }}">
+      <label class="form-label" for="reassign-pch-r">Company PCH (optional)</label>
+      <input type="text" name="pch" id="reassign-pch-r" inputmode="decimal"
+             class="reassign-pch-input" placeholder="e.g. 5.17">
       <button type="submit" class="btn btn--primary">Apply {{ fr.signature }} instead</button>
     </form>
     {% else %}
     <p>
       The schedule feed shows this day was reassigned from
       <strong>{{ fr.original_aid }}</strong> to
-      <strong>{{ fr.signature }}</strong>. Paying the greater of the two
-      (§3.E.1.b): original {{ "%.2f"|format(fr.original_pch) }} vs. recomputed
-      {{ "%.2f"|format(fr.new_pch) }} →
-      <strong>{{ "%.2f"|format(fr.effective_pch) }} PCH</strong>.
+      <strong>{{ fr.signature }}</strong>. Paying the greater (§3.E.1.b):
+      original {{ "%.2f"|format(fr.original_pch) }} vs.
+      {% if fr.override_pch is not none %}
+      company-assigned {{ "%.2f"|format(fr.override_pch) }}
+      {% else %}
+      recomputed {{ "%.2f"|format(fr.new_pch) }}
+      {% endif %}
+      → <strong>{{ "%.2f"|format(fr.effective_pch) }} PCH</strong>.
     </p>
     {% if fr.status == "CONFIRMED" %}
-    <p class="subtle">Confirmed. <span class="confirm-check">✓</span></p>
-    <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">
-      <input type="hidden" name="signature" value="{{ fr.signature }}">
-      <button type="submit" class="btn btn--secondary">Undo — revert to {{ fr.original_aid }}</button>
-    </form>
-    {% else %}
-    <p class="subtle">Auto-applied and awaiting your confirmation.</p>
+    <p class="subtle">
+      Confirmed. <span class="confirm-check">✓</span>
+      {% if fr.override_pch is not none %}
+      Company PCH {{ "%.2f"|format(fr.override_pch) }} (entered).
+      {% endif %}
+    </p>
     <div class="confirm-actions">
-      <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post">
+      <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post"
+            class="reassign-pch-form">
         <input type="hidden" name="signature" value="{{ fr.signature }}">
+        <label class="form-label" for="reassign-pch-c">Company PCH</label>
+        <input type="text" name="pch" id="reassign-pch-c" inputmode="decimal"
+               class="reassign-pch-input" placeholder="e.g. 5.17"
+               value="{% if fr.override_pch is not none %}{{ '%.2f'|format(fr.override_pch) }}{% endif %}">
+        <button type="submit" class="btn btn--secondary">Update PCH</button>
+      </form>
+      <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">
+        <input type="hidden" name="signature" value="{{ fr.signature }}">
+        <button type="submit" class="btn btn--secondary">Undo — revert to {{ fr.original_aid }}</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="subtle">
+      Auto-applied and awaiting your confirmation. If the company assigned a PCH
+      the feed can’t show, enter it below — it’s paid as the greater of it and
+      the published value.
+    </p>
+    <div class="confirm-actions">
+      <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post"
+            class="reassign-pch-form">
+        <input type="hidden" name="signature" value="{{ fr.signature }}">
+        <label class="form-label" for="reassign-pch-p">Company PCH (optional)</label>
+        <input type="text" name="pch" id="reassign-pch-p" inputmode="decimal"
+               class="reassign-pch-input" placeholder="e.g. 5.17">
         <button type="submit" class="btn btn--primary">Confirm {{ fr.signature }}</button>
       </form>
       <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">

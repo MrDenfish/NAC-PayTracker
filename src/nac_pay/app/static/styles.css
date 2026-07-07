@@ -1354,6 +1354,17 @@ a.day-cell:hover {
 }
 .confirm-actions form { margin: 0; }
 .confirm-check { color: #2e7d32; font-weight: 700; }
+.reassign-pch-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.reassign-pch-form .form-label { margin: 0; white-space: nowrap; }
+.reassign-pch-input {
+  width: 86px;
+  padding: 4px 6px;
+}
 
 /* ── Documents ──────────────────────────────────────────────── */
 
