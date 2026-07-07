@@ -581,6 +581,52 @@ def test_feed_reassignment_borrows_tafb_from_original_packet():
     assert reassigns[0].effective_pch == D("10.00")
 
 
+def test_feed_reassignment_pch_override_pays_company_value():
+    """A pilot-entered company PCH (the company sometimes assigns a value the
+    feed can't express) replaces the recomputed value — paid as max(published,
+    override). Here 5.17 beats published 4.50 and the recomputed 3.82."""
+    on = date(2026, 7, 6)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("732/732/733", on_date=on, actual_block="2.5")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {("2026-07-06", "732/732/733"): "CONFIRMED"}
+    overrides = {("2026-07-06", "732/732/733"): D("5.17")}
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+        feed_reassignment_pch_overrides=overrides,
+    )
+
+    fr = reassigns[0]
+    assert fr.override_pch == D("5.17")
+    assert fr.effective_pch == D("5.17")                 # company value wins
+    assert updated.trips[0].effective_pch == D("5.17")
+    # The attached version carries the credited (override) value.
+    assert updated.trips[0].versions[-1].pch_value == D("5.17")
+
+
+def test_feed_reassignment_pch_override_still_protected_by_published():
+    """Pay protection holds: an override below the published value never
+    reduces pay — the day still pays the published floor."""
+    on = date(2026, 7, 6)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("732/732/733", on_date=on, actual_block="2.5")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {("2026-07-06", "732/732/733"): "CONFIRMED"}
+    overrides = {("2026-07-06", "732/732/733"): D("3.00")}  # below published 4.50
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+        feed_reassignment_pch_overrides=overrides,
+    )
+
+    assert reassigns[0].override_pch == D("3.00")
+    assert reassigns[0].effective_pch == D("4.50")       # protected floor
+    assert updated.trips[0].effective_pch == D("4.50")
+
+
 def test_feed_reassignment_rejected_reverts_to_fa_original():
     """A REJECTED decision suppresses the reassignment: no version is
     attached, the day pays the FA original, and applied is False."""

@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, inspect as sa_inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from . import get_data_dir
@@ -67,7 +67,32 @@ def get_engine() -> Engine:
         # Import models so their tables are registered, then create.
         from . import db_models  # noqa: F401  side-effect import
         Base.metadata.create_all(_engine)
+        _ensure_added_columns(_engine)
     return _engine
+
+
+# Columns introduced after their table first shipped. ``create_all`` only
+# creates missing tables — it never ALTERs an existing one — so a new nullable
+# column on an already-created table must be back-filled here. Keep entries
+# until every live database is known to have them. Portable ADD COLUMN (SQLite
+# + Postgres); nullable so no default/backfill of rows is needed.
+_ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "feed_reassignment_decisions": [("pch_value", "VARCHAR(16)")],
+}
+
+
+def _ensure_added_columns(engine: Engine) -> None:
+    insp = sa_inspect(engine)
+    for table, cols in _ADDED_COLUMNS.items():
+        if not insp.has_table(table):
+            continue
+        existing = {c["name"] for c in insp.get_columns(table)}
+        for name, ddl in cols:
+            if name not in existing:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                    )
 
 
 def session_factory() -> sessionmaker[Session]:

@@ -612,11 +612,13 @@ def day_version_delete(
 
 def _feed_reassignment_decision(
     request: Request, date_iso: str, signature: str, status: str,
+    pch: str = "",
 ) -> RedirectResponse:
     """Record a confirm/reject decision on a feed-detected company
     reassignment, then re-render the day. The reassignment itself is
     re-derived from the feed each pipeline run; this only stores the pilot's
-    CONFIRMED / REJECTED choice (keyed by date + new flight sequence)."""
+    CONFIRMED / REJECTED choice (keyed by date + new flight sequence), plus an
+    optional pilot-entered company PCH on confirm."""
 
     def _bail(err: str) -> RedirectResponse:
         from urllib.parse import quote
@@ -632,11 +634,23 @@ def _feed_reassignment_decision(
     if not signature:
         return _bail("Missing reassignment signature.")
 
+    pch_value = None
+    if pch.strip():
+        from decimal import Decimal, InvalidOperation
+        try:
+            pch_value = Decimal(pch.strip())
+        except (InvalidOperation, ValueError):
+            return _bail(f"Invalid PCH value {pch!r}.")
+        if pch_value <= 0:
+            return _bail("PCH must be greater than 0.")
+
     uid = _user_id(request)
     if uid == DEFAULT_USER_ID:
         return _bail("Default user cannot confirm reassignments — use a real account.")
 
-    FeedReassignmentDecisionStore(user_id=uid).set(date_iso, signature, status)
+    FeedReassignmentDecisionStore(user_id=uid).set(
+        date_iso, signature, status, pch=pch_value,
+    )
     invalidate_caches()
     return RedirectResponse(f"/day/{date_iso}?saved=reassign", status_code=303)
 
@@ -644,9 +658,13 @@ def _feed_reassignment_decision(
 @app.post("/day/{date_iso}/reassignment/confirm")
 def day_feed_reassignment_confirm(
     request: Request, date_iso: str, signature: str = Form(""),
+    pch: str = Form(""),
 ) -> RedirectResponse:
-    """Confirm a feed-detected company reassignment — keep the new flight."""
-    return _feed_reassignment_decision(request, date_iso, signature, STATUS_CONFIRMED)
+    """Confirm a feed-detected company reassignment — keep the new flight,
+    with an optional pilot-entered company PCH."""
+    return _feed_reassignment_decision(
+        request, date_iso, signature, STATUS_CONFIRMED, pch=pch,
+    )
 
 
 @app.post("/day/{date_iso}/reassignment/reject")
