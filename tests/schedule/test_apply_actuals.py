@@ -187,9 +187,14 @@ def _unmatched_trip(
     flight_sequence: str = "9999",
     on_date: date = date(2026, 6, 12),
     actual_block: str = "2.5",
+    hour_utc: int = 14,
+    minute_utc: int = 30,
 ) -> ReconciledTrip:
     block = D(actual_block)
-    start = datetime(on_date.year, on_date.month, on_date.day, 14, 30, tzinfo=timezone.utc)
+    start = datetime(
+        on_date.year, on_date.month, on_date.day, hour_utc, minute_utc,
+        tzinfo=timezone.utc,
+    )
     end = start + _hours_to_timedelta(block)
     leg = _leg(flight_sequence, start, end)
     return ReconciledTrip(
@@ -629,6 +634,37 @@ def test_unmatched_trip_on_unscheduled_day_stays_review():
     assert updated.trips[0].versions == ()
     assert any(e.kind is AppliedEventKind.UNMATCHED_TRIP_REVIEW for e in events)
     assert all(e.kind is not AppliedEventKind.FEED_REASSIGNMENT for e in events)
+
+
+def test_feed_reassignment_attributed_by_local_date_not_utc():
+    """Regression (July 6 732/732/733): an evening reroute departs 02:00 UTC
+    the *next* calendar day but 18:00 AKDT the *scheduled* day. apply_actuals
+    must attribute it by Anchorage-local date, else it looks for the scheduled
+    trip on the wrong (UTC) day, finds none, and silently drops to a log-only
+    review instead of surfacing on the calendar/day.
+
+    Scheduled trip is on July 6; the reroute departs 2026-07-07 02:00 UTC
+    (== 2026-07-06 18:00 AKDT). It must land on July 6 as a reassignment."""
+    scheduled_day = date(2026, 7, 6)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", scheduled_day),))
+    # first_dt = 2026-07-07 02:00 UTC → local July 6; UTC .date() would be July 7.
+    rt = _unmatched_trip(
+        "732/732/733", on_date=date(2026, 7, 7), hour_utc=2, minute_utc=0,
+    )
+    assert rt.first_dt_utc.date() == date(2026, 7, 7)         # UTC day (the trap)
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, events, reassigns = apply_actuals_to_month(baseline, reconciliation)
+
+    # Surfaces as a reassignment on the LOCAL scheduled day, not a review item.
+    assert len(reassigns) == 1
+    assert reassigns[0].date == scheduled_day                # July 6, not July 7
+    assert reassigns[0].signature == "732/732/733"
+    assert reassigns[0].original_aid == "730/732"
+    assert len(updated.trips[0].versions) == 1
+    fe = [e for e in events if e.kind is AppliedEventKind.FEED_REASSIGNMENT]
+    assert len(fe) == 1 and fe[0].date == scheduled_day
+    assert all(e.kind is not AppliedEventKind.UNMATCHED_TRIP_REVIEW for e in events)
 
 
 # ── End-to-end integration: real June data ─────────────────────────────

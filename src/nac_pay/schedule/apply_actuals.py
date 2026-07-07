@@ -49,9 +49,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import date as date_t
+from datetime import datetime as datetime_t
 from datetime import timedelta
 from decimal import Decimal
 from enum import StrEnum
+from zoneinfo import ZoneInfo
 
 from nac_pay.engine.constants import (
     DPG,
@@ -83,6 +85,16 @@ class AppliedEventKind(StrEnum):
 REASSIGN_PROPOSED = "PROPOSED"
 REASSIGN_CONFIRMED = "CONFIRMED"
 REASSIGN_REJECTED = "REJECTED"
+
+# Crew domicile timezone. Feed timestamps are UTC; trips are attributed to
+# their Anchorage-local civil date to match the FA schedule, the reconciliation
+# month-scoping, and the /day/<date> routes (see _local_date below).
+_DOMICILE_TZ = ZoneInfo("America/Anchorage")
+
+
+def _local_date(dt: datetime_t) -> date_t:
+    """Anchorage-local civil date of a UTC timestamp (DST handled by tz)."""
+    return dt.astimezone(_DOMICILE_TZ).date()
 
 
 @dataclass(frozen=True)
@@ -165,7 +177,10 @@ def apply_actuals_to_month(
 
     # ── Matched reconciled trips ─────────────────────────────────────────
     for rt in reconciliation.matched:
-        first_date = rt.first_dt_utc.date()
+        # Anchorage-local date (not UTC) — disambiguates same-aid-on-different-
+        # dates and keys callout dates on the civil day the pilot flew, matching
+        # the FA schedule and the day view (see _local_date).
+        first_date = _local_date(rt.first_dt_utc)
         matched_aid = _find_baseline_aid_for_packet_trip(rt.trip_id, aid_segments)
         idx = _next_unmatched_index_for_aid(
             matched_aid, aid_to_indexes, matched_indexes,
@@ -252,7 +267,14 @@ def apply_actuals_to_month(
     consumed_for_reassign: set[int] = set()
     feed_reassignments: list[FeedReassignment] = []
     for rt in reconciliation.unmatched:
-        first_date = rt.first_dt_utc.date()
+        # Attribute the reroute by its Anchorage-LOCAL date, not UTC. An
+        # AK-evening departure (out ~18:00 local) is already the next calendar
+        # day in UTC, so a UTC date looks for the FA-scheduled trip on the
+        # wrong day, finds none, and silently drops the reassignment to a
+        # log-only review — this exact bug hid the July 6 732/732/733 reroute
+        # (out 02:00 UTC = 18:00 AKDT Jul 6). first_date also keys the decision
+        # store and must match the /day/<date_iso> confirm/reject routes.
+        first_date = _local_date(rt.first_dt_utc)
         idx = _baseline_trip_index_for_date(
             baseline.trips, first_date, matched_indexes | consumed_for_reassign,
         )
@@ -614,7 +636,7 @@ def _apply_duty_extension(
     events.append(
         AppliedEvent(
             kind=AppliedEventKind.DUTY_EXTENSION,
-            date=rt.first_dt_utc.date(),
+            date=_local_date(rt.first_dt_utc),
             trip_id=rt.trip_id,
             detail=(
                 f"Actual block {rt.actual_block_hours:.2f}h / duty "
