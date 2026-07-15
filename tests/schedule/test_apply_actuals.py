@@ -556,6 +556,110 @@ def test_dated_same_day_match_still_wins_alongside_pickup():
     assert not [e for e in events if e.kind is AppliedEventKind.OPEN_TIME_PICKUP]
 
 
+# ── Feed cancellations (LEA OFF/PAY PROTECTED) ────────────────────────
+
+
+def _off_event(label: str, on_date: date):
+    """An all-day BlueOne LEA event: DTSTART 08:00Z = local midnight AKDT."""
+    from nac_pay.parsers import OffEvent
+    start = datetime(on_date.year, on_date.month, on_date.day, 8, 0,
+                     tzinfo=timezone.utc)
+    return OffEvent(
+        uid="test-lea-1",
+        dt_start_utc=start,
+        dt_end_utc=start + _hours_to_timedelta(D("23.98")),
+        label=label,
+    )
+
+
+def test_pay_protected_lea_marks_scheduled_trip_cancelled():
+    """The real July 15 2026 scenario: the feed removed 768/R1's legs and
+    posted ``LEA - OFF/PAY PROTECTED`` in their place. The scheduled trip
+    is stamped cancelled_pay_protected (display) with the published PCH
+    untouched (a company action never reduces pay), and a
+    COMPANY_CANCELLATION event is logged."""
+    from nac_pay.schedule import apply_feed_cancellations
+
+    trip = Trip(
+        trip_id="768/R1",
+        published_pch=D("5.25"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+        dates=(date(2026, 7, 15),),
+    )
+    baseline = _empty_month(trips=(trip,))
+    off = _off_event("OFF/PAY PROTECTED", date(2026, 7, 15))
+
+    updated, events = apply_feed_cancellations(baseline, (off,))
+
+    assert len(updated.trips) == 1
+    marked = updated.trips[0]
+    assert marked.cancelled_pay_protected is True
+    assert marked.published_pch == D("5.25")
+    assert marked.effective_pch == D("5.25")
+    assert marked.reason_code is ReasonCode.FLOWN
+
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.kind is AppliedEventKind.COMPANY_CANCELLATION
+    assert ev.date == date(2026, 7, 15)
+    assert ev.trip_id == "768/R1"
+    assert ev.delta_pch == D("0")
+
+
+def test_plain_lea_off_does_not_cancel():
+    """Ordinary ``LEA - OFF`` / ``LEA - SICK`` day-status events are NOT a
+    cancellation signal — only the explicit PAY PROTECTED label is."""
+    from nac_pay.schedule import apply_feed_cancellations
+
+    trip = Trip(
+        trip_id="768/R1",
+        published_pch=D("5.25"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+        dates=(date(2026, 7, 15),),
+    )
+    baseline = _empty_month(trips=(trip,))
+
+    for label in ("OFF", "SICK", "TRIP DROP"):
+        updated, events = apply_feed_cancellations(
+            baseline, (_off_event(label, date(2026, 7, 15)),),
+        )
+        assert updated.trips[0].cancelled_pay_protected is False
+        assert events == ()
+
+
+def test_pay_protected_lea_on_unscheduled_day_is_noop():
+    """A pay-protected LEA on a date with no scheduled trip changes nothing
+    (nothing was cancelled — e.g. an already-empty day)."""
+    from nac_pay.schedule import apply_feed_cancellations
+
+    baseline = _empty_month()
+    off = _off_event("OFF/PAY PROTECTED", date(2026, 7, 15))
+
+    updated, events = apply_feed_cancellations(baseline, (off,))
+    assert updated is baseline
+    assert events == ()
+
+
+def test_pay_protected_label_match_is_case_insensitive():
+    from nac_pay.schedule import apply_feed_cancellations
+
+    trip = Trip(
+        trip_id="768/R1",
+        published_pch=D("5.25"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+        dates=(date(2026, 7, 15),),
+    )
+    baseline = _empty_month(trips=(trip,))
+    off = _off_event("Off/Pay Protected", date(2026, 7, 15))
+
+    updated, events = apply_feed_cancellations(baseline, (off,))
+    assert updated.trips[0].cancelled_pay_protected is True
+    assert len(events) == 1
+
+
 # ── Unmatched ──────────────────────────────────────────────────────────
 
 

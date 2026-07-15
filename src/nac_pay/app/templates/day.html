@@ -49,6 +49,10 @@
         <div class="metric-sub">
           dropped (company-approved){% if data.published_pch %} · {{ "%.2f"|format(data.published_pch) }} PCH forfeited{% endif %}
         </div>
+        {% elif data.is_cancelled %}
+        <div class="metric-sub">
+          company cancelled · pay protected at the published value
+        </div>
         {% elif data.published_pch is not none and data.published_pch != data.effective_pch %}
         <div class="metric-sub">
           original {{ "%.2f"|format(data.published_pch) }} · paid the greater (§3.E.1.b)
@@ -60,6 +64,18 @@
       {% endif %}
     </div>
   </div>
+
+  {# ── Company cancellation (pay protected) ───────────────────────── #}
+  {% if data.is_cancelled %}
+  <div class="card banner banner--info">
+    <strong>Company cancelled this trip.</strong>
+    The schedule feed replaced
+    {% if data.assignment_id %}<strong>{{ data.assignment_id }}</strong>{% else %}the scheduled assignment{% endif %}
+    with “OFF / PAY PROTECTED” — you keep the published
+    {% if data.published_pch is not none %}{{ "%.2f"|format(data.published_pch) }} PCH{% else %}value{% endif %}
+    (a company action never reduces pay).
+  </div>
+  {% endif %}
 
   {# ── Feed-detected company reassignment (confirm / reject) ──────── #}
   {% if data.feed_reassignment %}
@@ -306,9 +322,10 @@
   {% endif %}
 
   {# ── Times: scheduled vs actual ──────────────────────────────── #}
-  {% if data.sch_block_hours is not none or data.actual_block_hours is not none %}
+  {% if data.sch_block_hours is not none or data.actual_block_hours is not none or data.reserve_window_start %}
   <div class="card">
     <h2 class="card-title">Times</h2>
+    {% if data.sch_block_hours is not none or data.actual_block_hours is not none %}
     <table class="times-table">
       <thead>
         <tr>
@@ -347,6 +364,7 @@
         {% endif %}
       </tbody>
     </table>
+    {% endif %}
 
     {% if data.sched_duty_on %}
     <table class="times-table" style="margin-top: 10px;">
@@ -376,6 +394,22 @@
     <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
       Duty on = first departure − 1:00 report; duty off = last arrival + 0:15.
       Times in Anchorage local. Auto-computed from iCal actuals.
+    </p>
+    {% endif %}
+
+    {% if data.reserve_window_start %}
+    <table class="times-table" style="margin-top: 10px;">
+      <tbody>
+        <tr>
+          <th>Reserve window (R/S)</th>
+          <td class="num">{{ data.reserve_window_start }} – {{ data.reserve_window_end }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
+      Reserve / standby at {{ data.reserve_base }} from the schedule feed.
+      On a fly-then-reserve pairing (…/R1) this window is already priced
+      into the published trip value via the duty rig.
     </p>
     {% endif %}
   </div>
