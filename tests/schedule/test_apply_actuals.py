@@ -480,6 +480,82 @@ def test_falls_back_to_first_available_when_no_baseline_dates():
     assert updated.trips[1].versions == ()
 
 
+def test_pickup_of_same_pairing_not_swallowed_by_other_dated_day():
+    """Regression — the real July 16 2026 pickup. FISHER's FA carries
+    ``722/R1`` only on July 2 (a sick day); on June 26 the pilot picked up
+    the same pairing for July 16 from open time, so July 16 is EMPTY on
+    the FA. The flown July 16 trip matches packet ``722/723/R1`` and maps
+    back to aid ``722/R1`` — but the only baseline candidate is dated
+    July 2. The old first-available fallback let the July 2 trip claim
+    it, so the pickup was credited NOWHERE (July total short 5.38 PCH).
+    A dated candidate on a different date must be skipped → the trip
+    flows to the open-time-pickup path."""
+    trip_july_2 = Trip(
+        trip_id="722/R1",
+        published_pch=D("5.38"),
+        reason_code=ReasonCode.SICK,
+        workdays=1,
+        dates=(date(2026, 7, 2),),
+        label="722/R1 on 2026-07-02",
+    )
+    baseline = _empty_month(trips=(trip_july_2,))
+
+    rt = _matched_trip(
+        "722/723/R1",
+        packet_pch="5.38",
+        packet_block="2.92",
+        packet_duty="10.75",
+        on_date=date(2026, 7, 16),
+    )
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
+
+    # July 2 baseline untouched; July 16 credited as a pickup.
+    assert len(updated.trips) == 2
+    july_2 = next(t for t in updated.trips if date(2026, 7, 2) in t.dates)
+    assert july_2.versions == ()
+    assert july_2.reason_code is ReasonCode.SICK
+    pickup = next(t for t in updated.trips if date(2026, 7, 16) in t.dates)
+    assert pickup.trip_id == "722/723/R1"
+    assert pickup.published_pch == D("5.38")
+    assert pickup.premium_category is PremiumCategory.OPEN_TIME_BID_PERIOD
+
+    pickup_events = [e for e in events if e.kind is AppliedEventKind.OPEN_TIME_PICKUP]
+    assert len(pickup_events) == 1
+    assert pickup_events[0].date == date(2026, 7, 16)
+
+
+def test_dated_same_day_match_still_wins_alongside_pickup():
+    """The date-preference path is unchanged: a flown trip whose date IS a
+    scheduled occurrence still matches that baseline Trip (duty-extension
+    path), even with the stricter no-cross-date rule in place."""
+    trip_june_17 = Trip(
+        trip_id="722/754",
+        published_pch=D("5.25"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+        dates=(date(2026, 6, 17),),
+        label="722/754 on 2026-06-17",
+    )
+    baseline = _empty_month(trips=(trip_june_17,))
+
+    rt = _matched_trip(
+        "722/723/754/755",
+        actual_block="6.50",      # > 5.25 + tolerance → extension
+        packet_pch="5.25",
+        packet_block="5.25",
+        packet_duty="9.15",
+        on_date=date(2026, 6, 17),
+    )
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
+
+    assert len(updated.trips) == 1
+    assert len(updated.trips[0].versions) == 1
+    assert not [e for e in events if e.kind is AppliedEventKind.OPEN_TIME_PICKUP]
+
+
 # ── Unmatched ──────────────────────────────────────────────────────────
 
 
