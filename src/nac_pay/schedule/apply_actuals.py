@@ -517,8 +517,16 @@ def _next_unmatched_index_for_aid(
     from claiming each other's events (e.g. a duty extension on June 17
     must update FISHER's June 17 ``722/754`` Trip, not her June 6 one).
 
-    Falls back to first-available when no candidate carries the date
-    (or none carry dates at all — synthetic / legacy Trips).
+    A DATED candidate on a *different* date must not be claimed: a flown
+    trip whose date matches no scheduled occurrence of the aid is a
+    separate event (a mid-month open-time pickup of the same pairing),
+    and swallowing it here silently drops its credit — the pilot's real
+    July 16 2026 pickup of ``722/723/R1`` vanished into the July 2
+    baseline trip (a sick day) exactly this way. Returning None routes
+    the trip to the callout / pickup paths instead.
+
+    Only date-less candidates (synthetic / legacy Trips) fall back to
+    first-available matching.
     """
     if aid is None:
         return None
@@ -530,7 +538,10 @@ def _next_unmatched_index_for_aid(
     for idx in candidates:
         if target_date in baseline_trips[idx].dates:
             return idx
-    return candidates[0]
+    for idx in candidates:
+        if not baseline_trips[idx].dates:
+            return idx
+    return None
 
 
 _RESERVE_SEG_RE = re.compile(r"^R\d+$", re.IGNORECASE)
