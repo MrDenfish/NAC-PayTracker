@@ -88,6 +88,12 @@ class Trip:
     aid is scheduled on multiple dates in a month (e.g. FISHER's ``"722/754"``
     on both June 6 and June 17). Empty tuple for legacy/synthetic Trips —
     those fall back to first-available matching in apply_actuals."""
+    cancelled_pay_protected: bool = False
+    """The company cancelled this trip mid-month with pay protection — the
+    feed replaced its legs with an all-day ``LEA - OFF/PAY PROTECTED`` event.
+    Display-only: the published PCH is still credited (a company action never
+    reduces pay), so the engine path is unchanged; the calendar/day views
+    render a CANCELLED state instead of an active flight."""
 
     @property
     def effective_pch(self) -> Decimal:

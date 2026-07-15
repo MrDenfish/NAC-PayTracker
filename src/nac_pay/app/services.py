@@ -58,6 +58,7 @@ from nac_pay.schedule import (
     Position,
     Trip,
     apply_actuals_to_month,
+    apply_feed_cancellations,
     apply_overrides_to_month,
     apply_user_versions_to_month,
     lower_month,
@@ -400,6 +401,14 @@ def _pipeline(
     overrides = override_store(user_id).load_all()
     updated = apply_overrides_to_month(updated, overrides)
 
+    # Feed-signalled company cancellations (an all-day LEA event labelled
+    # "PAY PROTECTED" replacing a scheduled trip's legs). Display-only —
+    # the published PCH is still credited — but applied LAST so no earlier
+    # month rebuild (user versions / overrides) strips the flag.
+    if feed is not None and feed.off_days:
+        updated, cancel_events = apply_feed_cancellations(updated, feed.off_days)
+        applied = tuple(applied) + cancel_events
+
     engine_result = compute_pay(lower_month(updated))
 
     return PipelineResult(
@@ -567,6 +576,11 @@ class CalendarCell:
     # A feed-detected company reassignment is auto-applied but awaiting the
     # pilot's confirm/reject. Drives an amber "confirm" badge on the cell.
     needs_confirm: bool = False
+    # Company cancelled the trip with pay protection (feed LEA
+    # OFF/PAY PROTECTED). Unlike a drop, the published PCH is KEPT — the
+    # cell shows a CANCELLED tag with the aid struck through but the PCH/$
+    # still displayed.
+    is_cancelled: bool = False
 
 
 @dataclass(frozen=True)
@@ -921,6 +935,10 @@ class DayDetailData:
     # (0 PCH credited, floor reduced by the lost PCH). Drives the day-detail
     # "Dropped" note + hides the drop affordance.
     is_dropped: bool = False
+    # Company cancelled this day's trip with pay protection (feed LEA
+    # OFF/PAY PROTECTED). Published PCH is still credited; drives the
+    # day-detail "Cancelled — pay protected" note.
+    is_cancelled: bool = False
 
     # Phase G — pilot reassignment form
     reassign_form_defaults: ReassignFormDefaults = ReassignFormDefaults()
@@ -956,6 +974,13 @@ class DayDetailData:
     # The day's effective PCH against its candidate sources (DPG /
     # published-or-callout / flight-op / duty-rig); winner = the credited value.
     pch_candidates: tuple[PchComponent, ...] = ()
+    # R/S reserve/standby window from the feed on this date — the "RES part"
+    # of a fly-then-reserve pairing (e.g. 722/R1) or a plain RAP window on a
+    # reserve day. Anchorage-local "HH:MM" strings; None when the feed has no
+    # R/S event for the date.
+    reserve_window_start: str | None = None
+    reserve_window_end: str | None = None
+    reserve_base: str | None = None
 
 
 _WEEKDAY_FULL = (
@@ -1195,7 +1220,28 @@ def load_day(
     duty_off: str | None = None
     duty_hours: Decimal | None = None
     duty_rig_pch: Decimal | None = None
+    reserve_window_start: str | None = None
+    reserve_window_end: str | None = None
+    reserve_base: str | None = None
     if pr.feed is not None:
+        # R/S reserve/standby window on this date — the "RES part" of a
+        # fly-then-reserve pairing (722/R1) or a plain RAP window. Attribute
+        # by Anchorage-local date, same as the legs below.
+        rs_event = next(
+            (
+                r for r in pr.feed.reserves
+                if _local_date(r.dt_start_utc) == target
+            ),
+            None,
+        )
+        if rs_event is not None:
+            reserve_window_start = (
+                rs_event.dt_start_utc.astimezone(_DOMICILE_TZ).strftime("%H:%M")
+            )
+            reserve_window_end = (
+                rs_event.dt_end_utc.astimezone(_DOMICILE_TZ).strftime("%H:%M")
+            )
+            reserve_base = rs_event.base
         # Attribute a leg to the day by its **Anchorage-local** departure date,
         # not the UTC date — an AK-evening departure (out ~16:00+ local) is
         # already the next calendar day in UTC, so a UTC filter dropped the
@@ -1345,6 +1391,9 @@ def load_day(
         duty_hours=duty_hours,
         duty_rig_pch=duty_rig_pch,
         manual_legs_by_seq=manual_legs_by_seq,
+        reserve_window_start=reserve_window_start,
+        reserve_window_end=reserve_window_end,
+        reserve_base=reserve_base,
     )
 
 
@@ -1532,6 +1581,9 @@ def _build_day_detail(
     duty_hours: Decimal | None = None,
     duty_rig_pch: Decimal | None = None,
     manual_legs_by_seq: dict | None = None,
+    reserve_window_start: str | None = None,
+    reserve_window_end: str | None = None,
+    reserve_base: str | None = None,
 ) -> DayDetailData:
     user_versions = user_versions or []
     manual_legs_by_seq = manual_legs_by_seq or {}
@@ -1825,6 +1877,13 @@ def _build_day_detail(
             built.append(PchComponent(label=label, pch=p, is_winning=is_win))
         pch_candidates = tuple(built)
 
+    # Company cancellation (pay protected): flip the header to CANCELLED —
+    # the published PCH stays credited so effective/uplift are untouched.
+    # A drop takes precedence (the pilot explicitly forfeited the day).
+    if trip is not None and trip.cancelled_pay_protected and not is_dropped:
+        duty_label = "CANCELLED"
+        duty_class = "off"
+
     return DayDetailData(
         pilot=pr.pilot,
         year=target.year,
@@ -1875,6 +1934,10 @@ def _build_day_detail(
         day_pay_total=day_pay_total,
         feed_reassignment=feed_reassignment,
         is_dropped=is_dropped,
+        is_cancelled=trip.cancelled_pay_protected if trip is not None else False,
+        reserve_window_start=reserve_window_start,
+        reserve_window_end=reserve_window_end,
+        reserve_base=reserve_base,
         duty_on=duty_on,
         duty_off=duty_off,
         duty_hours=duty_hours,
@@ -2812,13 +2875,17 @@ def _build_cell(
     if trip is not None:
         from .services import _premium_multiplier
         mult = _premium_multiplier(trip)
+        # Company cancellation with pay protection: the flight won't be
+        # flown but the published PCH is kept, so the PCH/$ stay visible —
+        # only the label flips to CANCELLED and the aid is struck through.
+        cancelled = trip.cancelled_pay_protected
         return CalendarCell(
             date=d,
             in_month=in_month,
             is_weekend=is_weekend,
             assignment_id=trip.trip_id,
-            duty_label="FLT",
-            duty_class="flt",
+            duty_label="CANCELLED" if cancelled else "FLT",
+            duty_class="off" if cancelled else "flt",
             pch=trip.effective_pch,
             has_callout=has_user_callout,
             is_reassigned=len(trip.versions) > 0,
@@ -2827,6 +2894,7 @@ def _build_cell(
             premium_label=premium_label,
             pay_dollars=_pay_for(trip.effective_pch, mult),
             needs_confirm=needs_confirm,
+            is_cancelled=cancelled,
         )
 
     if day is not None:

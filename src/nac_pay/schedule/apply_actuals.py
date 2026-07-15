@@ -64,7 +64,7 @@ from nac_pay.engine.trip_pch import (
     components_from_times,
     effective_trip_pch_after_reassignment,
 )
-from nac_pay.parsers import ReconciledTrip, ReconciliationResult
+from nac_pay.parsers import OffEvent, ReconciledTrip, ReconciliationResult
 
 from .labels import EntryMode, PremiumCategory, ReasonCode
 from .models import AssignmentVersion, Day, Month, Trip
@@ -78,6 +78,7 @@ class AppliedEventKind(StrEnum):
     OPEN_TIME_PICKUP = "OPEN_TIME_PICKUP"
     UNMATCHED_TRIP_REVIEW = "UNMATCHED_TRIP_REVIEW"
     FEED_REASSIGNMENT = "FEED_REASSIGNMENT"
+    COMPANY_CANCELLATION = "COMPANY_CANCELLATION"
 
 
 # Decision states for a feed-detected reassignment. No stored decision =
@@ -415,6 +416,64 @@ def apply_actuals_to_month(
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
+
+
+# The feed's affirmative pay-protected-cancellation marker. BlueOne cancels
+# a trip by REMOVING its FLT legs and posting an all-day leave event in their
+# place (seen live 2026-07-15: ``LEA - OFF/PAY PROTECTED`` replaced 768/R1).
+# Leg ABSENCE alone must never be read as cancellation — completed legs also
+# roll off the feed (see parsers.ical_merge) — so only this explicit label
+# flips a scheduled trip to the cancelled state.
+_PAY_PROTECTED_MARKER = "PAY PROTECTED"
+
+
+def apply_feed_cancellations(
+    month: Month,
+    off_days: tuple[OffEvent, ...],
+) -> tuple[Month, tuple[AppliedEvent, ...]]:
+    """Mark FA-scheduled trips the company cancelled with pay protection.
+
+    An ``LEA`` event whose label contains ``PAY PROTECTED`` landing on a
+    date that carries a scheduled Trip means the company cancelled that
+    day's flying and the pilot keeps the published PCH. Pay is unchanged
+    (the engine already credits the published value); this stamps the Trip
+    ``cancelled_pay_protected`` for the calendar/day views and logs a
+    ``COMPANY_CANCELLATION`` event.
+
+    Run this AFTER the other month transforms (user versions, overrides)
+    so a rebuild can't strip the flag.
+    """
+    events: list[AppliedEvent] = []
+    cancelled_dates: set[date_t] = set()
+    for ev in off_days:
+        if _PAY_PROTECTED_MARKER in ev.label.upper():
+            cancelled_dates.add(_local_date(ev.dt_start_utc))
+    if not cancelled_dates:
+        return month, ()
+
+    new_trips: list[Trip] = []
+    for trip in month.trips:
+        hit = next((d for d in trip.dates if d in cancelled_dates), None)
+        if hit is None or trip.cancelled_pay_protected:
+            new_trips.append(trip)
+            continue
+        new_trips.append(replace(trip, cancelled_pay_protected=True))
+        events.append(
+            AppliedEvent(
+                kind=AppliedEventKind.COMPANY_CANCELLATION,
+                date=hit,
+                trip_id=trip.trip_id,
+                detail=(
+                    f"Company cancelled {trip.trip_id} — pay protected at "
+                    f"published {trip.published_pch:.2f} PCH "
+                    "(feed: LEA OFF/PAY PROTECTED)"
+                ),
+                delta_pch=Decimal("0"),
+            )
+        )
+    if not events:
+        return month, ()
+    return replace(month, trips=tuple(new_trips)), tuple(events)
 
 
 def _is_reserve_day(day: Day) -> bool:

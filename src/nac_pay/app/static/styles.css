@@ -544,6 +544,15 @@ html, body {
   color: var(--text-subtle);
 }
 
+/* Company-cancelled day (pay protected): the flight won't be flown, so the
+   assignment id reads subtle + struck through — but unlike a drop the PCH/$
+   stay visible in the cell (the published value is still credited). */
+.aid--cancelled {
+  font-weight: 400;
+  color: var(--text-subtle);
+  text-decoration: line-through;
+}
+
 .calendar-footer {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

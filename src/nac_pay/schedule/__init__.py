@@ -10,6 +10,7 @@ from .apply_actuals import (
     AppliedEventKind,
     FeedReassignment,
     apply_actuals_to_month,
+    apply_feed_cancellations,
 )
 from .apply_overrides import apply_overrides_to_month
 from .apply_user_versions import apply_user_versions_to_month
@@ -50,6 +51,7 @@ __all__ = [
     "ReasonCode",
     "Trip",
     "apply_actuals_to_month",
+    "apply_feed_cancellations",
     "apply_overrides_to_month",
     "apply_user_versions_to_month",
     "lower_month",
