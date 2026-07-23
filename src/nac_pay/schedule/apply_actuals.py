@@ -53,8 +53,6 @@ from datetime import datetime as datetime_t
 from datetime import timedelta
 from decimal import Decimal
 from enum import StrEnum
-from zoneinfo import ZoneInfo
-
 from nac_pay.engine.constants import (
     DPG,
     REPORT_PAD_HOURS,
@@ -65,6 +63,12 @@ from nac_pay.engine.trip_pch import (
     effective_trip_pch_after_reassignment,
 )
 from nac_pay.parsers import OffEvent, ReconciledTrip, ReconciliationResult
+
+# Crew domicile timezone: feed timestamps are UTC; trips are attributed to
+# their Anchorage-local civil date to match the FA schedule, the reconciliation
+# month-scoping, and the /day/<date> routes. Shared helper (nac_pay.timeutil)
+# so the parsers/schedule/app layers can't drift.
+from nac_pay.timeutil import local_date as _local_date
 
 from .labels import EntryMode, PremiumCategory, ReasonCode
 from .models import AssignmentVersion, Day, Month, Trip
@@ -87,15 +91,6 @@ REASSIGN_PROPOSED = "PROPOSED"
 REASSIGN_CONFIRMED = "CONFIRMED"
 REASSIGN_REJECTED = "REJECTED"
 
-# Crew domicile timezone. Feed timestamps are UTC; trips are attributed to
-# their Anchorage-local civil date to match the FA schedule, the reconciliation
-# month-scoping, and the /day/<date> routes (see _local_date below).
-_DOMICILE_TZ = ZoneInfo("America/Anchorage")
-
-
-def _local_date(dt: datetime_t) -> date_t:
-    """Anchorage-local civil date of a UTC timestamp (DST handled by tz)."""
-    return dt.astimezone(_DOMICILE_TZ).date()
 
 
 @dataclass(frozen=True)
