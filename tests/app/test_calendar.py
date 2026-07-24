@@ -349,3 +349,54 @@ def test_calendar_callout_aid_survives_stray_reserve_line_version(monkeypatch):
     # The flown trip — not the reserve line — is the surfaced new assignment.
     assert cell.new_assignment_id == "720/723/1780/1781"
     assert cell.duty_label == "CALLOUT"
+
+
+# ── Reason tags + premium/absence cell colors ───────────────────────────
+
+
+def _post_override(date_iso: str, reason: str, premium: str, custom: str = "") -> None:
+    client.post(
+        f"/day/{date_iso}",
+        data={"reason_code": reason, "premium_category": premium,
+              "entry_mode": "SIMPLE", "custom_multiplier": custom},
+        follow_redirects=False,
+    )
+
+
+def test_calendar_shows_reason_tag_and_absence_color():
+    _post_override("2026-06-02", "SICK", "NONE")
+    body = client.get("/calendar?ym=2026-6").text
+    assert ">SICK<" in body
+    assert "duty-bg--absence" in body
+
+
+def test_calendar_premium_day_is_green():
+    _post_override("2026-06-05", "FLOWN", "OVERTIME")
+    body = client.get("/calendar?ym=2026-6").text
+    assert "duty-bg--premium" in body
+
+
+def test_calendar_premium_beats_absence_color_but_keeps_reason_tag():
+    _post_override("2026-06-06", "SICK", "JUNIOR_ASSIGNMENT_1ST")
+    body = client.get("/calendar?ym=2026-6").text
+    assert "duty-bg--premium" in body
+    assert ">SICK<" in body
+
+
+def test_calendar_bid_period_open_time_not_green():
+    _post_override("2026-06-02", "FLOWN", "OPEN_TIME_BID_PERIOD")
+    body = client.get("/calendar?ym=2026-6").text
+    assert "duty-bg--premium" not in body
+
+
+def test_calendar_custom_multiplier_above_one_is_green():
+    _post_override("2026-06-02", "FLOWN", "CUSTOM", "2.0")
+    body = client.get("/calendar?ym=2026-6").text
+    assert "duty-bg--premium" in body
+
+
+def test_calendar_flown_day_unchanged():
+    body = client.get("/calendar?ym=2026-6").text
+    assert ">FLT<" in body
+    assert "duty-bg--absence" not in body
+    assert "duty-bg--premium" not in body

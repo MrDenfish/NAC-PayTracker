@@ -1106,6 +1106,47 @@ _REASON_LABELS = {
     "OFF": "Day off",
 }
 
+# Short status tags for the calendar cell + day Assignment card. FLOWN and
+# OFF keep the FLT / duty-type label; VOLUNTARY_DROP renders as DROPPED via
+# its own branch. Keyed by ReasonCode string value (StrEnum-compatible).
+_REASON_TAGS: dict[str, str] = {
+    "PTO": "PTO",
+    "SICK": "SICK",
+    "JURY": "JURY",
+    "BEREAVEMENT": "BEREAVEMENT",
+    "TRAINING": "TRAINING",
+    "MOVING": "MOVING",
+    "FAR": "FAR",
+    "MILITARY": "MILITARY",
+    "FMLA": "FMLA",
+    "UNPAID_LOA": "UNPAID LOA",
+    "LESSER_TRADE": "LESSER TRADE",
+    "UNPROTECTED_UNAVAIL": "UNPROT UNAVAIL",
+}
+
+# Protected-absence family → yellow cell tint (author's choice 2026-07-24:
+# PTO included, TRAINING keeps its own violet tint, UNPAID_LOA reads as OFF).
+_ABSENCE_REASON_VALUES = frozenset({
+    "SICK", "PTO", "JURY", "BEREAVEMENT", "MOVING", "FAR", "MILITARY", "FMLA",
+})
+
+
+def _status_duty_class(
+    reason_value: str, multiplier: Decimal | None, base_class: str,
+) -> str:
+    """Cell/card tint with the author's priority: premium green (> 1.0×)
+    beats absence yellow beats the base duty tint. TRAINING keeps its own
+    tint; UNPAID_LOA reads as a day off."""
+    if multiplier is not None and multiplier > 1:
+        return "premium"
+    if reason_value in _ABSENCE_REASON_VALUES:
+        return "absence"
+    if reason_value == "TRAINING":
+        return "training"
+    if reason_value == "UNPAID_LOA":
+        return "off"
+    return base_class
+
 _PREMIUM_LABELS = {
     "NONE": "None (1.0×)",
     "OPEN_TIME_MID_MONTH": "Open time, mid-month (1.5×)",
@@ -2873,14 +2914,22 @@ def _build_cell(
         # Company cancellation with pay protection: the flight won't be
         # flown but the published PCH is kept, so the PCH/$ stay visible —
         # only the label flips to CANCELLED and the aid is struck through.
+        # Otherwise any non-FLOWN reason renders as the cell tag (SICK, PTO,
+        # …) and the tint follows the premium/absence priority.
         cancelled = trip.cancelled_pay_protected
+        reason_value = trip.reason_code.value
+        if cancelled:
+            cell_label, cell_class = "CANCELLED", "off"
+        else:
+            cell_label = _REASON_TAGS.get(reason_value, "FLT")
+            cell_class = _status_duty_class(reason_value, mult, "flt")
         return CalendarCell(
             date=d,
             in_month=in_month,
             is_weekend=is_weekend,
             assignment_id=trip.trip_id,
-            duty_label="CANCELLED" if cancelled else "FLT",
-            duty_class="off" if cancelled else "flt",
+            duty_label=cell_label,
+            duty_class=cell_class,
             pch=trip.effective_pch,
             has_callout=has_user_callout,
             is_reassigned=len(trip.versions) > 0,
@@ -2913,6 +2962,17 @@ def _build_cell(
         # same treatment a pilot reassignment gets. A manually-supplied
         # new_assignment_id (the user-version path) still wins if present.
         new_aid = new_assignment_id or (day.callout_trip_id if is_callout else None)
+        # Reason tag + premium/absence tint (a CALLOUT keeps its label — the
+        # flown-trip evidence outranks a leftover reason label — but still
+        # goes green when its premium multiplier is above 1.0×).
+        day_reason_value = day.reason_code.value
+        if not is_callout:
+            reason_tag = _REASON_TAGS.get(day_reason_value)
+            if reason_tag is not None:
+                display_label = reason_tag
+            display_class = _status_duty_class(day_reason_value, mult, display_class)
+        elif mult is not None and mult > 1:
+            display_class = "premium"
         return CalendarCell(
             date=d,
             in_month=in_month,
