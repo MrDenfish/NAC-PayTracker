@@ -28,6 +28,7 @@ from nac_pay.storage import (
     STATUS_CONFIRMED,
     STATUS_REJECTED,
     DayOverride,
+    FeedDropDecisionStore,
     FeedReassignmentDecisionStore,
     PersistedPilotProfile,
     User,
@@ -675,6 +676,84 @@ def day_feed_reassignment_reject(
 ) -> RedirectResponse:
     """Reject a feed-detected company reassignment — revert to the FA original."""
     return _feed_reassignment_decision(request, date_iso, signature, STATUS_REJECTED)
+
+
+@app.post("/day/{date_iso}/feed-drop/confirm")
+def day_feed_drop_confirm(request: Request, date_iso: str) -> RedirectResponse:
+    """Confirm a feed-detected company drop — forfeit the day.
+
+    The feed's ``LEA - TRIP DROP`` is the company's own approval, so no
+    checkbox is required: confirming files the same ``VersionType.DROP``
+    user-version the manual drop flow files, and the engine forfeits the
+    published PCH with the floor following down (§3.D). Until this click,
+    the day keeps paying published."""
+
+    def _bail(err: str) -> RedirectResponse:
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"/day/{date_iso}?reassign_error={quote(err)}", status_code=303,
+        )
+
+    try:
+        target_date = date.fromisoformat(date_iso)
+    except ValueError:
+        raise HTTPException(400, f"Invalid date {date_iso!r}")
+
+    uid = _user_id(request)
+    if uid == DEFAULT_USER_ID:
+        return _bail("Default user cannot record drops — use a real account.")
+
+    try:
+        detail = load_day(
+            target_date.year, target_date.month, target_date.day, user_id=uid,
+        )
+    except ValueError:
+        return _bail("No month loaded for this date.")
+    fd = detail.feed_drop
+    if fd is None:
+        return _bail("No feed-detected drop on this day.")
+    if fd.status == STATUS_CONFIRMED or detail.is_dropped:
+        return RedirectResponse(f"/day/{date_iso}", status_code=303)
+
+    UserAssignmentVersionStore(user_id=uid).save(
+        date_iso=date_iso,
+        version_type=VersionType.DROP,
+        correction_of=None,
+        assignment_id=fd.original_aid,
+        entry_mode=VersionEntryMode.SIMPLE,
+        pch_value=Decimal("0"),
+        block_hours=None, duty_hours=None,
+        tafb_hours=None, deadhead_pch=None, workdays=None,
+        reason_code="VOLUNTARY_DROP",
+        premium_category="NONE",
+        notes="Company drop (feed: LEA - TRIP DROP)",
+    )
+    # A prior REJECT is superseded by the confirm.
+    FeedDropDecisionStore(user_id=uid).clear(date_iso)
+    invalidate_caches()
+    return RedirectResponse(f"/day/{date_iso}?saved=drop", status_code=303)
+
+
+@app.post("/day/{date_iso}/feed-drop/reject")
+def day_feed_drop_reject(request: Request, date_iso: str) -> RedirectResponse:
+    """Reject a feed-detected drop proposal — keep the published value and
+    silence the badge. (If the feed is right after all, Confirm remains
+    available on the day page.)"""
+    try:
+        date.fromisoformat(date_iso)
+    except ValueError:
+        raise HTTPException(400, f"Invalid date {date_iso!r}")
+    uid = _user_id(request)
+    if uid == DEFAULT_USER_ID:
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"/day/{date_iso}?reassign_error="
+            + quote("Default user cannot record drop decisions."),
+            status_code=303,
+        )
+    FeedDropDecisionStore(user_id=uid).set(date_iso, STATUS_REJECTED)
+    invalidate_caches()
+    return RedirectResponse(f"/day/{date_iso}", status_code=303)
 
 
 @app.get("/discrepancies", response_class=HTMLResponse)

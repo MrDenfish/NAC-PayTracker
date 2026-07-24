@@ -87,6 +87,7 @@ from .assignment_versions import (  # noqa: E402
     active_versions,
 )
 from .overrides import DayOverride, DayOverrideStore  # noqa: E402
+from .feed_drops import FeedDropDecisionStore  # noqa: E402
 from .feed_reassignments import (  # noqa: E402
     STATUS_CONFIRMED,
     STATUS_REJECTED,
@@ -113,6 +114,7 @@ __all__ = [
     "DayOverrideStore",
     "DocumentKind",
     "DocumentRecord",
+    "FeedDropDecisionStore",
     "FeedReassignmentDecisionStore",
     "JsonStore",
     "STATUS_CONFIRMED",

@@ -274,3 +274,33 @@ class FeedReassignmentDecisionRow(Base):
     back-fills the column on existing databases (create_all won't ALTER)."""
 
     decided_at: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class FeedDropDecisionRow(Base):
+    """Pilot decision on a feed-detected company-approved drop.
+
+    An approved mid-month drop shows up in the iCal feed as an all-day
+    ``LEA - TRIP DROP`` event with the day's FLT legs (and any R/S window)
+    removed — specimen captured live 2026-07-24 on the author's July 31.
+    The pipeline surfaces it as a PROPOSED drop but never forfeits pay
+    without the pilot's confirmation. A CONFIRM files a normal DROP
+    user-version (the same path as the manual drop flow), so this table
+    mostly records REJECTED — the drop proposal itself is re-derived from
+    the feed every pipeline run; no row here = PROPOSED.
+
+    Composite PK ``(user_id, date_iso)`` — one drop decision per day.
+    New table — created by ``Base.metadata.create_all`` on first engine
+    use, so no migration is needed on existing databases."""
+
+    __tablename__ = "feed_drop_decisions"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    date_iso: Mapped[str] = mapped_column(String(10), primary_key=True)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    """CONFIRMED or REJECTED. Absence of a row means PROPOSED."""
+
+    decided_at: Mapped[str] = mapped_column(String(40), nullable=False)
