@@ -1916,9 +1916,18 @@ def _build_day_detail(
     # Company cancellation (pay protected): flip the header to CANCELLED —
     # the published PCH stays credited so effective/uplift are untouched.
     # A drop takes precedence (the pilot explicitly forfeited the day).
+    # Otherwise mirror the calendar cell: a non-FLOWN reason becomes the
+    # header tag and the tint follows the premium/absence priority.
     if trip is not None and trip.cancelled_pay_protected and not is_dropped:
         duty_label = "CANCELLED"
         duty_class = "off"
+    elif not is_dropped and kind != "off" and duty_label != "CALLOUT":
+        reason_tag = _REASON_TAGS.get(reason_value)
+        if reason_tag is not None:
+            duty_label = reason_tag
+        duty_class = _status_duty_class(
+            reason_value, premium_multiplier, duty_class,
+        )
 
     return DayDetailData(
         pilot=pr.pilot,
