@@ -1194,3 +1194,130 @@ def test_july23_incident_transitional_and_final_feed_states():
     assert by_id_b["720/721/1780/1781"].effective_pch == D("6.08")
     assert any(fr.kind == "OFF_DAY_PICKUP" and fr.date == d23 for fr in reassigns_b)
     assert len(cancel_events) == 1
+
+
+# ── LEA day-status consumer: feed drops + sick seeding ──────────────────
+
+
+def _off_event(label: str, on: date) -> "OffEvent":
+    from nac_pay.parsers import OffEvent
+    return OffEvent(
+        uid=f"lea-{label}-{on.isoformat()}",
+        label=label,
+        dt_start_utc=datetime(on.year, on.month, on.day, 8, 0, tzinfo=timezone.utc),
+        dt_end_utc=datetime(on.year, on.month, on.day + 1, 7, 59, tzinfo=timezone.utc),
+    )
+
+
+def test_detect_feed_drops_proposes_on_trip_drop_event():
+    """LEA - TRIP DROP on a scheduled day => PROPOSED drop, no pay change
+    (the month is never mutated by detection — published keeps paying)."""
+    from nac_pay.schedule import detect_feed_drops
+
+    on = date(2026, 6, 24)
+    baseline = _empty_month(trips=(_scheduled_trip("768/R1", "5.25", on),))
+    drops, events = detect_feed_drops(
+        baseline, (_off_event("TRIP DROP", on),), rejected_dates=set(),
+    )
+    assert len(drops) == 1
+    fd = drops[0]
+    assert fd.date == on
+    assert fd.original_aid == "768/R1"
+    assert fd.published_pch == D("5.25")
+    assert fd.status == "PROPOSED"
+    assert any(e.kind is AppliedEventKind.FEED_DROP for e in events)
+
+
+def test_detect_feed_drops_confirmed_when_trip_already_dropped():
+    from nac_pay.schedule import detect_feed_drops
+    from dataclasses import replace as _replace
+
+    on = date(2026, 6, 24)
+    dropped = _replace(
+        _scheduled_trip("768/R1", "5.25", on),
+        reason_code=ReasonCode.VOLUNTARY_DROP,
+    )
+    baseline = _empty_month(trips=(dropped,))
+    drops, events = detect_feed_drops(
+        baseline, (_off_event("TRIP DROP", on),), rejected_dates=set(),
+    )
+    assert drops[0].status == "CONFIRMED"
+    assert not any(e.kind is AppliedEventKind.FEED_DROP for e in events)
+
+
+def test_detect_feed_drops_rejected_is_silent():
+    from nac_pay.schedule import detect_feed_drops
+
+    on = date(2026, 6, 24)
+    baseline = _empty_month(trips=(_scheduled_trip("768/R1", "5.25", on),))
+    drops, events = detect_feed_drops(
+        baseline, (_off_event("TRIP DROP", on),), rejected_dates={on.isoformat()},
+    )
+    assert drops[0].status == "REJECTED"
+    assert events == ()
+
+
+def test_detect_feed_drops_ignores_other_labels_and_tripless_dates():
+    from nac_pay.schedule import detect_feed_drops
+
+    on = date(2026, 6, 24)
+    baseline = _empty_month(trips=(_scheduled_trip("768/R1", "5.25", on),))
+    drops, _ = detect_feed_drops(
+        baseline,
+        (_off_event("OFF", on), _off_event("OFF/PAY PROTECTED", on),
+         _off_event("TRIP DROP", date(2026, 6, 25))),   # no trip on the 25th
+        rejected_dates=set(),
+    )
+    assert drops == ()
+
+
+def test_lea_sick_seeds_flown_trip():
+    from nac_pay.schedule import apply_lea_reason_seeds
+
+    on = date(2026, 6, 2)
+    baseline = _empty_month(trips=(_scheduled_trip("722/750", "4.92", on),))
+    updated, events = apply_lea_reason_seeds(baseline, (_off_event("SICK", on),))
+    assert updated.trips[0].reason_code is ReasonCode.SICK
+    assert any(e.kind is AppliedEventKind.LEA_REASON_SEED for e in events)
+    # Pay is untouched — SICK keeps published, protected.
+    assert updated.trips[0].effective_pch == D("4.92")
+
+
+def test_lea_sick_does_not_override_non_flown_reason():
+    from nac_pay.schedule import apply_lea_reason_seeds
+    from dataclasses import replace as _replace
+
+    on = date(2026, 6, 2)
+    pto = _replace(
+        _scheduled_trip("722/750", "4.92", on), reason_code=ReasonCode.PTO,
+    )
+    baseline = _empty_month(trips=(pto,))
+    updated, events = apply_lea_reason_seeds(baseline, (_off_event("SICK", on),))
+    assert updated.trips[0].reason_code is ReasonCode.PTO
+    assert events == ()
+
+
+def test_lea_sick_seeds_paying_day_entry():
+    from nac_pay.schedule import apply_lea_reason_seeds
+
+    on = date(2026, 6, 16)
+    rsv = Day(date=on, duty_type=DutyType.RSV, pch_value=D("3.82"),
+              reason_code=ReasonCode.FLOWN, workdays=1, label="1021")
+    baseline = _empty_month(days=(rsv,))
+    updated, events = apply_lea_reason_seeds(baseline, (_off_event("SICK", on),))
+    assert updated.days[0].reason_code is ReasonCode.SICK
+    assert len(events) == 1
+
+
+def test_lea_non_sick_labels_do_not_seed():
+    from nac_pay.schedule import apply_lea_reason_seeds
+
+    on = date(2026, 6, 2)
+    baseline = _empty_month(trips=(_scheduled_trip("722/750", "4.92", on),))
+    updated, events = apply_lea_reason_seeds(
+        baseline,
+        (_off_event("OFF", on), _off_event("TRIP DROP", on),
+         _off_event("OFF/PAY PROTECTED", on)),
+    )
+    assert updated.trips[0].reason_code is ReasonCode.FLOWN
+    assert events == ()

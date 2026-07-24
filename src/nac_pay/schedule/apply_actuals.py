@@ -84,6 +84,8 @@ class AppliedEventKind(StrEnum):
     FEED_REASSIGNMENT = "FEED_REASSIGNMENT"
     OFF_DAY_PICKUP = "OFF_DAY_PICKUP"
     COMPANY_CANCELLATION = "COMPANY_CANCELLATION"
+    FEED_DROP = "FEED_DROP"
+    LEA_REASON_SEED = "LEA_REASON_SEED"
 
 
 # Decision states for a feed-detected reassignment. No stored decision =
@@ -569,6 +571,164 @@ def apply_feed_cancellations(
     if not events:
         return month, ()
     return replace(month, trips=tuple(new_trips)), tuple(events)
+
+
+# The feed's affirmative approved-drop marker (specimen captured live
+# 2026-07-24: crew scheduling dropped the author's July 31 as a test —
+# BlueOne removed the FLT legs + R/S window and posted this all-day event).
+_TRIP_DROP_LABEL = "TRIP DROP"
+
+# The feed's sick-day marker — BlueOne posted `LEA - SICK` on the author's
+# real July 2/3 sick days. Seeding is safe (SICK keeps published, protected)
+# and pilot-overridable: the seed runs BEFORE apply_overrides_to_month.
+_SICK_LABEL = "SICK"
+
+
+@dataclass(frozen=True)
+class FeedDrop:
+    """A company-approved drop detected from the iCal feed.
+
+    Detection never mutates the Month: a PROPOSED drop keeps paying the
+    published value — forfeiting is gated on the pilot's confirmation,
+    which files a normal ``VersionType.DROP`` user-version (the manual
+    drop flow's own path, so the engine forfeit, DROPPED display, history
+    and Restore all work unchanged). ``status`` mirrors the reassignment
+    lifecycle: PROPOSED (badge), CONFIRMED (the trip already carries
+    ``VOLUNTARY_DROP``), REJECTED (pilot dismissed the proposal).
+    """
+
+    date: date_t
+    original_aid: str
+    published_pch: Decimal
+    status: str             # PROPOSED | CONFIRMED | REJECTED
+
+
+def detect_feed_drops(
+    month: Month,
+    off_days: tuple[OffEvent, ...],
+    rejected_dates: set[str],
+) -> tuple[tuple[FeedDrop, ...], tuple[AppliedEvent, ...]]:
+    """Derive feed-drop proposals from ``LEA - TRIP DROP`` events.
+
+    Pure read-only derivation over the post-transform Month — safe to run
+    at the very end of the pipeline. A date with no scheduled Trip is
+    ignored (nothing to forfeit). Only PROPOSED drops log an event; a
+    CONFIRMED drop already shows as DROPPED and a REJECTED one is silent.
+    """
+    drops: list[FeedDrop] = []
+    events: list[AppliedEvent] = []
+    seen: set[date_t] = set()
+    for ev in off_days:
+        if ev.label.strip().upper() != _TRIP_DROP_LABEL:
+            continue
+        d = _local_date(ev.dt_start_utc)
+        if d in seen:
+            continue
+        seen.add(d)
+        trip = next((t for t in month.trips if d in t.dates), None)
+        if trip is None:
+            continue
+        if trip.reason_code is ReasonCode.VOLUNTARY_DROP:
+            status = REASSIGN_CONFIRMED
+        elif d.isoformat() in rejected_dates:
+            status = REASSIGN_REJECTED
+        else:
+            status = REASSIGN_PROPOSED
+            events.append(
+                AppliedEvent(
+                    kind=AppliedEventKind.FEED_DROP,
+                    date=d,
+                    trip_id=trip.trip_id,
+                    detail=(
+                        f"Company drop detected (feed: LEA - TRIP DROP) — "
+                        f"confirm to forfeit {trip.published_pch:.2f} PCH; "
+                        "paying published until confirmed"
+                    ),
+                    delta_pch=None,
+                )
+            )
+        drops.append(
+            FeedDrop(
+                date=d,
+                original_aid=trip.trip_id,
+                published_pch=trip.published_pch,
+                status=status,
+            )
+        )
+    return tuple(drops), tuple(events)
+
+
+def apply_lea_reason_seeds(
+    month: Month,
+    off_days: tuple[OffEvent, ...],
+) -> tuple[Month, tuple[AppliedEvent, ...]]:
+    """Seed reason codes from the feed's LEA day-status events.
+
+    Currently only ``LEA - SICK``: a sick-labelled day whose Trip / paying
+    Day still reads FLOWN becomes SICK — no pay effect (SICK keeps the
+    published value, protected), just the tag/color the pilot would set by
+    hand. Runs BEFORE ``apply_overrides_to_month`` so an explicit pilot
+    override remains the final word. Only FLOWN is replaced: any other
+    reason means someone (pilot or an earlier transform) already chose.
+    """
+    sick_dates: set[date_t] = {
+        _local_date(ev.dt_start_utc)
+        for ev in off_days
+        if ev.label.strip().upper() == _SICK_LABEL
+    }
+    if not sick_dates:
+        return month, ()
+
+    events: list[AppliedEvent] = []
+    new_trips: list[Trip] = []
+    for trip in month.trips:
+        hit = next((d for d in trip.dates if d in sick_dates), None)
+        if hit is None or trip.reason_code is not ReasonCode.FLOWN:
+            new_trips.append(trip)
+            continue
+        new_trips.append(replace(trip, reason_code=ReasonCode.SICK))
+        events.append(
+            AppliedEvent(
+                kind=AppliedEventKind.LEA_REASON_SEED,
+                date=hit,
+                trip_id=trip.trip_id,
+                detail=(
+                    f"Marked SICK from the feed (LEA - SICK) — published "
+                    f"{trip.published_pch:.2f} PCH kept, protected; "
+                    "change the reason on the day page if this is wrong"
+                ),
+                delta_pch=Decimal("0"),
+            )
+        )
+
+    new_days: list[Day] = []
+    for day in month.days:
+        if (
+            day.date is None
+            or day.date not in sick_dates
+            or day.reason_code is not ReasonCode.FLOWN
+            or not day.pch_value
+        ):
+            new_days.append(day)
+            continue
+        new_days.append(replace(day, reason_code=ReasonCode.SICK))
+        events.append(
+            AppliedEvent(
+                kind=AppliedEventKind.LEA_REASON_SEED,
+                date=day.date,
+                trip_id=day.label or None,
+                detail=(
+                    f"Marked SICK from the feed (LEA - SICK) — published "
+                    f"{day.pch_value:.2f} PCH kept, protected; "
+                    "change the reason on the day page if this is wrong"
+                ),
+                delta_pch=Decimal("0"),
+            )
+        )
+
+    if not events:
+        return month, ()
+    return replace(month, trips=tuple(new_trips), days=tuple(new_days)), tuple(events)
 
 
 def _is_reserve_day(day: Day) -> bool:
