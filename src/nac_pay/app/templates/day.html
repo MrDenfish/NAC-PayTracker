@@ -592,7 +592,7 @@
           {% endif %}
           {% if v.user_seq is not none and not v.is_superseded %}
             {% if v.user_version_type == 'DROP' %}
-            <a class="correct-link" href="/day/{{ data.date_iso }}?correct={{ v.user_seq }}#reassign-form">Restore</a>
+            <a class="correct-link" href="/day/{{ data.date_iso }}?correct={{ v.user_seq }}#reassign-form">{% if data.published_pch is not none %}Restore original ({{ "%.2f"|format(data.published_pch) }}){% else %}Restore{% endif %}</a>
             {% elif v.user_version_type == 'REASSIGNMENT' %}
             <a class="correct-link" href="/day/{{ data.date_iso }}?correct={{ v.user_seq }}#reassign-form">Correct this</a>
             {% endif %}

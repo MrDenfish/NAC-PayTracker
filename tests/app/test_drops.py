@@ -129,8 +129,12 @@ def test_dropped_day_and_calendar_render(monkeypatch):
     day = client.get("/day/2026-06-02")
     assert day.status_code == 200
     assert "dropped (company-approved)" in day.text.lower()
-    # The Restore affordance is offered on the dropped day.
-    assert "Restore" in day.text
+    # The Restore affordance is offered on the dropped day, naming the value
+    # it restores (a bare "Restore" on the 0.00 row read as "restore 0.0").
+    assert "Restore original (4.92)" in day.text
+    # The history row is labelled as a Drop, not a "Pilot reassignment".
+    assert "· Drop" in day.text
+    assert "Pilot reassignment" not in day.text
 
     cal = client.get("/calendar?ym=2026-6")
     assert cal.status_code == 200
