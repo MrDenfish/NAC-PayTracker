@@ -544,3 +544,70 @@ def test_duty_on_anchors_to_report_not_actual_blockout(monkeypatch):
     d = load_day(2026, 6, 27, user_id=uid)
     assert d.duty_off == "15:42"
     assert d.duty_on == "04:41"          # report, not 06:45 − 1:00 = 05:45
+
+
+# ── Off-day pickup (feed-detected company-added trip on an OFF day) ─────
+
+_OFFDAY_PICKUP_VEVENTS = """BEGIN:VEVENT
+UID:offday-2720
+DTSTART:20260608T223000Z
+DTEND:20260608T234500Z
+SUMMARY:FLT - NC2720 ANC-OME N409YK
+DESCRIPTION:Customer: Northern Air Cargo
+ \\nCPT   Timo Armas SAARINEN
+ \\nFO    Dennis FISHER
+END:VEVENT
+BEGIN:VEVENT
+UID:offday-2721
+DTSTART:20260609T002000Z
+DTEND:20260609T013900Z
+SUMMARY:FLT - NC2721 OME-ANC N409YK
+DESCRIPTION:Customer: Northern Air Cargo
+ \\nCPT   Timo Armas SAARINEN
+ \\nFO    Dennis FISHER
+END:VEVENT
+END:VCALENDAR"""
+
+
+def _upload_feed_with_offday_pickup(client) -> None:
+    """Re-upload the bundled June feed with an extra-section 2720/2721
+    injected on June 8 (an OFF day for DFI, 14:30–17:39 ANC local)."""
+    base = (_docs_dir() / "iCal_schedule_feed.ics").read_text()
+    modified = base.replace("END:VCALENDAR", _OFFDAY_PICKUP_VEVENTS)
+    client.post(
+        "/documents/upload",
+        data={"year": "2026", "month": "6", "kind": "ICAL_FEED"},
+        files={"upload": ("f.ics", modified.encode(), "application/octet-stream")},
+        follow_redirects=False,
+    )
+
+
+def test_offday_pickup_renders_confirmable_card(monkeypatch):
+    """A feed trip not in the packet, on a day with no scheduled flying,
+    surfaces on the day page as a confirmable pickup (2026-07-23 incident:
+    the 2720/2721 callout was previously an invisible log event)."""
+    client, _ = _bootstrap_user_with_june(monkeypatch, "offday@x.test")
+    _upload_feed_with_offday_pickup(client)
+
+    r = client.get("/day/2026-06-08")
+    assert r.status_code == 200
+    body = r.text
+    assert "New trip on your day off" in body
+    assert "2720/2721" in body
+    assert "3.82" in body                      # DPG floor beats block 2.57
+    assert "Reject — keep day OFF" in body
+
+
+def test_offday_pickup_reject_reverts_to_off(monkeypatch):
+    client, _ = _bootstrap_user_with_june(monkeypatch, "offday2@x.test")
+    _upload_feed_with_offday_pickup(client)
+
+    client.post(
+        "/day/2026-06-08/reassignment/reject",
+        data={"signature": "2720/2721"},
+        follow_redirects=False,
+    )
+    r = client.get("/day/2026-06-08")
+    body = r.text
+    assert "this day remains OFF" in body
+    assert "New trip on your day off" in body   # rejected card still shown

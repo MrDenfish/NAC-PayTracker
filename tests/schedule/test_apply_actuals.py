@@ -663,22 +663,23 @@ def test_pay_protected_label_match_is_case_insensitive():
 # ── Unmatched ──────────────────────────────────────────────────────────
 
 
-def test_unmatched_trip_logged_but_not_added():
-    """An unmatched reconciled trip (no packet match) must NOT be silently
-    added — the Month is unchanged, only an event is logged for review."""
+def test_unmatched_trip_never_added_silently():
+    """An unmatched reconciled trip (no packet match) must never be added
+    SILENTLY: on an off day it becomes a gated, confirmable pickup proposal
+    (see the off-day pickup tests below) — always paired with a
+    FeedReassignment record the pilot can reject — never a bare Trip."""
     baseline = _empty_month()
     rt = _unmatched_trip(flight_sequence="9999/9998")
     reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
 
-    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
+    updated, events, reassigns = apply_actuals_to_month(baseline, reconciliation)
 
-    assert updated.trips == ()
-    assert updated.days == ()
-    review = [e for e in events if e.kind is AppliedEventKind.UNMATCHED_TRIP_REVIEW]
-    assert len(review) == 1
-    assert review[0].trip_id is None
-    assert review[0].delta_pch is None
-    assert "9999/9998" in review[0].detail
+    added = [t for t in updated.trips if t.trip_id == "9999/9998"]
+    assert len(added) == 1
+    gating = [r for r in reassigns if r.signature == "9999/9998"]
+    assert len(gating) == 1
+    assert gating[0].kind == "OFF_DAY_PICKUP"
+    assert gating[0].status == "PROPOSED"       # pilot must confirm/reject
 
 
 # ── Feed-detected company reassignment (reroute) ────────────────────────
@@ -846,19 +847,21 @@ def test_feed_reassignment_confirmed_status_still_applies():
     assert reassigns[0].applied is True
 
 
-def test_unmatched_trip_on_unscheduled_day_stays_review():
-    """An unmatched feed trip on a day with NO scheduled trip is a genuine
-    charter/mystery — still logged for review, not auto-applied. The
-    scheduled trip on a different date is left untouched."""
+def test_unmatched_trip_on_unscheduled_day_is_offday_pickup_not_reroute():
+    """An unmatched feed trip on a day with NO scheduled trip must NOT be
+    treated as a reroute of a scheduled trip on a *different* date — the
+    scheduled trip is left untouched and the trip surfaces as an off-day
+    pickup proposal on its own date."""
     baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", date(2026, 6, 10)),))
     rt = _unmatched_trip("8888", on_date=date(2026, 6, 12))     # different day
     reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
 
     updated, events, reassigns = apply_actuals_to_month(baseline, reconciliation)
 
-    assert reassigns == ()
-    assert updated.trips[0].versions == ()
-    assert any(e.kind is AppliedEventKind.UNMATCHED_TRIP_REVIEW for e in events)
+    assert updated.trips[0].versions == ()                       # untouched
+    assert len(reassigns) == 1
+    assert reassigns[0].kind == "OFF_DAY_PICKUP"
+    assert reassigns[0].date == date(2026, 6, 12)
     assert all(e.kind is not AppliedEventKind.FEED_REASSIGNMENT for e in events)
 
 
@@ -1020,3 +1023,85 @@ def test_packet_trip_for_aid_subsequence_match():
     assert packet_trip_for_aid("1021", packet) is None
     # An unknown trip matches nothing.
     assert packet_trip_for_aid("999", packet) is None
+
+
+# ── Off-day pickups (company-added trip on a day with no scheduled flying) ──
+
+
+def test_offday_pickup_surfaces_as_proposal_with_dpg_floor():
+    """2026-07-23 incident: company adds 2720/2721 on an OFF day. Must become
+    a FeedReassignment proposal (kind OFF_DAY_PICKUP) + a pickup Trip paying
+    the recompute — block 2.57 loses to the 3.82 DPG floor."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month()                       # no trips, no RSV days
+    rt = _unmatched_trip("2720/2721", on_date=on, actual_block="2.57")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, events, reassigns = apply_actuals_to_month(baseline, reconciliation)
+
+    assert len(reassigns) == 1
+    fr = reassigns[0]
+    assert fr.kind == "OFF_DAY_PICKUP"
+    assert fr.signature == "2720/2721"
+    assert fr.original_aid == "OFF"
+    assert fr.original_pch == D("0")
+    assert fr.new_pch == D("3.82")
+    assert fr.effective_pch == D("3.82")
+    assert fr.status == "PROPOSED"
+    assert fr.applied is True
+
+    added = updated.trips[-1]
+    assert added.trip_id == "2720/2721"
+    assert added.published_pch == D("3.82")
+    assert added.premium_category is PremiumCategory.OPEN_TIME_BID_PERIOD
+    assert added.dates == (on,)
+
+    assert any(e.kind is AppliedEventKind.OFF_DAY_PICKUP for e in events)
+    assert all(e.kind is not AppliedEventKind.UNMATCHED_TRIP_REVIEW for e in events)
+
+
+def test_offday_pickup_rejected_adds_nothing():
+    on = date(2026, 6, 12)
+    baseline = _empty_month()
+    rt = _unmatched_trip("2720/2721", on_date=on, actual_block="2.57")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions={(on.isoformat(), "2720/2721"): "REJECTED"},
+    )
+    fr = reassigns[0]
+    assert fr.status == "REJECTED" and fr.applied is False
+    assert fr.effective_pch == D("0")
+    assert all(t.trip_id != "2720/2721" for t in updated.trips)
+
+
+def test_offday_pickup_company_pch_override_wins():
+    on = date(2026, 6, 12)
+    baseline = _empty_month()
+    rt = _unmatched_trip("2720/2721", on_date=on, actual_block="2.57")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions={(on.isoformat(), "2720/2721"): "CONFIRMED"},
+        feed_reassignment_pch_overrides={(on.isoformat(), "2720/2721"): D("4.50")},
+    )
+    fr = reassigns[0]
+    assert fr.status == "CONFIRMED" and fr.override_pch == D("4.50")
+    assert fr.effective_pch == D("4.50")
+    assert updated.trips[-1].published_pch == D("4.50")
+
+
+def test_unmatched_on_rsv_day_stays_review_only():
+    """Reserve days keep the current behavior — the callout flow owns them."""
+    on = date(2026, 6, 12)
+    rsv = Day(date=on, duty_type=DutyType.RSV, pch_value=D("3.82"),
+              reason_code=ReasonCode.FLOWN, workdays=1, label="RSV")
+    baseline = _empty_month(days=(rsv,))
+    rt = _unmatched_trip("2720/2721", on_date=on)
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    _updated, events, reassigns = apply_actuals_to_month(baseline, reconciliation)
+    assert reassigns == ()
+    assert any(e.kind is AppliedEventKind.UNMATCHED_TRIP_REVIEW for e in events)

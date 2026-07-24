@@ -81,13 +81,22 @@
   {% if data.feed_reassignment %}
   {% set fr = data.feed_reassignment %}
   <div class="card card--confirm">
-    <h2 class="card-title">Company reassignment detected</h2>
+    <h2 class="card-title">
+      {% if fr.kind == "OFF_DAY_PICKUP" %}New trip on your day off{% else %}Company reassignment detected{% endif %}
+    </h2>
     {% if fr.status == "REJECTED" %}
+    {% if fr.kind == "OFF_DAY_PICKUP" %}
+    <p class="subtle">
+      You rejected the feed's <strong>{{ fr.signature }}</strong> pickup —
+      this day remains OFF (0.00 PCH).
+    </p>
+    {% else %}
     <p class="subtle">
       You rejected the feed's <strong>{{ fr.signature }}</strong> reassignment —
       the calendar shows the Final Award original
       <strong>{{ fr.original_aid }}</strong> ({{ "%.2f"|format(fr.original_pch) }} PCH).
     </p>
+    {% endif %}
     <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post"
           class="reassign-pch-form">
       <input type="hidden" name="signature" value="{{ fr.signature }}">
@@ -96,6 +105,20 @@
              class="reassign-pch-input" placeholder="e.g. 5.17">
       <button type="submit" class="btn btn--primary">Apply {{ fr.signature }} instead</button>
     </form>
+    {% else %}
+    {% if fr.kind == "OFF_DAY_PICKUP" %}
+    <p>
+      The schedule feed shows the company added
+      <strong>{{ fr.signature }}</strong> on this day off. Crediting
+      {% if fr.override_pch is not none %}
+      company-assigned {{ "%.2f"|format(fr.override_pch) }}
+      {% else %}
+      recomputed {{ "%.2f"|format(fr.new_pch) }}
+      {% endif %}
+      → <strong>{{ "%.2f"|format(fr.effective_pch) }} PCH</strong> at 1.0×.
+      If this pickup qualified for a premium (e.g. 150% open time), set it
+      in Reason &amp; premium below.
+    </p>
     {% else %}
     <p>
       The schedule feed shows this day was reassigned from
@@ -109,6 +132,7 @@
       {% endif %}
       → <strong>{{ "%.2f"|format(fr.effective_pch) }} PCH</strong>.
     </p>
+    {% endif %}
     {% if fr.status == "CONFIRMED" %}
     <p class="subtle">
       Confirmed. <span class="confirm-check">✓</span>
@@ -128,14 +152,17 @@
       </form>
       <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">
         <input type="hidden" name="signature" value="{{ fr.signature }}">
-        <button type="submit" class="btn btn--secondary">Undo — revert to {{ fr.original_aid }}</button>
+        <button type="submit" class="btn btn--secondary">
+          {% if fr.kind == "OFF_DAY_PICKUP" %}Undo — remove pickup{% else %}Undo — revert to {{ fr.original_aid }}{% endif %}
+        </button>
       </form>
     </div>
     {% else %}
     <p class="subtle">
       Auto-applied and awaiting your confirmation. If the company assigned a PCH
-      the feed can’t show, enter it below — it’s paid as the greater of it and
-      the published value.
+      the feed can’t show, enter it below{% if fr.kind == "OFF_DAY_PICKUP" %} —
+      it replaces the recomputed value{% else %} — it’s paid as the greater of
+      it and the published value{% endif %}.
     </p>
     <div class="confirm-actions">
       <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post"
@@ -148,7 +175,9 @@
       </form>
       <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">
         <input type="hidden" name="signature" value="{{ fr.signature }}">
-        <button type="submit" class="btn btn--secondary">Reject — keep {{ fr.original_aid }}</button>
+        <button type="submit" class="btn btn--secondary">
+          {% if fr.kind == "OFF_DAY_PICKUP" %}Reject — keep day OFF{% else %}Reject — keep {{ fr.original_aid }}{% endif %}
+        </button>
       </form>
     </div>
     {% endif %}
