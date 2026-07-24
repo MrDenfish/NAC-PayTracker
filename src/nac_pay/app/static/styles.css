@@ -431,6 +431,8 @@ html, body {
 .duty-bg--taxi       { background: #ecfbe2; }
 .duty-bg--other      { background: #f2f3f5; }
 .duty-bg--void       { background: #fafbfc; }
+.duty-bg--premium    { background: #d5f2d9; }   /* green — pays above 1.0× */
+.duty-bg--absence    { background: #ffedb0; }   /* yellow — protected absence */
 
 .day-cell--out.duty-bg--off { background: #fafbfc; }
 
@@ -451,6 +453,13 @@ html, body {
   z-index: 0;
 }
 .day-cell--user-reassigned > * { position: relative; z-index: 1; }
+/* On premium/absence-tinted cells keep the indigo rail but drop the
+   translucent overlay so the fill reads as one color (priority order:
+   green > yellow > reassignment overlay). */
+.day-cell--user-reassigned.duty-bg--premium::before,
+.day-cell--user-reassigned.duty-bg--absence::before {
+  background: transparent;
+}
 .flag-icon--user-reassign {
   background: #ece8ff;
   color: #4a3ea8;

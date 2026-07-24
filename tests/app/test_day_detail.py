@@ -258,3 +258,29 @@ def test_load_day_exposes_scheduled_duty_window_from_packet():
     assert d.sched_duty_on and d.sched_duty_off
     assert len(d.sched_duty_on) == 5 and d.sched_duty_on[2] == ":"
     assert d.sched_duty_rig_pch is not None and d.sched_duty_rig_pch > 0
+
+
+# ── Reason tag + premium/absence color on the Assignment card ───────────
+
+
+def _post_override(date_iso: str, reason: str, premium: str, custom: str = "") -> None:
+    client.post(
+        f"/day/{date_iso}",
+        data={"reason_code": reason, "premium_category": premium,
+              "entry_mode": "SIMPLE", "custom_multiplier": custom},
+        follow_redirects=False,
+    )
+
+
+def test_day_assignment_card_shows_reason_tag_and_color():
+    _post_override("2026-06-02", "SICK", "NONE")
+    body = client.get("/day/2026-06-02").text
+    assert ">SICK<" in body
+    assert "duty-bg--absence" in body
+
+
+def test_day_assignment_card_premium_green_keeps_flt_tag():
+    _post_override("2026-06-02", "FLOWN", "OVERTIME")
+    body = client.get("/day/2026-06-02").text
+    assert "duty-bg--premium" in body
+    assert ">FLT<" in body
