@@ -51,6 +51,7 @@ from nac_pay.schedule import (
     AppliedEvent,
     Day,
     DutyType,
+    FeedDrop,
     FeedReassignment,
     Month,
     PilotProfile,
@@ -58,8 +59,10 @@ from nac_pay.schedule import (
     Trip,
     apply_actuals_to_month,
     apply_feed_cancellations,
+    apply_lea_reason_seeds,
     apply_overrides_to_month,
     apply_user_versions_to_month,
+    detect_feed_drops,
     lower_month,
     month_from_master_schedule,
 )
@@ -68,6 +71,7 @@ from nac_pay.storage import (
     DayOverride,
     DayOverrideStore,
     DocumentKind,
+    FeedDropDecisionStore,
     FeedReassignmentDecisionStore,
     PersistedPilotProfile,
     PilotProfileStore,
@@ -192,6 +196,10 @@ class PipelineResult:
     # reassignments, gated by pilot confirm/reject). Drives the calendar
     # "confirm" badge and the day-page confirm/reject card.
     feed_reassignments: tuple[FeedReassignment, ...] = ()
+    # Company drops detected from the feed (LEA - TRIP DROP), gated by
+    # pilot confirm — a PROPOSED drop keeps paying published. Drives the
+    # calendar "confirm" badge and the day-page drop card.
+    feed_drops: tuple[FeedDrop, ...] = ()
 
 
 def available_months(user_id: str | None = None) -> tuple[tuple[int, int, str], ...]:
@@ -387,6 +395,13 @@ def _pipeline(
     if active_by_date:
         updated = apply_user_versions_to_month(updated, active_by_date)
 
+    # Seed reason codes from the feed's LEA day-status events (currently
+    # LEA - SICK → reason SICK; no pay effect). Runs BEFORE overrides so
+    # the pilot's explicit reason choice below remains the final word.
+    if feed is not None and feed.off_days:
+        updated, seed_events = apply_lea_reason_seeds(updated, feed.off_days)
+        applied = tuple(applied) + seed_events
+
     # Apply pilot overrides LAST so an explicit pilot edit is the final
     # word: it trumps iCal-derived events AND the premium_category a
     # reassignment version adopts by default (§7 — the pilot always has
@@ -403,6 +418,19 @@ def _pipeline(
     if feed is not None and feed.off_days:
         updated, cancel_events = apply_feed_cancellations(updated, feed.off_days)
         applied = tuple(applied) + cancel_events
+
+    # Feed-detected company drops (LEA - TRIP DROP): pure derivation over
+    # the final Month — a PROPOSED drop changes nothing (published keeps
+    # paying) until the pilot confirms, which files a normal DROP version.
+    feed_drops: tuple[FeedDrop, ...] = ()
+    if feed is not None and feed.off_days:
+        rejected = FeedDropDecisionStore(user_id=user_id).rejected_dates_for_month(
+            year, month,
+        )
+        feed_drops, drop_events = detect_feed_drops(
+            updated, feed.off_days, rejected,
+        )
+        applied = tuple(applied) + drop_events
 
     engine_result = compute_pay(lower_month(updated))
 
@@ -422,6 +450,7 @@ def _pipeline(
         packet_loaded=True,
         user_version_counts=user_version_counts,
         feed_reassignments=tuple(feed_reassignments),
+        feed_drops=feed_drops,
     )
 
 
@@ -679,6 +708,12 @@ def load_calendar(
         winning_aid_by_date.setdefault(date_iso, fr.signature)
         if fr.status == "PROPOSED":
             feed_confirm_dates.add(date_iso)
+
+    # Feed-detected company drops awaiting the pilot's confirm share the
+    # same amber badge — pilot action needed either way.
+    for fd in pr.feed_drops:
+        if fd.status == "PROPOSED":
+            feed_confirm_dates.add(fd.date.isoformat())
 
     base_rate = pr.pilot.hourly_rate
 
@@ -954,6 +989,10 @@ class DayDetailData:
     # Feed-detected company reassignment on this date (None if none). Drives
     # the confirm/reject card; carries the new routing + max-PCH protection.
     feed_reassignment: FeedReassignment | None = None
+
+    # Feed-detected company drop on this date (None if none). Drives the
+    # drop confirm/reject card; a PROPOSED drop keeps paying published.
+    feed_drop: FeedDrop | None = None
 
     # Duty window from iCal actuals + contractual padding (§3.E duty rig).
     # Anchorage-local clock strings; duty_hours is the duration.
@@ -1351,6 +1390,11 @@ def load_day(
         (fr for fr in pr.feed_reassignments if fr.date == target), None,
     )
 
+    # Feed-detected company drop on this date (confirm/reject card).
+    feed_drop = next(
+        (fd for fd in pr.feed_drops if fd.date == target), None,
+    )
+
     # Check for an existing pilot override on this date.
     override = override_store(user_id).load_all().get(target.isoformat())
 
@@ -1409,6 +1453,7 @@ def load_day(
         actual_block=actual_block,
         events_today=events_today,
         feed_reassignment=feed_reassignment,
+        feed_drop=feed_drop,
         has_override=override is not None,
         saved=saved,
         user_versions=user_versions,
@@ -1599,6 +1644,7 @@ def _build_day_detail(
     actual_block: Decimal | None,
     events_today: tuple[AppliedEvent, ...],
     feed_reassignment: FeedReassignment | None = None,
+    feed_drop: FeedDrop | None = None,
     has_override: bool = False,
     saved: bool = False,
     user_versions: list | None = None,
@@ -1769,7 +1815,15 @@ def _build_day_detail(
         uv for uv in user_versions if uv.seq not in superseded_seqs
     ]
     from nac_pay.storage import VersionType as _VT
-    is_dropped = any(uv.version_type is _VT.DROP for uv in active_versions_today)
+    # A day is dropped if a DROP version exists OR the trip's reason says
+    # so (a reason-only drop via the Reason & premium dropdown). The two
+    # signals previously diverged — the calendar read the reason while
+    # this page read only the version.
+    from nac_pay.schedule.labels import ReasonCode as _RC_drop
+    is_dropped = (
+        any(uv.version_type is _VT.DROP for uv in active_versions_today)
+        or (trip is not None and trip.reason_code is _RC_drop.VOLUNTARY_DROP)
+    )
     day_is_callout = (
         day_entry is not None and day_entry.callout_trip_pch is not None
     )
@@ -1978,6 +2032,7 @@ def _build_day_detail(
         day_pay_rows=day_pay_rows,
         day_pay_total=day_pay_total,
         feed_reassignment=feed_reassignment,
+        feed_drop=feed_drop,
         is_dropped=is_dropped,
         is_cancelled=trip.cancelled_pay_protected if trip is not None else False,
         reserve_window_start=reserve_window_start,

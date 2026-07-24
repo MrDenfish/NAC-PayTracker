@@ -185,6 +185,43 @@
   </div>
   {% endif %}
 
+  {# ── Feed-detected company drop (confirm / reject) ──────────────── #}
+  {% if data.feed_drop and not data.is_dropped %}
+  {% set fd = data.feed_drop %}
+  {% if fd.status == "PROPOSED" %}
+  <div class="card card--confirm">
+    <h2 class="card-title">Company drop detected</h2>
+    <p>
+      The schedule feed shows <strong>{{ fd.original_aid }}</strong> was
+      dropped (LEA - TRIP DROP). Confirming forfeits
+      <strong>{{ "%.2f"|format(fd.published_pch) }} PCH</strong> and lowers
+      the monthly guarantee accordingly (§3.D). Until you confirm, the day
+      keeps paying the published value.
+    </p>
+    <div class="confirm-actions">
+      <form action="/day/{{ data.date_iso }}/feed-drop/confirm" method="post">
+        <button type="submit" class="btn btn--primary">Confirm drop — forfeit {{ "%.2f"|format(fd.published_pch) }}</button>
+      </form>
+      <form action="/day/{{ data.date_iso }}/feed-drop/reject" method="post">
+        <button type="submit" class="btn btn--secondary">Reject — keep {{ fd.original_aid }} paid</button>
+      </form>
+    </div>
+  </div>
+  {% elif fd.status == "REJECTED" %}
+  <div class="card">
+    <h2 class="card-title">Company drop dismissed</h2>
+    <p class="subtle">
+      You dismissed the feed's drop of <strong>{{ fd.original_aid }}</strong> —
+      the published {{ "%.2f"|format(fd.published_pch) }} PCH stays credited.
+      If the drop was real after all, confirm it below.
+    </p>
+    <form action="/day/{{ data.date_iso }}/feed-drop/confirm" method="post">
+      <button type="submit" class="btn btn--secondary">Confirm drop — forfeit {{ "%.2f"|format(fd.published_pch) }}</button>
+    </form>
+  </div>
+  {% endif %}
+  {% endif %}
+
   {# ── Day pay breakdown (Phase I.7) ────────────────────────────── #}
   {% if data.day_pay_rows %}
   <div class="card">
