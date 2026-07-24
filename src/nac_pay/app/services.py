@@ -1295,7 +1295,7 @@ def load_day(
     if pr.reconciliation is not None and trip is not None:
         for rt in pr.reconciliation.matched:
             if (
-                rt.first_dt_utc.date() == target
+                _local_date(rt.first_dt_utc) == target
                 and rt.packet_trip is not None
                 and _ordered_subseq(trip.trip_id.split("/"), rt.trip_id.split("/"))
             ):

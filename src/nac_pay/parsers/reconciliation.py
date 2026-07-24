@@ -113,17 +113,19 @@ class ReconciledTrip:
 
     @property
     def calendar_days_touched(self) -> int:
-        """Distinct calendar dates (UTC) covered by the trip's legs.
+        """Distinct calendar dates (Anchorage-local) covered by the trip's legs.
 
         Rough workday count — proper §3.D.2 workday counting needs duty-
         period boundaries (one duty period across two calendar days = 1
         workday), which the packet has and this grouping doesn't yet
-        reproduce.
+        reproduce. Local, not UTC: an ANC-afternoon leg already spans two
+        UTC dates, which would overcount workdays (and the cumulative-DPG
+        candidate downstream).
         """
-        days = {leg.dt_start_utc.date() for leg in self.legs}
-        # Also include the final leg's end date in case it spills past midnight UTC.
+        days = {local_date(leg.dt_start_utc) for leg in self.legs}
+        # Also include the final leg's end date in case it spills past midnight.
         if self.legs:
-            days.add(self.legs[-1].dt_end_utc.date())
+            days.add(local_date(self.legs[-1].dt_end_utc))
         return len(days)
 
 

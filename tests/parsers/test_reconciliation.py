@@ -265,3 +265,14 @@ def test_matched_multiday_group_is_never_split():
     result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), packet)
     assert len(result.trips) == 1
     assert result.trips[0].match_status is MatchStatus.MATCHED
+
+
+def test_calendar_days_touched_uses_anchorage_local_dates():
+    """A 15:00→17:00 ANC afternoon leg spans 23:00Z→01:00Z — two UTC dates,
+    ONE civil day. Days-touched feeds workday counting (cumulative DPG in
+    the off-day pickup recompute) and must be local, not UTC."""
+    legs = (
+        _leg("768", "ANC", "OME", _utc(2026, 7, 24, 23, 0), _utc(2026, 7, 25, 1, 0)),
+    )
+    result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), {})
+    assert result.trips[0].calendar_days_touched == 1
