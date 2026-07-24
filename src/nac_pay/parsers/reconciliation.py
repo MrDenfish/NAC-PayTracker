@@ -35,6 +35,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
+from nac_pay.timeutil import local_date
+
 from .ical_feed import FlightLegEvent, ParsedFeed
 from .trip_pairing_packet import TripPairing
 
@@ -64,6 +66,16 @@ def _match_packet_trip(
     return None
 
 DEFAULT_LAYOVER_MAX_HOURS: float = 12.0
+
+# A station-chained gap this long that also crosses an Anchorage-local
+# midnight is an overnight REST, not a layover: the two sides are different
+# civil days' flying. Applied only to UNMATCHED groups — a fused sequence
+# that matches a packet pairing is a genuine multi-day trip and stays whole.
+# 6.0 splits every legal rest (≥~8h) while never splitting an intra-duty
+# midnight turn (gaps well under 6h). See the 2026-07-23 incident: 768/769
+# (Jul 24) + 720/721/1780/1781 (Jul 25) fused across an 8.5h overnight gap
+# and were attributed to a single day as a bogus 13.21-PCH reassignment.
+OVERNIGHT_REST_MIN_HOURS: float = 6.0
 
 
 class MatchStatus(StrEnum):
@@ -101,17 +113,19 @@ class ReconciledTrip:
 
     @property
     def calendar_days_touched(self) -> int:
-        """Distinct calendar dates (UTC) covered by the trip's legs.
+        """Distinct calendar dates (Anchorage-local) covered by the trip's legs.
 
         Rough workday count — proper §3.D.2 workday counting needs duty-
         period boundaries (one duty period across two calendar days = 1
         workday), which the packet has and this grouping doesn't yet
-        reproduce.
+        reproduce. Local, not UTC: an ANC-afternoon leg already spans two
+        UTC dates, which would overcount workdays (and the cumulative-DPG
+        candidate downstream).
         """
-        days = {leg.dt_start_utc.date() for leg in self.legs}
-        # Also include the final leg's end date in case it spills past midnight UTC.
+        days = {local_date(leg.dt_start_utc) for leg in self.legs}
+        # Also include the final leg's end date in case it spills past midnight.
         if self.legs:
-            days.add(self.legs[-1].dt_end_utc.date())
+            days.add(local_date(self.legs[-1].dt_end_utc))
         return len(days)
 
 
@@ -138,7 +152,21 @@ def reconcile_feed_to_packet(
         return ReconciliationResult(trips=())
 
     grouped = _group_legs_chronologically(feed.flight_legs, layover_max_hours)
-    reconciled: list[ReconciledTrip] = [_reconcile_one(group, packet) for group in grouped]
+    reconciled: list[ReconciledTrip] = []
+    for group in grouped:
+        rt = _reconcile_one(group, packet)
+        if rt.match_status is MatchStatus.MATCHED:
+            reconciled.append(rt)
+            continue
+        # Unmatched: the chronological chain may have fused two civil days'
+        # flying across an overnight rest. Split at the rest(s) and re-match
+        # each piece — often turning one bogus unmatched group into two
+        # cleanly-matched trips (the 2026-07-23 incident).
+        parts = _split_at_overnight_rests(group)
+        if len(parts) == 1:
+            reconciled.append(rt)
+        else:
+            reconciled.extend(_reconcile_one(part, packet) for part in parts)
     return ReconciliationResult(
         trips=tuple(reconciled),
         matched=tuple(r for r in reconciled if r.match_status is MatchStatus.MATCHED),
@@ -175,6 +203,32 @@ def _group_legs_chronologically(
     if current:
         groups.append(current)
     return groups
+
+
+def _split_at_overnight_rests(
+    group: list[FlightLegEvent],
+    min_rest_hours: float = OVERNIGHT_REST_MIN_HOURS,
+) -> list[list[FlightLegEvent]]:
+    """Split a leg group at overnight rests: gaps that cross an Anchorage-
+    local midnight AND are at least ``min_rest_hours`` long. A midnight-
+    crossing quick turn (short gap) stays chained; a same-day long ground
+    gap stays chained (the FA treats a day's flying as one assignment)."""
+    parts: list[list[FlightLegEvent]] = []
+    current: list[FlightLegEvent] = [group[0]]
+    for leg in group[1:]:
+        last = current[-1]
+        gap_hours = (leg.dt_start_utc - last.dt_end_utc).total_seconds() / 3600.0
+        overnight = (
+            gap_hours >= min_rest_hours
+            and local_date(leg.dt_start_utc) > local_date(last.dt_end_utc)
+        )
+        if overnight:
+            parts.append(current)
+            current = [leg]
+        else:
+            current.append(leg)
+    parts.append(current)
+    return parts
 
 
 def _reconcile_one(

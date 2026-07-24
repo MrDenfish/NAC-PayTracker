@@ -53,8 +53,6 @@ from datetime import datetime as datetime_t
 from datetime import timedelta
 from decimal import Decimal
 from enum import StrEnum
-from zoneinfo import ZoneInfo
-
 from nac_pay.engine.constants import (
     DPG,
     REPORT_PAD_HOURS,
@@ -65,6 +63,12 @@ from nac_pay.engine.trip_pch import (
     effective_trip_pch_after_reassignment,
 )
 from nac_pay.parsers import OffEvent, ReconciledTrip, ReconciliationResult
+
+# Crew domicile timezone: feed timestamps are UTC; trips are attributed to
+# their Anchorage-local civil date to match the FA schedule, the reconciliation
+# month-scoping, and the /day/<date> routes. Shared helper (nac_pay.timeutil)
+# so the parsers/schedule/app layers can't drift.
+from nac_pay.timeutil import local_date as _local_date
 
 from .labels import EntryMode, PremiumCategory, ReasonCode
 from .models import AssignmentVersion, Day, Month, Trip
@@ -78,6 +82,7 @@ class AppliedEventKind(StrEnum):
     OPEN_TIME_PICKUP = "OPEN_TIME_PICKUP"
     UNMATCHED_TRIP_REVIEW = "UNMATCHED_TRIP_REVIEW"
     FEED_REASSIGNMENT = "FEED_REASSIGNMENT"
+    OFF_DAY_PICKUP = "OFF_DAY_PICKUP"
     COMPANY_CANCELLATION = "COMPANY_CANCELLATION"
 
 
@@ -87,15 +92,11 @@ REASSIGN_PROPOSED = "PROPOSED"
 REASSIGN_CONFIRMED = "CONFIRMED"
 REASSIGN_REJECTED = "REJECTED"
 
-# Crew domicile timezone. Feed timestamps are UTC; trips are attributed to
-# their Anchorage-local civil date to match the FA schedule, the reconciliation
-# month-scoping, and the /day/<date> routes (see _local_date below).
-_DOMICILE_TZ = ZoneInfo("America/Anchorage")
+# FeedReassignment.kind — a reroute replaces an FA-scheduled trip; an
+# off-day pickup is a company-added trip on a day with no scheduled flying.
+REASSIGN_KIND_REROUTE = "REROUTE"
+REASSIGN_KIND_OFF_DAY_PICKUP = "OFF_DAY_PICKUP"
 
-
-def _local_date(dt: datetime_t) -> date_t:
-    """Anchorage-local civil date of a UTC timestamp (DST handled by tz)."""
-    return dt.astimezone(_DOMICILE_TZ).date()
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,12 @@ class FeedReassignment:
     ``status`` gates the UI: PROPOSED shows a confirm badge, CONFIRMED clears
     it, REJECTED suppresses the reassignment (calendar reverts to the FA
     original) and ``applied`` is False.
+
+    ``kind`` distinguishes a reroute of a scheduled day (REROUTE) from a
+    company-added trip on a day off (OFF_DAY_PICKUP): for a pickup there is
+    no published value to protect, so ``original_aid`` is ``"OFF"``,
+    ``original_pch`` is 0, and ``effective_pch`` is the credited
+    recompute/override (0 when rejected — the day stays OFF).
     """
 
     date: date_t
@@ -133,6 +140,7 @@ class FeedReassignment:
     status: str             # PROPOSED | CONFIRMED | REJECTED
     applied: bool           # False when REJECTED
     override_pch: Decimal | None = None  # pilot-entered company PCH, if any
+    kind: str = REASSIGN_KIND_REROUTE    # REROUTE | OFF_DAY_PICKUP
 
 
 def apply_actuals_to_month(
@@ -286,17 +294,104 @@ def apply_actuals_to_month(
             baseline.trips, first_date, matched_indexes | consumed_for_reassign,
         )
         if idx is None:
+            if first_date in baseline_rsv_by_date:
+                # Reserve day — the callout path (matched loop) and the manual
+                # ⚡ flow own these; an unmatched sequence here stays a review
+                # item rather than guessing at callout pay.
+                events.append(
+                    AppliedEvent(
+                        kind=AppliedEventKind.UNMATCHED_TRIP_REVIEW,
+                        date=first_date,
+                        trip_id=None,
+                        detail=(
+                            f"Flew sequence {rt.flight_sequence} ({len(rt.legs)} legs, "
+                            f"actual_block={rt.actual_block_hours:.2f}h) — not in packet; "
+                            "needs pilot categorization (charter? non-bid reassignment?)"
+                        ),
+                        delta_pch=None,
+                    )
+                )
+                continue
+
+            # Company-added trip on a day with NO scheduled flying (OFF /
+            # leave): surface it like a reassignment — auto-credit, badge for
+            # confirm/reject — instead of burying it in a log event (the
+            # 2026-07-23 2720/2721 callout was invisible exactly this way).
+            # Pay is the §3.E recompute from actuals, which DPG-floors at
+            # 3.82; premium stays 1.0× until the pilot sets it (premiums are
+            # never preassigned — the pilot picks the category on the day
+            # page).
+            signature = rt.flight_sequence
+            new_pch = _recomputed_reroute_pch(rt, None)
+            decision = decisions.get((first_date.isoformat(), signature))
+
+            if decision == REASSIGN_REJECTED:
+                feed_reassignments.append(
+                    FeedReassignment(
+                        date=first_date, signature=signature,
+                        original_aid="OFF", original_pch=Decimal("0"),
+                        new_pch=new_pch, effective_pch=Decimal("0"),
+                        status=REASSIGN_REJECTED, applied=False,
+                        kind=REASSIGN_KIND_OFF_DAY_PICKUP,
+                    )
+                )
+                events.append(
+                    AppliedEvent(
+                        kind=AppliedEventKind.OFF_DAY_PICKUP,
+                        date=first_date, trip_id=signature,
+                        detail=(
+                            f"Off-day pickup {signature} rejected — "
+                            "day remains OFF"
+                        ),
+                        delta_pch=None,
+                    )
+                )
+                continue
+
+            status = decision if decision == REASSIGN_CONFIRMED else REASSIGN_PROPOSED
+            override = pch_overrides.get((first_date.isoformat(), signature))
+            credited = override if override is not None else new_pch
+            pickups.append(
+                Trip(
+                    trip_id=signature,
+                    published_pch=credited,
+                    reason_code=ReasonCode.FLOWN,
+                    premium_category=PremiumCategory.OPEN_TIME_BID_PERIOD,
+                    workdays=rt.calendar_days_touched,
+                    entry_mode=EntryMode.SIMPLE,
+                    label=(
+                        f"Company pickup {signature} on "
+                        f"{first_date.isoformat()} (feed, day off)"
+                    ),
+                    dates=(first_date,),
+                )
+            )
+            feed_reassignments.append(
+                FeedReassignment(
+                    date=first_date, signature=signature,
+                    original_aid="OFF", original_pch=Decimal("0"),
+                    new_pch=new_pch, effective_pch=credited,
+                    status=status, applied=True, override_pch=override,
+                    kind=REASSIGN_KIND_OFF_DAY_PICKUP,
+                )
+            )
             events.append(
                 AppliedEvent(
-                    kind=AppliedEventKind.UNMATCHED_TRIP_REVIEW,
-                    date=first_date,
-                    trip_id=None,
+                    kind=AppliedEventKind.OFF_DAY_PICKUP,
+                    date=first_date, trip_id=signature,
                     detail=(
-                        f"Flew sequence {rt.flight_sequence} ({len(rt.legs)} legs, "
-                        f"actual_block={rt.actual_block_hours:.2f}h) — not in packet; "
-                        "needs pilot categorization (charter? non-bid reassignment?)"
+                        f"Company-added trip {signature} on a day off "
+                        + (
+                            f"(company PCH {override:.2f}"
+                            if override is not None
+                            else f"(recomputed {new_pch:.2f}"
+                        )
+                        + f"); crediting {credited:.2f} at 1.0× — set the "
+                        "premium on the day page if it qualifies"
+                        + (" — confirmed" if status == REASSIGN_CONFIRMED
+                           else " — needs confirmation")
                     ),
-                    delta_pch=None,
+                    delta_pch=credited,
                 )
             )
             continue

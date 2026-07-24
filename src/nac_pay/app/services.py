@@ -31,7 +31,6 @@ from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from nac_pay.engine import EngineResult, WinningOption, compute_pay
 from nac_pay.parsers import (
@@ -239,12 +238,8 @@ def documents_for_user(
 # departing the evening of the last day of a month is already the 1st in
 # UTC, so month attribution must convert to local date first — otherwise
 # that boundary trip leaks into the next month (see §14.10 caveat).
-_DOMICILE_TZ = ZoneInfo("America/Anchorage")
-
-
-def _local_date(dt: datetime_t) -> date_t:
-    """Domicile-local civil date of a UTC timestamp (DST handled by tz)."""
-    return dt.astimezone(_DOMICILE_TZ).date()
+from nac_pay.timeutil import DOMICILE_TZ as _DOMICILE_TZ
+from nac_pay.timeutil import local_date as _local_date
 
 
 def _in_month(d: date_t, year: int, month: int) -> bool:
@@ -1300,7 +1295,7 @@ def load_day(
     if pr.reconciliation is not None and trip is not None:
         for rt in pr.reconciliation.matched:
             if (
-                rt.first_dt_utc.date() == target
+                _local_date(rt.first_dt_utc) == target
                 and rt.packet_trip is not None
                 and _ordered_subseq(trip.trip_id.split("/"), rt.trip_id.split("/"))
             ):

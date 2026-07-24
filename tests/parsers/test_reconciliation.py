@@ -212,3 +212,67 @@ def test_actual_block_differs_when_iCal_leg_extended(reconciled):
     assert rt.actual_block_hours > rt.packet_trip.sch_block_hours
     # 30 minutes = 0.5h delta exactly (no rounding through Decimal/float)
     assert rt.actual_block_hours - rt.packet_trip.sch_block_hours == D("0.5")
+
+
+# ── Overnight-rest split of unmatched groups (2026-07-23 incident) ─────
+def test_unmatched_fused_group_splits_at_overnight_rest():
+    """July 23 2026 prod incident: 768/769 flown ANC evening Jul 24 chained
+    into 720/721/1780/1781 the next morning (8.5h overnight gap, crosses ANC
+    midnight, under the 12h layover cap). The fused 6-leg sequence matches
+    nothing; it must split at the rest so each civil day's flying reconciles
+    on its own."""
+    legs = (
+        # 18:00–19:15 / 19:50–21:09 ANC Jul 24 (= 02:00Z+ Jul 25)
+        _leg("768", "ANC", "OME", _utc(2026, 7, 25, 2, 0), _utc(2026, 7, 25, 3, 15)),
+        _leg("769", "OME", "ANC", _utc(2026, 7, 25, 3, 50), _utc(2026, 7, 25, 5, 9)),
+        # 05:41 ANC Jul 25 — 8.53h after 769 in, across ANC-local midnight
+        _leg("720", "ANC", "OME", _utc(2026, 7, 25, 13, 41), _utc(2026, 7, 25, 15, 11)),
+        _leg("721", "OME", "ANC", _utc(2026, 7, 25, 16, 1), _utc(2026, 7, 25, 17, 26)),
+        _leg("1780", "ANC", "DGG", _utc(2026, 7, 25, 19, 0), _utc(2026, 7, 25, 20, 35)),
+        _leg("1781", "DGG", "ANC", _utc(2026, 7, 25, 21, 35), _utc(2026, 7, 25, 23, 10)),
+    )
+    packet = {"768/769": object(), "720/721/1780/1781": object()}
+    result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), packet)
+
+    assert [t.flight_sequence for t in result.trips] == [
+        "768/769", "720/721/1780/1781",
+    ]
+    assert all(t.match_status is MatchStatus.MATCHED for t in result.trips)
+
+
+def test_unmatched_redeye_with_short_turn_stays_fused():
+    """A midnight-crossing quick turn (55 min) is NOT a rest — the group
+    must stay whole even though it's unmatched."""
+    legs = (
+        # 22:30–23:45 ANC, then 00:40–01:55 ANC the next civil day
+        _leg("990", "ANC", "OME", _utc(2026, 7, 25, 6, 30), _utc(2026, 7, 25, 7, 45)),
+        _leg("991", "OME", "ANC", _utc(2026, 7, 25, 8, 40), _utc(2026, 7, 25, 9, 55)),
+    )
+    result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), {})
+    assert len(result.trips) == 1
+    assert result.trips[0].flight_sequence == "990/991"
+
+
+def test_matched_multiday_group_is_never_split():
+    """If the fused sequence matches a packet pairing (a genuine multi-day
+    trip), the overnight split must not run."""
+    legs = (
+        _leg("900", "ANC", "OME", _utc(2026, 7, 25, 2, 0), _utc(2026, 7, 25, 3, 15)),
+        # 8.5h overnight rest in OME, crosses ANC midnight
+        _leg("901", "OME", "ANC", _utc(2026, 7, 25, 11, 45), _utc(2026, 7, 25, 13, 0)),
+    )
+    packet = {"900/901": object()}
+    result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), packet)
+    assert len(result.trips) == 1
+    assert result.trips[0].match_status is MatchStatus.MATCHED
+
+
+def test_calendar_days_touched_uses_anchorage_local_dates():
+    """A 15:00→17:00 ANC afternoon leg spans 23:00Z→01:00Z — two UTC dates,
+    ONE civil day. Days-touched feeds workday counting (cumulative DPG in
+    the off-day pickup recompute) and must be local, not UTC."""
+    legs = (
+        _leg("768", "ANC", "OME", _utc(2026, 7, 24, 23, 0), _utc(2026, 7, 25, 1, 0)),
+    )
+    result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), {})
+    assert result.trips[0].calendar_days_touched == 1
