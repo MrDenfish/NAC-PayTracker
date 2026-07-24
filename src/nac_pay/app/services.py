@@ -2106,6 +2106,11 @@ def _build_history(
             source = "Pilot correction"
         elif uv.version_type is _VT.RESERVE_CALLOUT:
             source = "Reserve callout"
+        elif uv.version_type is _VT.DROP:
+            # A drop is company-approved by definition (manual flow enforces
+            # the checkbox; the feed flow IS the company's signal) — calling
+            # it a "Pilot reassignment" misread the row's meaning.
+            source = "Drop"
         else:
             source = "Pilot reassignment"
         rows.append(
