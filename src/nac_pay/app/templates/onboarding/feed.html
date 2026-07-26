@@ -1,0 +1,42 @@
+{% extends "onboarding/_step.html" %}
+{% block title %}Connect your schedule — Setup — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+  <h1>Connect your live schedule (optional)</h1>
+  <p class="subtle">
+    Paste your BlueOne calendar feed link and the app keeps your
+    day-to-day flights current automatically — reroutes, drops,
+    cancellations and pickups show up on their own.
+  </p>
+
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+
+  <form action="/onboarding/feed" method="post" class="auth-form">
+    <label>
+      <span class="form-label">iCal feed link</span>
+      <input type="url" name="feed_url" inputmode="url" autocomplete="off"
+             placeholder="https://…" >
+      <span class="form-hint">
+        In BlueOne: export → calendar feed → <strong>copy the link</strong>
+        (don't download the file).
+      </span>
+    </label>
+
+    <button type="submit" class="btn btn--primary">Connect → Done</button>
+  </form>
+
+  <p class="subtle form-note">
+    Your monthly schedule documents (Final Award and Trip Pairing Packet)
+    are published to the site each month — you don't upload anything, and
+    they don't update through this feed. Skipping this step just means
+    mid-month changes won't appear automatically; you can paste the link
+    later in Settings.
+  </p>
+  <form action="/onboarding/done" method="get">
+    <button type="submit" class="btn">Skip for now</button>
+  </form>
+</div>
+{% endblock %}

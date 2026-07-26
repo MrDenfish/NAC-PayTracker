@@ -63,6 +63,7 @@ class JsonStore:
             self.path.unlink()
 
 
+from .account_delete import delete_account  # noqa: E402
 from .db import (  # noqa: E402
     Base,
     database_url,
@@ -77,6 +78,10 @@ from .documents import (  # noqa: E402
     DocumentRecord,
     UserDocumentsStore,
     expected_extension,
+)
+from .shared_documents import (  # noqa: E402
+    SharedDocumentRecord,
+    SharedDocumentsStore,
 )
 from .assignment_versions import (  # noqa: E402
     UserAssignmentVersion,
@@ -121,6 +126,8 @@ __all__ = [
     "STATUS_REJECTED",
     "PersistedPilotProfile",
     "PilotProfileStore",
+    "SharedDocumentRecord",
+    "SharedDocumentsStore",
     "User",
     "UserAssignmentVersion",
     "VersionLeg",
@@ -132,6 +139,7 @@ __all__ = [
     "active_versions",
     "database_url",
     "default_user",
+    "delete_account",
     "dispose_engine",
     "expected_extension",
     "feed_auto_update_profiles",

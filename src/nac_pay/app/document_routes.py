@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from nac_pay.auth import auth_required
 from nac_pay.storage import (
     DEFAULT_USER_ID,
     DocumentKind,
+    SharedDocumentsStore,
     UserDocumentsStore,
     expected_extension,
     get_data_dir,
@@ -33,6 +34,10 @@ _register_static_v(_TEMPLATES)
 router = APIRouter()
 
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25MB — comfortable headroom over real PDFs
+
+# Only these kinds are ever viewable in-browser — iCal feed and pay stubs
+# aren't PDFs / aren't meant for inline display.
+_VIEWABLE = {DocumentKind.FINAL_AWARD, DocumentKind.TRIP_PACKET}
 
 
 def _user_id_for(request: Request) -> str:
@@ -73,6 +78,18 @@ def documents_list(request: Request) -> HTMLResponse:
 
     sorted_months = sorted(set(slots) | set(stubs), reverse=True)
 
+    shared_store = SharedDocumentsStore(get_data_dir())
+    shared_by_month = [
+        {
+            "year": y,
+            "month": m,
+            "month_label": _month_label(y, m),
+            "final_awards": shared_store.list_final_awards(y, m),
+            "packet": shared_store.get_packet(y, m),
+        }
+        for (y, m) in shared_store.months_with_full_set()
+    ]
+
     return _TEMPLATES.TemplateResponse(
         request,
         "documents.html",
@@ -89,6 +106,7 @@ def documents_list(request: Request) -> HTMLResponse:
                 }
                 for (y, m) in sorted_months
             ],
+            "shared_by_month": shared_by_month,
             "active_screen": "documents",
             "single_kinds": [
                 k for k in DocumentKind if k is not DocumentKind.PAY_STUB
@@ -97,6 +115,43 @@ def documents_list(request: Request) -> HTMLResponse:
             "deleted": request.query_params.get("deleted"),
             "error": request.query_params.get("error", ""),
         },
+    )
+
+
+@router.get("/documents/view/{year}/{month}/{kind}")
+@router.get("/documents/view/{year}/{month}/{kind}/{slot}")
+def document_view(
+    request: Request, year: int, month: int, kind: str, slot: int = 0,
+) -> FileResponse:
+    """Stream the FA/Packet PDF the pipeline would use for this month —
+    personal upload first, shared fallback. Never cached by the service
+    worker (multi-megabyte; see pwa.py — the fetch handler only caches
+    text/html responses, so a PDF response is excluded automatically)."""
+    user_id = _user_id_for(request)
+    try:
+        kind_enum = DocumentKind(kind)
+    except ValueError:
+        raise HTTPException(404)
+    if kind_enum not in _VIEWABLE:
+        raise HTTPException(404)
+
+    store = UserDocumentsStore(get_data_dir(), user_id)
+    own = store.get(year, month, kind_enum)
+    if own is not None and own.exists:
+        path, name = own.path, own.original_filename
+    else:
+        shared = SharedDocumentsStore(get_data_dir())
+        if kind_enum is DocumentKind.FINAL_AWARD:
+            recs = [r for r in shared.list_final_awards(year, month) if r.slot == slot]
+            rec = recs[0] if recs else None
+        else:
+            rec = shared.get_packet(year, month)
+        if rec is None or not rec.path.exists():
+            raise HTTPException(404)
+        path, name = rec.path, rec.original_filename
+    return FileResponse(
+        path, media_type="application/pdf", filename=name,
+        content_disposition_type="inline",
     )
 
 

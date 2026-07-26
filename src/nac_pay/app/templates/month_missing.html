@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}{{ month_label }} — NAC Pay Tracker{% endblock %}
+{% block content %}
+<section class="card">
+  {% if flavor == "pilot_not_found" %}
+    <h1>We couldn't find pilot code {{ pilot_code }}</h1>
+    <p>Code <strong>{{ pilot_code }}</strong> isn't on the {{ month_label }}
+    Final Award — check your pilot code in Settings and correct it if
+    needed. It's the 3-letter code printed on your award sheet.
+    <a href="/settings">Open Settings →</a></p>
+  {% else %}
+    <h1>{{ month_label }} isn't ready yet</h1>
+    <p>The {{ month_label }} schedule documents haven't been published to
+    the site yet — check back soon, or upload your own copies via
+    <a href="/documents">Documents</a>.</p>
+  {% endif %}
+  <p class="month-nav">
+    <a href="{{ nav_base }}?year={{ prev_year }}&month={{ prev_month }}">← {{ prev_month_label }}</a>
+    &nbsp;|&nbsp;
+    <a href="{{ nav_base }}?year={{ next_year }}&month={{ next_month }}">{{ next_month_label }} →</a>
+  </p>
+</section>
+{% endblock %}

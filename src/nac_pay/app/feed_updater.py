@@ -133,13 +133,12 @@ def fetch_ical(url: str, *, client: httpx.Client | None = None) -> bytes:
     return data
 
 
-def _month_is_set_up(store: UserDocumentsStore, year: int, month: int) -> bool:
-    """True when the user has both a Final Award and a Trip Packet for the
-    month — the minimum the pipeline needs to compute pay. We don't write a
-    feed into a month that can't be computed (avoids phantom switcher rows)."""
-    fa = store.get(year, month, DocumentKind.FINAL_AWARD)
-    packet = store.get(year, month, DocumentKind.TRIP_PACKET)
-    return fa is not None and packet is not None
+def _month_is_set_up(user_id: str, year: int, month: int) -> bool:
+    """True when the month is computable for this user — FA + Packet exist
+    from EITHER the user's own uploads or the admin-published shared set.
+    Central docs mean a fresh pilot's months are set up on day one."""
+    from .services import documents_for_user
+    return documents_for_user(user_id, year, month) is not None
 
 
 def update_user_feed(
@@ -176,7 +175,7 @@ def update_user_feed(
 
     results: list[MonthUpdate] = []
     for (y, m) in months:
-        if not _month_is_set_up(store, y, m):
+        if not _month_is_set_up(user_id, y, m):
             results.append(
                 MonthUpdate(y, m, ok=True, detail="skipped: no Final Award + Packet")
             )

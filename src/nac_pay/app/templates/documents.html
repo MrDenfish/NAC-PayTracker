@@ -15,6 +15,40 @@
     </div>
   </div>
 
+  {# ── Shared (site-published) documents — visible to every account ── #}
+  {% if shared_by_month %}
+  <div class="card">
+    <h2 class="card-title">Provided by the site</h2>
+    <p class="subtle">
+      Published by the admin for every pilot. Your own uploads (if any)
+      take priority over these when the pay tracker runs.
+    </p>
+    <div class="documents-list">
+      {% for month_row in shared_by_month %}
+      <div class="month-block">
+        <h3 class="month-block-title">{{ month_row.month_label }}</h3>
+        <ul class="doc-rows">
+          {% for fa in month_row.final_awards %}
+          <li class="doc-row">
+            <span class="doc-kind">Final Award <span class="subtle">#{{ fa.slot + 1 }}</span></span>
+            <span class="doc-name">{{ fa.original_filename }}</span>
+            <a href="/documents/view/{{ month_row.year }}/{{ month_row.month }}/FINAL_AWARD/{{ fa.slot }}" target="_blank" rel="noopener">View</a>
+          </li>
+          {% endfor %}
+          {% if month_row.packet %}
+          <li class="doc-row">
+            <span class="doc-kind">Trip Pairing Packet</span>
+            <span class="doc-name">{{ month_row.packet.original_filename }}</span>
+            <a href="/documents/view/{{ month_row.year }}/{{ month_row.month }}/TRIP_PACKET" target="_blank" rel="noopener">View</a>
+          </li>
+          {% endif %}
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if is_default_user %}
   <div class="banner banner--info">
     <strong>Default dev user.</strong>
@@ -88,6 +122,9 @@
             {% if slot %}
             <span class="doc-name">{{ slot.original_filename }}</span>
             <span class="doc-uploaded subtle">uploaded {{ slot.uploaded_at[:10] }}</span>
+            {% if kind.value in ("FINAL_AWARD", "TRIP_PACKET") %}
+            <a href="/documents/view/{{ month_row.year }}/{{ month_row.month }}/{{ kind.value }}" target="_blank" rel="noopener">View</a>
+            {% endif %}
             <form action="/documents/delete" method="post" class="doc-delete">
               <input type="hidden" name="year" value="{{ month_row.year }}">
               <input type="hidden" name="month" value="{{ month_row.month }}">

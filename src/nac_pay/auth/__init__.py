@@ -2,6 +2,7 @@
 verification, password reset. Gated by the ``AUTH_REQUIRED`` env var so
 existing tests + dev continue to work with the bundled default user."""
 
+from .admin import admin_emails, is_admin
 from .dependencies import (
     auth_required,
     clear_session,
@@ -48,6 +49,7 @@ __all__ = [
     "SentEmail",
     "TokenLookup",
     "VERIFICATION_TTL_HOURS",
+    "admin_emails",
     "auth_required",
     "authenticate",
     "clear_session",
@@ -60,6 +62,7 @@ __all__ = [
     "generate_token",
     "get_email_sender",
     "hash_password",
+    "is_admin",
     "is_email_verified",
     "issue_email_verification",
     "issue_password_reset",

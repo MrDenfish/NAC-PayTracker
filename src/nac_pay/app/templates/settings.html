@@ -133,5 +133,15 @@
     </div>
 
   </form>
+
+  {# ── Danger Zone — OUTSIDE the settings form; a nested form would
+     break the Save submission above. ─────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Danger Zone</h2>
+    <p class="subtle">Deleting your account removes your profile, documents,
+    and every schedule record — immediately and permanently.</p>
+    <a class="btn" href="/account/delete">Delete account…</a>
+  </div>
+
 </section>
 {% endblock %}

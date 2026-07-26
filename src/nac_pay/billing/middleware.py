@@ -29,6 +29,10 @@ _BILLING_PUBLIC_PATHS: frozenset[str] = frozenset(
         "/forgot",
         "/logout",
         "/api/health",
+        # Account deletion must stay reachable even for an expired-trial
+        # user with no active subscription — the right to delete your own
+        # account can't be conditioned on paying first.
+        "/account/delete",
         # PWA control files + the per-user pre-warm list must not be gated by
         # subscription state (offline-manifest is still auth-gated for the id).
         "/sw.js",
