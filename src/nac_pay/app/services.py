@@ -75,6 +75,7 @@ from nac_pay.storage import (
     FeedReassignmentDecisionStore,
     PersistedPilotProfile,
     PilotProfileStore,
+    SharedDocumentsStore,
     User,
     UserAssignmentVersionStore,
     UserDocumentsStore,
@@ -213,7 +214,9 @@ def available_months(user_id: str | None = None) -> tuple[tuple[int, int, str], 
     if uid == DEFAULT_USER_ID:
         months = sorted(_DOC_INDEX.keys(), reverse=True)
     else:
-        months = UserDocumentsStore(get_data_dir(), uid).available_months()
+        personal = UserDocumentsStore(get_data_dir(), uid).available_months()
+        shared = SharedDocumentsStore(get_data_dir()).months_with_full_set()
+        months = sorted(set(personal) | set(shared), reverse=True)
     return tuple(
         (y, m, f"{_MONTH_NAMES[m]} {y}")
         for (y, m) in months
@@ -222,23 +225,36 @@ def available_months(user_id: str | None = None) -> tuple[tuple[int, int, str], 
 
 def documents_for_user(
     user_id: str, year: int, month: int,
-) -> tuple[Path, Path, Path | None] | None:
-    """Resolve (final_award, packet, ical_or_None) paths for a (user, month).
+) -> tuple[tuple[Path, ...], Path, Path | None] | None:
+    """Resolve ((final_award, ...), packet, ical_or_None) for a (user, month).
 
-    Returns None when the user has neither uploaded docs nor a bundled
-    entry for that month. The pipeline raises a meaningful error in that
-    case so the UI can prompt for uploads.
-    """
+    Personal uploads always win; the admin-published shared documents are
+    the fallback (FA may be several files — FO sheet + CA sheet — merged
+    downstream by pilot code). Returns None when neither source has both
+    an FA and a packet. The iCal feed is personal-only."""
     if user_id == DEFAULT_USER_ID and (year, month) in _DOC_INDEX:
-        return _DOC_INDEX[(year, month)]
+        fa, packet, ical = _DOC_INDEX[(year, month)]
+        return ((fa,), packet, ical)
 
     store = UserDocumentsStore(get_data_dir(), user_id)
-    fa = store.get(year, month, DocumentKind.FINAL_AWARD)
-    packet = store.get(year, month, DocumentKind.TRIP_PACKET)
+    shared = SharedDocumentsStore(get_data_dir())
+
+    own_fa = store.get(year, month, DocumentKind.FINAL_AWARD)
+    if own_fa is not None:
+        fa_paths: tuple[Path, ...] = (own_fa.path,)
+    else:
+        fa_paths = tuple(r.path for r in shared.list_final_awards(year, month))
+
+    own_packet = store.get(year, month, DocumentKind.TRIP_PACKET)
+    packet_path = own_packet.path if own_packet is not None else None
+    if packet_path is None:
+        shared_packet = shared.get_packet(year, month)
+        packet_path = shared_packet.path if shared_packet is not None else None
+
     ical = store.get(year, month, DocumentKind.ICAL_FEED)
-    if fa is None or packet is None:
+    if not fa_paths or packet_path is None:
         return None
-    return (fa.path, packet.path, ical.path if ical is not None else None)
+    return (fa_paths, packet_path, ical.path if ical is not None else None)
 
 
 # NAC's domicile. The Final Award / Trip Packet label trips by **Alaska
@@ -336,7 +352,7 @@ def _pipeline(
             f"No documents uploaded for {_MONTH_NAMES[month]} {year}. "
             "Upload your Final Award + Trip Pairing Packet via the Documents page."
         )
-    fa_path, packet_path, feed_path = paths
+    fa_paths, packet_path, feed_path = paths
 
     # Resolved per call so a Settings save (which triggers invalidate_caches())
     # picks up changes on the next request.
@@ -344,11 +360,14 @@ def _pipeline(
     pilot = persisted.profile
     pilot_code = pilot.pilot_id
 
-    fa_grids = _parse_master_schedule(str(fa_path))
+    fa_grids: dict[str, object] = {}
+    for p in fa_paths:  # slot order; later slot wins a duplicate pilot code
+        fa_grids.update(_parse_master_schedule(str(p)))
     sched = fa_grids.get(pilot_code)
     if sched is None:
+        fa_names = ", ".join(p.name for p in fa_paths)
         raise ValueError(
-            f"Pilot {pilot_code} not found in {fa_path.name}. "
+            f"Pilot {pilot_code} not found in {fa_names}. "
             f"Available: {sorted(fa_grids)}"
         )
     baseline, _warnings = month_from_master_schedule(sched, pilot)
