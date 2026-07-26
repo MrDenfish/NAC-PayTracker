@@ -175,10 +175,19 @@ _MONTH_NAMES = [
 def shared_pilot_directory(
     today: date_t | None = None,
 ) -> tuple[str, dict[str, str]]:
-    """(month_label, {pilot_code: last_name}) from the shared Final Award —
-    the current month's when published, else the most recent earlier month
-    (codes are stable month to month). ("", {}) when nothing is published.
-    Backs the onboarding pilot-code assist."""
+    """(month_label, {pilot_code: last_name}) from the shared Final Award.
+
+    Month-selection rule, in priority order:
+      1. The current month's shared FA, if published.
+      2. Else the most recent EARLIER published month.
+      3. Else — only future month(s) published — the NEAREST future month.
+         This happens at the launch of a hiring/signup window: the admin
+         may have only next month's FA ready when a pilot first signs up.
+         Codes are stable month to month, so a future FA is still a valid
+         check; refusing to show the assist during that window would be
+         worse than showing next month's codes a few weeks early.
+    ("", {}) when nothing is published at all. Backs the onboarding
+    pilot-code assist."""
     today = today or date_t.today()
     shared = SharedDocumentsStore(get_data_dir())
     months = shared.months_with_full_set()           # newest first

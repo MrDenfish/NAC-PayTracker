@@ -87,6 +87,25 @@ def test_shared_pilot_directory_empty_when_nothing_published():
     assert directory == {}
 
 
+def test_shared_pilot_directory_future_only_still_used():
+    # Launch scenario: only NEXT month's FA has been published yet (no
+    # current or past month). Codes are stable, so this is still a valid
+    # check — the assist should use the nearest future month rather than
+    # going empty.
+    _publish_shared(2026, 9)
+    label, directory = shared_pilot_directory(today=date(2026, 7, 1))
+    assert "September 2026" in label
+    assert directory
+
+
+def test_shared_pilot_directory_prefers_current_over_older():
+    _publish_shared(2026, 5)   # older
+    _publish_shared(2026, 7)   # current
+    label, directory = shared_pilot_directory(today=date(2026, 7, 15))
+    assert "July 2026" in label
+    assert directory
+
+
 # ── GET /onboarding/code-lookup ──────────────────────────────────────
 
 
