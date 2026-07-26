@@ -88,6 +88,48 @@ def test_all_five_routes_render_html(monkeypatch):
         assert r.headers["content-type"].startswith("text/html"), path
 
 
+def test_month_missing_shows_prev_next_month_links(monkeypatch):
+    """Finding 3 (spec-mandated): the empty-state page must offer prev/next
+    month navigation so a pilot who lands here isn't stuck — each of the
+    five data routes' empty state links back to the same route/screen the
+    user was on, with year/month shifted by one."""
+    client, _uid = _signed_up_docless_user(monkeypatch, "nodocs4@example.com")
+    r = client.get("/calendar?year=2026&month=7")
+    assert r.status_code == 404
+    # July 2026 -> prev June 2026, next August 2026.
+    assert "/calendar?year=2026&month=6" in r.text
+    assert "June" in r.text
+    assert "/calendar?year=2026&month=8" in r.text
+    assert "August" in r.text
+
+
+def test_month_missing_prev_next_year_rollover(monkeypatch):
+    """January's prev must roll back a year, December's next must roll
+    forward a year."""
+    client, _uid = _signed_up_docless_user(monkeypatch, "nodocs5@example.com")
+    r = client.get("/calendar?year=2026&month=1")
+    assert r.status_code == 404
+    assert "/calendar?year=2025&month=12" in r.text
+    assert "/calendar?year=2026&month=2" in r.text
+
+
+def test_month_missing_nav_base_matches_route_for_all_five(monkeypatch):
+    """Each of the five routes must link back to its own path (day maps to
+    /calendar, per spec), not a hardcoded single route."""
+    client, _uid = _signed_up_docless_user(monkeypatch, "nodocs6@example.com")
+    expectations = {
+        "/calendar?year=2026&month=7": "/calendar?year=2026&month=6",
+        "/pay?year=2026&month=7": "/pay?year=2026&month=6",
+        "/compare?year=2026&month=7": "/compare?year=2026&month=6",
+        "/discrepancies?year=2026&month=7": "/discrepancies?year=2026&month=6",
+        "/day/2026-07-15": "/calendar?year=2026&month=6",
+    }
+    for path, expected_prev_link in expectations.items():
+        r = client.get(path)
+        assert r.status_code == 404, path
+        assert expected_prev_link in r.text, (path, r.text)
+
+
 def test_unknown_pilot_code_flavor(monkeypatch):
     _publish_shared(2026, 5)
     client, uid = _signed_up_docless_user(monkeypatch, "zzz@example.com")

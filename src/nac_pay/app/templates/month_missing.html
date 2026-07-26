@@ -14,5 +14,10 @@
     the site yet — check back soon, or upload your own copies via
     <a href="/documents">Documents</a>.</p>
   {% endif %}
+  <p class="month-nav">
+    <a href="{{ nav_base }}?year={{ prev_year }}&month={{ prev_month }}">← {{ prev_month_label }}</a>
+    &nbsp;|&nbsp;
+    <a href="{{ nav_base }}?year={{ next_year }}&month={{ next_month }}">{{ next_month_label }} →</a>
+  </p>
 </section>
 {% endblock %}

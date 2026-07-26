@@ -78,11 +78,24 @@ _MONTH_NAMES = [
 
 
 def _render_month_missing(
-    request: Request, exc: MonthDataError, active_screen: str,
+    request: Request, exc: MonthDataError, active_screen: str, nav_base: str,
 ) -> HTMLResponse:
     """A data route's month can't be computed — no documents published for
     it, or the pilot's code isn't on the Final Award. Render a friendly
-    404 page instead of the generic JSON error body."""
+    404 page instead of the generic JSON error body.
+
+    ``nav_base`` is the route path the user was on (e.g. "/calendar",
+    "/pay") — the empty state offers prev/next month links back to that
+    same route so a pilot who lands here isn't stuck."""
+    if exc.month > 1:
+        prev_year, prev_month = exc.year, exc.month - 1
+    else:
+        prev_year, prev_month = exc.year - 1, 12
+    if exc.month < 12:
+        next_year, next_month = exc.year, exc.month + 1
+    else:
+        next_year, next_month = exc.year + 1, 1
+
     return _TEMPLATES.TemplateResponse(
         request,
         "month_missing.html",
@@ -93,6 +106,13 @@ def _render_month_missing(
             "month_label": f"{_MONTH_NAMES[exc.month]} {exc.year}",
             "pilot_code": exc.pilot_code,
             "active_screen": active_screen,
+            "nav_base": nav_base,
+            "prev_year": prev_year,
+            "prev_month": prev_month,
+            "prev_month_label": _MONTH_NAMES[prev_month],
+            "next_year": next_year,
+            "next_month": next_month,
+            "next_month_label": _MONTH_NAMES[next_month],
         },
         status_code=404,
     )
@@ -813,7 +833,7 @@ def discrepancies_view(
     try:
         data = load_discrepancies(target_year, target_month, uid)
     except MonthDataError as exc:
-        return _render_month_missing(request, exc, "discrepancies")
+        return _render_month_missing(request, exc, "discrepancies", "/discrepancies")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _TEMPLATES.TemplateResponse(
@@ -846,7 +866,7 @@ def compare_view(
     try:
         data = load_compare(target_year, target_month, uid)
     except MonthDataError as exc:
-        return _render_month_missing(request, exc, "compare")
+        return _render_month_missing(request, exc, "compare", "/compare")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _TEMPLATES.TemplateResponse(
@@ -881,7 +901,7 @@ def pay_breakdown(
     try:
         data = load_pay_breakdown(target_year, target_month, uid)
     except MonthDataError as exc:
-        return _render_month_missing(request, exc, "pay")
+        return _render_month_missing(request, exc, "pay", "/pay")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -920,7 +940,7 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
             correct_seq=correct_seq,
         )
     except MonthDataError as exc:
-        return _render_month_missing(request, exc, "calendar")
+        return _render_month_missing(request, exc, "calendar", "/calendar")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _TEMPLATES.TemplateResponse(
@@ -955,7 +975,7 @@ def calendar_view(
     try:
         data = load_calendar(target_year, target_month, uid)
     except MonthDataError as exc:
-        return _render_month_missing(request, exc, "calendar")
+        return _render_month_missing(request, exc, "calendar", "/calendar")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

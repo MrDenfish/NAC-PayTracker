@@ -170,6 +170,19 @@ def test_profile_step_rejects_bad_pilot_id_length(monkeypatch):
     assert "2-4+letters" in r.headers["location"]
 
 
+def test_profile_step_button_copy_matches_step_2(monkeypatch):
+    """Finding 4: step 2 is the feed-connect step (no upload happens
+    there), so the profile page's continue button must say 'Connect
+    schedule', not the stale 'Upload month' copy."""
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    isolated = TestClient(app)
+    _signup_and_verify(isolated, "june@example.com")
+    r = isolated.get("/onboarding/profile")
+    assert r.status_code == 200
+    assert "Continue → Connect schedule" in r.text
+    assert "Upload month" not in r.text
+
+
 # ── Step 2: Feed link ──────────────────────────────────────────────
 
 

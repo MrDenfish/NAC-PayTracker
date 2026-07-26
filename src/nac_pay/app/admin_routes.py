@@ -8,6 +8,8 @@ requests get a plain 404 — the surface isn't advertised.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -148,30 +150,44 @@ async def admin_documents_upload(
             f"/admin/documents?ym={year}-{month}&error=Empty+upload", status_code=303,
         )
 
-    store = SharedDocumentsStore(get_data_dir())
-    if kind_enum is DocumentKind.FINAL_AWARD:
-        rec = store.save_final_award(year, month, name, data, uploaded_by=user_id)
-    else:
-        rec = store.save_packet(year, month, name, data, uploaded_by=user_id)
-
     # Parse-on-upload: reject a file that doesn't actually parse (garbage
-    # PDF, wrong document entirely) instead of publishing something the
-    # pipeline will choke on for every subscriber later.
+    # PDF, wrong document entirely) BEFORE it ever touches the store — a
+    # bad re-upload must never destroy a good published document for every
+    # pilot. Validate a temp copy first; only a successful parse commits
+    # to save_final_award/save_packet. (The parse cache keys on
+    # (path, mtime, size), so parsing the temp path never pollutes the
+    # cache entry for the eventual stored path.)
+    tmp_path: str | None = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
         if kind_enum is DocumentKind.FINAL_AWARD:
-            grids = services._parse_master_schedule(str(rec.path))
+            grids = services._parse_master_schedule(tmp_path)
             if len(grids) == 0:
                 raise ValueError("No pilot bands found")
         else:
-            services._parse_trip_pairing_packet(str(rec.path))
+            services._parse_trip_pairing_packet(tmp_path)
     except Exception as exc:  # noqa: BLE001 — any parse failure rejects the upload
-        store.delete(year, month, kind_enum, rec.slot)
         from urllib.parse import quote
         return RedirectResponse(
             f"/admin/documents?ym={year}-{month}&error="
             + quote(f"Could not parse {kind_enum.value}: {exc}"),
             status_code=303,
         )
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    store = SharedDocumentsStore(get_data_dir())
+    if kind_enum is DocumentKind.FINAL_AWARD:
+        store.save_final_award(year, month, name, data, uploaded_by=user_id)
+    else:
+        store.save_packet(year, month, name, data, uploaded_by=user_id)
 
     services.invalidate_caches()
     return RedirectResponse(
@@ -195,6 +211,12 @@ def admin_documents_delete(
         raise HTTPException(400, f"Unknown kind {kind!r}")
     if kind_enum not in (DocumentKind.FINAL_AWARD, DocumentKind.TRIP_PACKET):
         raise HTTPException(400, f"{kind_enum.value} cannot be shared")
+    if kind_enum is DocumentKind.TRIP_PACKET and slot != 0:
+        # TRIP_PACKET is always stored/keyed at slot 0 (SharedDocumentsStore
+        # ._path_for ignores slot for packets) — a free-form slot!=0 here
+        # would unlink packet.pdf on disk while the DB delete matches 0
+        # rows, leaving an orphaned row/file desync.
+        raise HTTPException(400, "Trip Packet only has slot 0")
 
     store = SharedDocumentsStore(get_data_dir())
     store.delete(year, month, kind_enum, slot)
