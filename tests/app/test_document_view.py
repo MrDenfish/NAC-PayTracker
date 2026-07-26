@@ -36,7 +36,7 @@ def test_view_streams_shared_packet():
     r = client.get("/documents/view/2026/5/TRIP_PACKET")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/pdf")
-    assert "inline" in r.headers.get("content-disposition", "inline")
+    assert "inline" in r.headers["content-disposition"]
     assert r.content == b"%PDF-shared-packet"
 
 
