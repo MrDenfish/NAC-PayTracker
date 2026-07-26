@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from nac_pay.auth import auth_required
@@ -31,7 +31,7 @@ from nac_pay.storage import (
 )
 
 from .feed_updater import FeedFetchError, update_user_feed
-from .services import invalidate_caches, load_persisted_profile
+from .services import invalidate_caches, load_persisted_profile, shared_pilot_directory
 from .static_version import register as _register_static_v
 
 _HERE = Path(__file__).resolve().parent
@@ -87,18 +87,48 @@ def onboarding_profile_get(request: Request, error: str = "") -> HTMLResponse:
             "error": error,
             "persisted": persisted,
             "active_screen": "onboarding",
+            "warn": "",
+            "confirmed_code": "",
+            "form": None,
         },
     )
 
 
-@router.post("/onboarding/profile")
+# ── Pilot-code assist ────────────────────────────────────────────────
+
+
+@router.get("/onboarding/code-lookup")
+def onboarding_code_lookup(
+    code: str = "", last_name: str = "",
+) -> JSONResponse:
+    """Live check against the shared Final Award — exact code match, or a
+    case-insensitive last-name prefix search (max 10). Backs the "Find my
+    code" helper and the inline check on step 1."""
+    label, directory = shared_pilot_directory()
+    matches: list[dict[str, str]] = []
+    if code.strip():
+        c = code.strip().upper()
+        if c in directory:
+            matches = [{"code": c, "last_name": directory[c]}]
+    elif last_name.strip():
+        q = last_name.strip().lower()
+        matches = [
+            {"code": c, "last_name": ln}
+            for c, ln in sorted(directory.items())
+            if ln.lower().startswith(q)
+        ][:10]
+    return JSONResponse({"month_label": label, "matches": matches})
+
+
+@router.post("/onboarding/profile", response_model=None)
 def onboarding_profile_post(
     request: Request,
     name: str = Form(...),
     pilot_id: str = Form(...),
     position: str = Form(...),
     hourly_rate: str = Form(...),
-) -> RedirectResponse:
+    confirmed_code: str = Form(""),
+) -> HTMLResponse | RedirectResponse:
     user_id = _user_id_for(request)
     if user_id is None:
         return RedirectResponse("/login", status_code=303)
@@ -126,6 +156,33 @@ def onboarding_profile_post(
         return RedirectResponse(
             "/onboarding/profile?error=Pilot+code+is+2-4+letters",
             status_code=303,
+        )
+
+    # Non-JS warn-once gate: if the code isn't on the shared Final Award
+    # and the pilot hasn't already re-submitted past this same warning,
+    # re-render the form with a warning instead of saving straight through.
+    # JS users get the live inline check; this is the no-JS fallback.
+    label, directory = shared_pilot_directory()
+    if (
+        directory
+        and pilot_id_clean not in directory
+        and confirmed_code != pilot_id_clean
+    ):
+        return _TEMPLATES.TemplateResponse(
+            request, "onboarding/profile.html",
+            {
+                "step": 1, "step_total": 3, "error": "",
+                "persisted": load_persisted_profile(user_id),
+                "active_screen": "onboarding",
+                "warn": (
+                    f"Code {pilot_id_clean} was not found on the "
+                    f"{label} Final Award — double-check the code printed "
+                    "on your award sheet, or submit again to continue anyway."
+                ),
+                "confirmed_code": pilot_id_clean,
+                "form": {"name": name, "pilot_id": pilot_id_clean,
+                         "position": position, "hourly_rate": hourly_rate},
+            },
         )
 
     current = load_persisted_profile(user_id)

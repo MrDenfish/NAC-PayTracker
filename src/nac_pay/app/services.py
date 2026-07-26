@@ -172,6 +172,30 @@ _MONTH_NAMES = [
 ]
 
 
+def shared_pilot_directory(
+    today: date_t | None = None,
+) -> tuple[str, dict[str, str]]:
+    """(month_label, {pilot_code: last_name}) from the shared Final Award —
+    the current month's when published, else the most recent earlier month
+    (codes are stable month to month). ("", {}) when nothing is published.
+    Backs the onboarding pilot-code assist."""
+    today = today or date_t.today()
+    shared = SharedDocumentsStore(get_data_dir())
+    months = shared.months_with_full_set()           # newest first
+    if not months:
+        return ("", {})
+    past = [(y, m) for (y, m) in months if (y, m) <= (today.year, today.month)]
+    year, month = past[0] if past else months[-1]
+    directory: dict[str, str] = {}
+    for rec in shared.list_final_awards(year, month):
+        try:
+            grids = _parse_master_schedule(str(rec.path))
+        except Exception:                            # a bad slot never breaks signup
+            continue
+        directory.update({code: s.last_name for code, s in grids.items()})
+    return (f"{_MONTH_NAMES[month]} {year}", directory)
+
+
 # ── Shared pipeline result ─────────────────────────────────────────────
 
 
