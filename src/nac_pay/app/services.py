@@ -85,6 +85,24 @@ from nac_pay.storage import (
     get_data_dir,
 )
 
+
+class MonthDataError(ValueError):
+    """A month can't be computed — either no documents exist for it or the
+    pilot's code isn't in the Final Award. Subclasses ValueError so existing
+    generic handlers (dashboard empty state, feed updater) still catch it;
+    the five data routes catch THIS type to render a friendly page."""
+
+    def __init__(
+        self, flavor: str, year: int, month: int,
+        message: str, pilot_code: str = "",
+    ):
+        super().__init__(message)
+        self.flavor = flavor
+        self.year = year
+        self.month = month
+        self.pilot_code = pilot_code
+
+
 DEFAULT_PILOT = PilotProfile(
     pilot_id="DFI",
     name="Dennis FISHER",
@@ -381,9 +399,9 @@ def _pipeline(
 ) -> PipelineResult:
     paths = documents_for_user(user_id, year, month)
     if paths is None:
-        raise ValueError(
-            f"No documents uploaded for {_MONTH_NAMES[month]} {year}. "
-            "Upload your Final Award + Trip Pairing Packet via the Documents page."
+        raise MonthDataError(
+            "no_documents", year, month,
+            f"No documents for {_MONTH_NAMES[month]} {year}.",
         )
     fa_paths, packet_path, feed_path = paths
 
@@ -399,9 +417,11 @@ def _pipeline(
     sched = fa_grids.get(pilot_code)
     if sched is None:
         fa_names = ", ".join(p.name for p in fa_paths)
-        raise ValueError(
+        raise MonthDataError(
+            "pilot_not_found", year, month,
             f"Pilot {pilot_code} not found in {fa_names}. "
-            f"Available: {sorted(fa_grids)}"
+            f"Available: {sorted(fa_grids)}",
+            pilot_code=pilot_code,
         )
     baseline, _warnings = month_from_master_schedule(sched, pilot)
 

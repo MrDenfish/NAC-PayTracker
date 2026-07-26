@@ -48,6 +48,7 @@ from .pwa import router as pwa_router
 from .feed_updater import feed_update_loop, updater_enabled
 from .services import (
     DEFAULT_PERSISTED,
+    MonthDataError,
     available_months,
     invalidate_caches,
     load_calendar,
@@ -66,6 +67,35 @@ _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 _register_static_v(_TEMPLATES)
 
 logger = logging.getLogger("nac_pay.app")
+
+# Own copy rather than importing services._MONTH_NAMES — private by
+# convention only, but document_routes.py keeps its own copy too; stay
+# consistent with that.
+_MONTH_NAMES = [
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+def _render_month_missing(
+    request: Request, exc: MonthDataError, active_screen: str,
+) -> HTMLResponse:
+    """A data route's month can't be computed — no documents published for
+    it, or the pilot's code isn't on the Final Award. Render a friendly
+    404 page instead of the generic JSON error body."""
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "month_missing.html",
+        {
+            "flavor": exc.flavor,
+            "year": exc.year,
+            "month": exc.month,
+            "month_label": f"{_MONTH_NAMES[exc.month]} {exc.year}",
+            "pilot_code": exc.pilot_code,
+            "active_screen": active_screen,
+        },
+        status_code=404,
+    )
 
 
 def _configure_app_logging() -> None:
@@ -782,6 +812,8 @@ def discrepancies_view(
     target_month = month or default_month
     try:
         data = load_discrepancies(target_year, target_month, uid)
+    except MonthDataError as exc:
+        return _render_month_missing(request, exc, "discrepancies")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _TEMPLATES.TemplateResponse(
@@ -813,6 +845,8 @@ def compare_view(
     target_month = month or default_month
     try:
         data = load_compare(target_year, target_month, uid)
+    except MonthDataError as exc:
+        return _render_month_missing(request, exc, "compare")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _TEMPLATES.TemplateResponse(
@@ -846,6 +880,8 @@ def pay_breakdown(
 
     try:
         data = load_pay_breakdown(target_year, target_month, uid)
+    except MonthDataError as exc:
+        return _render_month_missing(request, exc, "pay")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -883,6 +919,8 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
             reassign_error=request.query_params.get("reassign_error", ""),
             correct_seq=correct_seq,
         )
+    except MonthDataError as exc:
+        return _render_month_missing(request, exc, "calendar")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _TEMPLATES.TemplateResponse(
@@ -916,6 +954,8 @@ def calendar_view(
 
     try:
         data = load_calendar(target_year, target_month, uid)
+    except MonthDataError as exc:
+        return _render_month_missing(request, exc, "calendar")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
