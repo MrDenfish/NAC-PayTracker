@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +11,6 @@ from sqlalchemy import select
 from nac_pay.app.main import app
 from nac_pay.auth import find_by_email, get_email_sender
 from nac_pay.onboarding import mark_completed, should_onboard
-from nac_pay.storage import DocumentKind, UserDocumentsStore, get_data_dir
 from nac_pay.storage.db import session_scope
 from nac_pay.storage.db_models import UserRow
 
@@ -41,10 +39,6 @@ def _signup_and_verify(client: TestClient, email: str) -> str:
         ).scalar_one()
         row.subscription_status = "ACTIVE"
     return uid
-
-
-def _docs_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "docs"
 
 
 # ── Middleware redirect ─────────────────────────────────────────────
@@ -143,7 +137,7 @@ def test_profile_step_saves_pilot_id_and_advances(monkeypatch):
         follow_redirects=False,
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/onboarding/documents"
+    assert r.headers["location"] == "/onboarding/feed"
 
     # Profile persisted with the entered pilot_id (uppercased).
     from nac_pay.app.services import load_persisted_profile
@@ -176,76 +170,96 @@ def test_profile_step_rejects_bad_pilot_id_length(monkeypatch):
     assert "2-4+letters" in r.headers["location"]
 
 
-# ── Step 2: Documents ─────────────────────────────────────────────
+# ── Step 2: Feed link ──────────────────────────────────────────────
 
 
-def test_documents_step_uploads_all_three_and_advances(monkeypatch):
+def test_onboarding_feed_saves_url_and_fetches(monkeypatch):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
-    isolated = TestClient(app)
-    uid = _signup_and_verify(isolated, "joel@example.com")
+    client = TestClient(app)
+    uid = _signup_and_verify(client, "carol@example.com")
+    calls = {}
 
-    fa = (_docs_dir() / "JUNE 2026 ANC 737 - FIRST OFFICER FINAL AWARDS.pdf").read_bytes()
-    pkt = (_docs_dir() / "JUNE 2026 Trip Pairing Packet.pdf").read_bytes()
-    ical = (_docs_dir() / "iCal_schedule_feed.ics").read_bytes()
+    def fake_update(user_id, url, **kw):
+        calls["args"] = (user_id, url)
+        from nac_pay.app.feed_updater import UserUpdate
+        return UserUpdate(user_id=user_id, months=())
 
-    r = isolated.post(
-        "/onboarding/documents",
-        data={"year": "2026", "month": "6"},
-        files={
-            "final_award": ("fa.pdf", fa, "application/pdf"),
-            "packet": ("pkt.pdf", pkt, "application/pdf"),
-            "ical": ("feed.ics", ical, "text/calendar"),
-        },
+    monkeypatch.setattr("nac_pay.app.onboarding_routes.update_user_feed", fake_update)
+    r = client.post(
+        "/onboarding/feed",
+        data={"feed_url": "https://blueone.example/cal.ics"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/onboarding/done"
+    assert calls["args"] == (uid, "https://blueone.example/cal.ics")
+    from nac_pay.app.services import load_persisted_profile
+    p = load_persisted_profile(uid)
+    assert p.feed_url == "https://blueone.example/cal.ics"
+    assert p.feed_auto_update is True
+
+
+def test_onboarding_feed_rejects_non_http(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    client = TestClient(app)
+    uid = _signup_and_verify(client, "quinn@example.com")
+    r = client.post(
+        "/onboarding/feed",
+        data={"feed_url": "ftp://x"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/onboarding/feed?error=")
+
+    from nac_pay.app.services import load_persisted_profile
+    p = load_persisted_profile(uid)
+    assert p.feed_url == ""
+
+
+def test_onboarding_feed_fetch_failure_rerenders(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    client = TestClient(app)
+    uid = _signup_and_verify(client, "ray@example.com")
+
+    def fake_update(user_id, url, **kw):
+        from nac_pay.app.feed_updater import FeedFetchError
+        raise FeedFetchError("boom")
+
+    monkeypatch.setattr("nac_pay.app.onboarding_routes.update_user_feed", fake_update)
+    r = client.post(
+        "/onboarding/feed",
+        data={"feed_url": "https://blueone.example/cal.ics"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/onboarding/feed?error=")
+
+    from nac_pay.app.services import load_persisted_profile
+    p = load_persisted_profile(uid)
+    assert p.feed_url == ""
+
+
+def test_onboarding_feed_empty_url_skips(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    client = TestClient(app)
+    uid = _signup_and_verify(client, "sam@example.com")
+    r = client.post(
+        "/onboarding/feed",
+        data={"feed_url": ""},
         follow_redirects=False,
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/onboarding/done"
 
-    store = UserDocumentsStore(get_data_dir(), uid)
-    assert store.get(2026, 6, DocumentKind.FINAL_AWARD) is not None
-    assert store.get(2026, 6, DocumentKind.TRIP_PACKET) is not None
-    assert store.get(2026, 6, DocumentKind.ICAL_FEED) is not None
+    from nac_pay.app.services import load_persisted_profile
+    p = load_persisted_profile(uid)
+    assert p.feed_url == ""
 
 
-def test_documents_step_accepts_partial_upload(monkeypatch):
-    """If a user only uploads FA + Packet (no iCal), we don't reject —
-    iCal is optional. They still advance to step 3."""
-    monkeypatch.setenv("AUTH_REQUIRED", "true")
-    isolated = TestClient(app)
-    uid = _signup_and_verify(isolated, "kara@example.com")
-
-    fa = (_docs_dir() / "JUNE 2026 ANC 737 - FIRST OFFICER FINAL AWARDS.pdf").read_bytes()
-    pkt = (_docs_dir() / "JUNE 2026 Trip Pairing Packet.pdf").read_bytes()
-
-    r = isolated.post(
-        "/onboarding/documents",
-        data={"year": "2026", "month": "6"},
-        files={
-            "final_award": ("fa.pdf", fa, "application/pdf"),
-            "packet": ("pkt.pdf", pkt, "application/pdf"),
-        },
-        follow_redirects=False,
-    )
+def test_old_documents_step_redirects():
+    client = TestClient(app)
+    r = client.get("/onboarding/documents", follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/onboarding/done"
-
-    store = UserDocumentsStore(get_data_dir(), uid)
-    assert store.get(2026, 6, DocumentKind.FINAL_AWARD) is not None
-    assert store.get(2026, 6, DocumentKind.TRIP_PACKET) is not None
-    assert store.get(2026, 6, DocumentKind.ICAL_FEED) is None
-
-
-def test_documents_step_rejects_wrong_extension(monkeypatch):
-    monkeypatch.setenv("AUTH_REQUIRED", "true")
-    isolated = TestClient(app)
-    _signup_and_verify(isolated, "lily@example.com")
-    r = isolated.post(
-        "/onboarding/documents",
-        data={"year": "2026", "month": "6"},
-        files={"final_award": ("oops.txt", b"not a pdf", "text/plain")},
-        follow_redirects=False,
-    )
-    assert "must+be+a+.pdf" in r.headers["location"]
+    assert r.headers["location"] == "/onboarding/feed"
 
 
 # ── Step 3: Done + completion ─────────────────────────────────────

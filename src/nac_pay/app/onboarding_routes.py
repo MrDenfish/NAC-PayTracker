@@ -2,7 +2,7 @@
 ready-to-track-pay.
 
 Step 1: Profile (name, pilot 3-letter code, position, hourly rate).
-Step 2: Documents (upload current-month FA + Packet + iCal).
+Step 2: Feed link (paste the BlueOne iCal feed URL; fetched immediately).
 Step 3: Done (mark completed, redirect to dashboard).
 
 A "Skip for now" link on each step marks completion without populating
@@ -14,8 +14,9 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import quote_plus
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -24,14 +25,12 @@ from nac_pay.onboarding import mark_completed, should_onboard
 from nac_pay.schedule import PilotProfile, Position
 from nac_pay.storage import (
     DEFAULT_USER_ID,
-    DocumentKind,
     PersistedPilotProfile,
     PilotProfileStore,
-    UserDocumentsStore,
-    expected_extension,
     get_data_dir,
 )
 
+from .feed_updater import FeedFetchError, update_user_feed
 from .services import invalidate_caches, load_persisted_profile
 from .static_version import register as _register_static_v
 
@@ -147,70 +146,62 @@ def onboarding_profile_post(
         )
     )
     invalidate_caches()
-    return RedirectResponse("/onboarding/documents", status_code=303)
+    return RedirectResponse("/onboarding/feed", status_code=303)
 
 
-# ── Step 2: Documents ────────────────────────────────────────────────
+# ── Step 2: Feed link ────────────────────────────────────────────────
 
 
-@router.get("/onboarding/documents", response_class=HTMLResponse)
-def onboarding_documents_get(request: Request, error: str = "") -> HTMLResponse:
-    today = date.today()
+@router.get("/onboarding/documents")
+def onboarding_documents_redirect() -> RedirectResponse:
+    """The old step-2 upload page — replaced by the feed-link step."""
+    return RedirectResponse("/onboarding/feed", status_code=303)
+
+
+@router.get("/onboarding/feed", response_class=HTMLResponse)
+def onboarding_feed_get(request: Request, error: str = "") -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(
-        request,
-        "onboarding/documents.html",
-        {
-            "step": 2,
-            "step_total": 3,
-            "error": error,
-            "default_year": today.year,
-            "default_month": today.month,
-            "active_screen": "onboarding",
-        },
+        request, "onboarding/feed.html",
+        {"step": 2, "step_total": 3, "error": error, "active_screen": "onboarding"},
     )
 
 
-@router.post("/onboarding/documents")
-async def onboarding_documents_post(
-    request: Request,
-    year: int = Form(...),
-    month: int = Form(...),
-    final_award: UploadFile | None = File(None),
-    packet: UploadFile | None = File(None),
-    ical: UploadFile | None = File(None),
+@router.post("/onboarding/feed")
+def onboarding_feed_post(
+    request: Request, feed_url: str = Form(""),
 ) -> RedirectResponse:
     user_id = _user_id_for(request)
     if user_id is None or user_id == DEFAULT_USER_ID:
         return RedirectResponse("/onboarding/done", status_code=303)
 
-    if not (1 <= month <= 12):
+    url = (feed_url or "").strip()
+    if not url:
+        return RedirectResponse("/onboarding/done", status_code=303)
+    if not url.lower().startswith(("http://", "https://")):
         return RedirectResponse(
-            "/onboarding/documents?error=Invalid+month", status_code=303,
+            "/onboarding/feed?error=The+feed+address+must+start+with+http",
+            status_code=303,
         )
 
-    store = UserDocumentsStore(get_data_dir(), user_id)
-    pairs: list[tuple[DocumentKind, UploadFile | None]] = [
-        (DocumentKind.FINAL_AWARD, final_award),
-        (DocumentKind.TRIP_PACKET, packet),
-        (DocumentKind.ICAL_FEED, ical),
-    ]
-    for kind, file in pairs:
-        if file is None or not file.filename:
-            continue
-        ext = expected_extension(kind)
-        if not file.filename.lower().endswith(ext):
-            return RedirectResponse(
-                f"/onboarding/documents?error={kind.value}+must+be+a+{ext}+file",
-                status_code=303,
-            )
-        data = await file.read()
-        if not data:
-            return RedirectResponse(
-                f"/onboarding/documents?error={kind.value}+upload+was+empty",
-                status_code=303,
-            )
-        store.save(year, month, kind, file.filename, data)
+    # Fetch once right now (same path as the hourly updater) so the first
+    # dashboard already has live data — and so a bad link fails here, where
+    # the pilot can fix it, not silently an hour later.
+    try:
+        result = update_user_feed(user_id, url, today=date.today())
+        if result.months and all(not m.ok for m in result.months):
+            raise FeedFetchError(result.months[0].detail)
+    except FeedFetchError as exc:
+        return RedirectResponse(
+            f"/onboarding/feed?error={quote_plus(f'Could not read that link: {exc}')}",
+            status_code=303,
+        )
 
+    current = load_persisted_profile(user_id)
+    PilotProfileStore(get_data_dir(), user_id).save(
+        PersistedPilotProfile(
+            profile=current.profile, feed_url=url, feed_auto_update=True,
+        )
+    )
     invalidate_caches()
     return RedirectResponse("/onboarding/done", status_code=303)
 
