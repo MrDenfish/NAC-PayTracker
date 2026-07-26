@@ -78,6 +78,10 @@ from .documents import (  # noqa: E402
     UserDocumentsStore,
     expected_extension,
 )
+from .shared_documents import (  # noqa: E402
+    SharedDocumentRecord,
+    SharedDocumentsStore,
+)
 from .assignment_versions import (  # noqa: E402
     UserAssignmentVersion,
     UserAssignmentVersionStore,
@@ -121,6 +125,8 @@ __all__ = [
     "STATUS_REJECTED",
     "PersistedPilotProfile",
     "PilotProfileStore",
+    "SharedDocumentRecord",
+    "SharedDocumentsStore",
     "User",
     "UserAssignmentVersion",
     "VersionLeg",

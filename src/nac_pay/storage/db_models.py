@@ -304,3 +304,28 @@ class FeedDropDecisionRow(Base):
     """CONFIRMED or REJECTED. Absence of a row means PROPOSED."""
 
     decided_at: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class SharedDocumentRow(Base):
+    """Admin-published monthly document shared by every account.
+
+    The site admin uploads the company's Final Awards and Trip Pairing
+    Packet once per month so pilots never handle PDFs. FINAL_AWARD is
+    multi-slot (usually two files: FO + CA; occasionally one combined
+    two-pager = one slot); TRIP_PACKET is slot 0 (re-upload replaces).
+    ``uploaded_by`` is informational (no FK — an admin account deletion
+    must not disturb published documents).
+
+    New table — created by ``Base.metadata.create_all`` on first engine
+    use, so no migration is needed on existing databases."""
+
+    __tablename__ = "shared_documents"
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    month: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(24), primary_key=True)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True, default=0)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    uploaded_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    uploaded_by: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
