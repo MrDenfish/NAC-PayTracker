@@ -29,6 +29,7 @@
       <a href="/discrepancies{{ current_ym }}" class="nav-link {% if active_screen == 'discrepancies' %}nav-link--active{% endif %}">Discrepancies</a>
       <a href="/documents" class="nav-link {% if active_screen == 'documents' %}nav-link--active{% endif %}">Documents</a>
       <a href="/settings" class="nav-link {% if active_screen == 'settings' %}nav-link--active{% endif %}">Settings</a>
+      {% if nav_is_admin(request) %}<a href="/admin/documents" class="nav-link {% if active_screen == 'admin' %}nav-link--active{% endif %}">Admin</a>{% endif %}
     </nav>
   </header>
 

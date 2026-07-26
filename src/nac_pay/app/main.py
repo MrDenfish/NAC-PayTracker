@@ -37,6 +37,7 @@ from nac_pay.storage import (
     VersionType,
 )
 
+from .admin_routes import router as admin_router
 from .auth_routes import router as auth_router
 from .billing_routes import router as billing_router
 from .document_routes import router as document_router
@@ -135,6 +136,7 @@ app.include_router(billing_router)
 app.include_router(document_router)
 app.include_router(onboarding_router)
 app.include_router(pwa_router)
+app.include_router(admin_router)
 
 
 @app.get("/api/health")

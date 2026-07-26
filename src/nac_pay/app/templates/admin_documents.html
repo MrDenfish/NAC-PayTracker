@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Admin — Documents — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="documents-view">
+
+  <div class="identity-row">
+    <div class="identity">
+      <h1>Admin — Shared documents</h1>
+      <p class="subtle">
+        Publish the monthly Final Award(s) + Trip Pairing Packet once for
+        every pilot without a personal upload. Files are parsed on upload —
+        a PDF that doesn't parse is rejected before it's published.
+      </p>
+    </div>
+  </div>
+
+  {% if uploaded %}
+  <div class="banner banner--ok"><strong>Uploaded {{ uploaded.replace('_', ' ')|title }}.</strong></div>
+  {% endif %}
+  {% if deleted %}
+  <div class="banner banner--ok"><strong>Deleted {{ deleted.replace('_', ' ')|title }}.</strong></div>
+  {% endif %}
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+
+  {# ── Month picker ─────────────────────────────────────────────── #}
+  <div class="card">
+    <form action="/admin/documents" method="get" class="form-grid">
+      <label>
+        <span class="form-label">Month</span>
+        <input type="text" name="ym" placeholder="YYYY-M" value="{{ ym }}">
+      </label>
+      <div>
+        <button type="submit" class="btn btn--primary">Go</button>
+      </div>
+    </form>
+    {% if months %}
+    <p class="subtle">
+      Published months:
+      {% for y, m in months %}
+      <a href="/admin/documents?ym={{ y }}-{{ m }}">{{ y }}-{{ m }}</a>{% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </p>
+    {% endif %}
+  </div>
+
+  {# ── Upload forms ─────────────────────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Publish a document for {{ year }}-{{ month }}</h2>
+    <form action="/admin/documents/upload" method="post" enctype="multipart/form-data" class="form-grid">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="month" value="{{ month }}">
+      <input type="hidden" name="kind" value="FINAL_AWARD">
+      <label class="form-grid--wide">
+        <span class="form-label">Final Award (PDF — FO/CA sheet or combined; upload each separately)</span>
+        <input type="file" name="upload" required accept=".pdf">
+      </label>
+      <div class="form-grid--wide">
+        <button type="submit" class="btn btn--primary">Publish Final Award</button>
+      </div>
+    </form>
+    <form action="/admin/documents/upload" method="post" enctype="multipart/form-data" class="form-grid">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="month" value="{{ month }}">
+      <input type="hidden" name="kind" value="TRIP_PACKET">
+      <label class="form-grid--wide">
+        <span class="form-label">Trip Pairing Packet (PDF — replaces the current packet)</span>
+        <input type="file" name="upload" required accept=".pdf">
+      </label>
+      <div class="form-grid--wide">
+        <button type="submit" class="btn btn--primary">Publish Packet</button>
+      </div>
+    </form>
+  </div>
+
+  {# ── Published files ──────────────────────────────────────────── #}
+  <div class="card">
+    <h2 class="card-title">Published ({{ rows|length }})</h2>
+    {% if rows %}
+    <ul class="doc-rows">
+      {% for row in rows %}
+      {% set rec = row.record %}
+      {% set fb = row.feedback %}
+      <li class="doc-row">
+        <span class="doc-kind">{{ rec.kind.value.replace('_', ' ')|title }} <span class="subtle">#{{ rec.slot }}</span></span>
+        <span class="doc-name">{{ rec.original_filename }}</span>
+        <span class="doc-uploaded subtle">uploaded {{ rec.uploaded_at[:10] }} by {{ rec.uploaded_by }} ({{ rec.size_bytes }} bytes)</span>
+        {% if fb.error is defined %}
+        <span class="doc-status doc-status--error" style="color: #b00;">{{ fb.error }}</span>
+        {% elif fb.pilot_codes is defined %}
+        <span class="doc-status subtle">
+          {{ fb.pilot_codes|length }} pilot codes: {{ fb.pilot_codes[:8]|join(', ') }}{% if fb.pilot_codes|length > 8 %}, …{% endif %}
+        </span>
+        {% elif fb.trip_count is defined %}
+        <span class="doc-status subtle">{{ fb.trip_count }} trips</span>
+        {% endif %}
+        <form action="/admin/documents/delete" method="post" class="doc-delete">
+          <input type="hidden" name="year" value="{{ rec.year }}">
+          <input type="hidden" name="month" value="{{ rec.month }}">
+          <input type="hidden" name="kind" value="{{ rec.kind.value }}">
+          <input type="hidden" name="slot" value="{{ rec.slot }}">
+          <button type="submit" class="link-button" title="Delete this shared document">remove</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="subtle">Nothing published for {{ year }}-{{ month }} yet.</p>
+    {% endif %}
+  </div>
+
+</section>
+{% endblock %}
