@@ -193,6 +193,8 @@ def admin_documents_delete(
         kind_enum = DocumentKind(kind)
     except ValueError:
         raise HTTPException(400, f"Unknown kind {kind!r}")
+    if kind_enum not in (DocumentKind.FINAL_AWARD, DocumentKind.TRIP_PACKET):
+        raise HTTPException(400, f"{kind_enum.value} cannot be shared")
 
     store = SharedDocumentsStore(get_data_dir())
     store.delete(year, month, kind_enum, slot)
