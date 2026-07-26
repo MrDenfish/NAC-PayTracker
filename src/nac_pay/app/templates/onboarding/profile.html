@@ -31,17 +31,17 @@
         Look at the leftmost column of your row on the Final Award (e.g.
         DFI for FISHER). Used to find your row when parsing the FA PDF.
       </span>
-      <div id="code-hint" class="form-hint" aria-live="polite"></div>
-      <details>
-        <summary class="subtle">Find my code</summary>
-        <label>
-          <span class="form-label">Last name</span>
-          <input type="text" id="lastname-lookup" autocomplete="off">
-        </label>
-        <div id="lookup-results" class="form-hint"></div>
-      </details>
-      <input type="hidden" name="confirmed_code" value="{{ confirmed_code or '' }}">
     </label>
+    <div id="code-hint" class="form-hint" aria-live="polite"></div>
+    <details>
+      <summary class="subtle">Find my code</summary>
+      <label>
+        <span class="form-label">Last name</span>
+        <input type="text" id="lastname-lookup" autocomplete="off">
+      </label>
+      <div id="lookup-results" class="form-hint"></div>
+    </details>
+    <input type="hidden" name="confirmed_code" value="{{ confirmed_code or '' }}">
     <label>
       <span class="form-label">Position</span>
       {% set pos = form.position if form else persisted.profile.position.value %}
