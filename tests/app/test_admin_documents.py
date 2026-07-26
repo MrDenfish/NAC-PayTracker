@@ -98,3 +98,59 @@ def test_admin_upload_rejects_garbage_pdf(monkeypatch):
     assert r.status_code == 303 and "error=" in r.headers["location"]
     from nac_pay.storage import SharedDocumentsStore, get_data_dir
     assert SharedDocumentsStore(get_data_dir()).list_final_awards(2026, 5) == []
+
+
+def test_admin_delete_removes_published_slot(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@example.com")
+    client = TestClient(app)
+    _signup_and_verify(client, "boss@example.com")
+    fa_bytes = (Path(__file__).resolve().parents[2] / "docs" / _FA_FIXTURE).read_bytes()
+    client.post(
+        "/admin/documents/upload",
+        data={"year": "2026", "month": "5", "kind": "FINAL_AWARD"},
+        files={"upload": ("fa.pdf", fa_bytes, "application/pdf")},
+        follow_redirects=False,
+    )
+    from nac_pay.storage import SharedDocumentsStore, get_data_dir
+    store = SharedDocumentsStore(get_data_dir())
+    assert len(store.list_final_awards(2026, 5)) == 1
+
+    r = client.post(
+        "/admin/documents/delete",
+        data={"year": "2026", "month": "5", "kind": "FINAL_AWARD", "slot": "0"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert store.list_final_awards(2026, 5) == []
+    page = client.get("/admin/documents?ym=2026-5")
+    assert "fa.pdf" not in page.text
+
+
+def test_admin_delete_rejects_non_shareable_kind(monkeypatch):
+    """Regression for eb44055: SharedDocumentsStore.delete raises a bare
+    ValueError for a kind outside {FINAL_AWARD, TRIP_PACKET} (e.g.
+    ICAL_FEED); the route must turn that into a clean 400, not a 500."""
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@example.com")
+    client = TestClient(app)
+    _signup_and_verify(client, "boss@example.com")
+    r = client.post(
+        "/admin/documents/delete",
+        data={"year": "2026", "month": "5", "kind": "ICAL_FEED", "slot": "0"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+
+
+def test_admin_delete_404_for_non_admin(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@example.com")
+    client = TestClient(app)
+    _signup_and_verify(client, "pilot@example.com")
+    r = client.post(
+        "/admin/documents/delete",
+        data={"year": "2026", "month": "5", "kind": "FINAL_AWARD", "slot": "0"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 404
