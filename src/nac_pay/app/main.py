@@ -37,6 +37,7 @@ from nac_pay.storage import (
     VersionType,
 )
 
+from .account_routes import router as account_router
 from .admin_routes import router as admin_router
 from .auth_routes import router as auth_router
 from .billing_routes import router as billing_router
@@ -131,6 +132,7 @@ app.add_middleware(AuthRequiredMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=session_secret())
 
 app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
+app.include_router(account_router)
 app.include_router(auth_router)
 app.include_router(billing_router)
 app.include_router(document_router)

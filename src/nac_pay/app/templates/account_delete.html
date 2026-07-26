@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Delete your account — NAC Pay Tracker{% endblock %}
+
+{% block content %}
+<section class="settings-view">
+  <div class="card">
+    <h2 class="card-title">Delete your account</h2>
+    <p class="subtle">
+      This permanently deletes your account, your uploaded documents, and
+      every schedule record — immediately and unrecoverably.
+    </p>
+
+    {% if error %}
+    <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+    {% endif %}
+
+    <form action="/account/delete" method="post" class="form-grid">
+      <label>
+        <span class="form-label">Password</span>
+        <input type="password" name="password" required autofocus>
+      </label>
+      <label>
+        <span class="form-label">Type DELETE to confirm</span>
+        <input type="text" name="confirm" required>
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="btn btn--danger">Delete my account</button>
+        <a class="btn" href="/settings">Cancel</a>
+      </div>
+    </form>
+  </div>
+</section>
+{% endblock %}

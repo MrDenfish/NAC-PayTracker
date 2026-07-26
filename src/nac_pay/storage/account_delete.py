@@ -1,0 +1,41 @@
+"""Account deletion — immediate hard delete of a user's every trace.
+
+One function so the future grace-period flow (deactivate now, purge on a
+schedule once there are subscribers) can call the exact same removal.
+Deletes are explicit per table rather than relying on FK cascade: four
+tables have no ORM cascade relationship and SQLite FK enforcement is off
+by default."""
+
+from __future__ import annotations
+
+import shutil
+
+from sqlalchemy import delete as sa_delete
+
+from .users import DEFAULT_USER_ID, user_dir
+
+
+def delete_account(user_id: str) -> None:
+    if user_id == DEFAULT_USER_ID:
+        raise ValueError("The default (dev) account cannot be deleted.")
+    from . import get_data_dir
+    from .db import session_scope
+    from . import db_models as m
+
+    ordered = [
+        m.UserVersionLegRow,
+        m.UserAssignmentVersionRow,
+        m.FeedReassignmentDecisionRow,
+        m.FeedDropDecisionRow,
+        m.UserDocumentRow,
+        m.DayOverrideRow,
+        m.EmailVerificationRow,
+        m.PasswordResetRow,
+        m.PilotProfileRow,
+        m.UserRow,
+    ]
+    with session_scope() as sess:
+        for model in ordered:
+            sess.execute(sa_delete(model).where(model.user_id == user_id))
+
+    shutil.rmtree(user_dir(get_data_dir(), user_id), ignore_errors=True)
