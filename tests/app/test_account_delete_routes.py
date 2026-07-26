@@ -4,12 +4,16 @@ happy-path purge + session end."""
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from nac_pay.app.main import app
 from nac_pay.auth import find_by_email, get_email_sender
 from nac_pay.onboarding import mark_completed
+from nac_pay.storage.db import session_scope
+from nac_pay.storage.db_models import UserRow
 
 _PASSWORD = "long enough password"
 
@@ -77,6 +81,38 @@ def test_delete_happy_path_removes_user_and_ends_session(monkeypatch):
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/login"
+
+
+def test_delete_reachable_and_completes_with_expired_trial(monkeypatch):
+    """An expired-trial user (no active subscription — SubscriptionRequired-
+    Middleware would otherwise redirect everything to /billing) must still
+    be able to reach and complete account deletion. Expiry simulated the
+    same way tests/billing/test_routes.py does: push trial_ends_at into the
+    past — snapshot() computes TRIAL_EXPIRED from that at read time, so
+    has_access() is False without touching the persisted status column."""
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    client = TestClient(app)
+    email = "expired@example.com"
+    uid = _signup_and_verify(client, email)
+    with session_scope() as sess:
+        row = sess.execute(
+            select(UserRow).where(UserRow.user_id == uid)
+        ).scalar_one()
+        row.trial_ends_at = (
+            datetime.now(timezone.utc) - timedelta(hours=1)
+        ).isoformat(timespec="seconds")
+
+    r = client.get("/account/delete", follow_redirects=False)
+    assert r.status_code == 200
+    assert "Delete your account" in r.text
+
+    r = client.post(
+        "/account/delete",
+        data={"password": _PASSWORD, "confirm": "DELETE"},
+    )
+    assert r.status_code == 200
+    assert "Your account and all of its data have been deleted" in r.text
+    assert find_by_email(email) is None
 
 
 def test_settings_page_shows_danger_zone():

@@ -81,6 +81,9 @@ _ONBOARDING_PUBLIC_PATHS: frozenset[str] = frozenset(
         "/forgot",
         "/logout",
         "/api/health",
+        # Account deletion must stay reachable even for a fresh user who
+        # hasn't finished (or skipped) the wizard yet.
+        "/account/delete",
         # PWA control files + the per-user pre-warm list.
         "/sw.js",
         "/manifest.webmanifest",

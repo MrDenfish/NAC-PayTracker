@@ -8,11 +8,14 @@ by default."""
 
 from __future__ import annotations
 
+import logging
 import shutil
 
 from sqlalchemy import delete as sa_delete
 
 from .users import DEFAULT_USER_ID, user_dir
+
+logger = logging.getLogger("nac_pay.storage")
 
 
 def delete_account(user_id: str) -> None:
@@ -38,4 +41,17 @@ def delete_account(user_id: str) -> None:
         for model in ordered:
             sess.execute(sa_delete(model).where(model.user_id == user_id))
 
-    shutil.rmtree(user_dir(get_data_dir(), user_id), ignore_errors=True)
+    # DB removal above is authoritative — the account is gone either way.
+    # A disk-tree failure (permissions, a locked file, etc.) shouldn't
+    # silently vanish; log it so it surfaces for manual cleanup instead
+    # of being swallowed. A missing directory (a user who never uploaded
+    # anything) is normal, not a failure — skip it rather than logging a
+    # false-positive warning on every doc-less account deletion.
+    doc_dir = user_dir(get_data_dir(), user_id)
+    if doc_dir.exists():
+        try:
+            shutil.rmtree(doc_dir, ignore_errors=False)
+        except OSError as exc:
+            logger.warning(
+                "account %s: document tree removal failed: %s", user_id, exc,
+            )

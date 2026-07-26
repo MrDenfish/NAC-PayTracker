@@ -68,3 +68,23 @@ def test_delete_account_removes_all_rows_and_files_and_spares_neighbors():
 def test_delete_account_refuses_default_user():
     with pytest.raises(ValueError):
         delete_account("default")
+
+
+def test_delete_account_logs_warning_when_disk_removal_fails(monkeypatch, caplog):
+    """DB removal is authoritative — a disk-tree failure (permissions, a
+    locked file, ...) must not raise or block the delete; it's logged
+    instead so it surfaces for manual cleanup."""
+    _seed("u_disk_fail")
+
+    def _boom(path, ignore_errors=False):
+        raise OSError("disk gremlin")
+
+    monkeypatch.setattr("nac_pay.storage.account_delete.shutil.rmtree", _boom)
+
+    with caplog.at_level("WARNING", logger="nac_pay.storage"):
+        delete_account("u_disk_fail")   # must not raise
+
+    assert _count(m.UserRow, "u_disk_fail") == 0
+    assert any(
+        "document tree removal failed" in r.message for r in caplog.records
+    )
