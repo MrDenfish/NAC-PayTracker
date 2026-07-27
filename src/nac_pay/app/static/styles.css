@@ -1483,6 +1483,22 @@ a.day-cell:hover {
 }
 .auth-form .btn { margin-top: 6px; padding: 12px 0; width: 100%; }
 
+/* Onboarding step 1 — Find-my-Code last-name lookup results. */
+.lookup-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.lookup-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f7f8fa;
+}
+.lookup-row:hover { background: #eef1f5; text-decoration: none; }
+
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 720px) {

@@ -12,49 +12,55 @@
   {% if error %}
   <div class="banner banner--warn"><strong>{{ error }}</strong></div>
   {% endif %}
-  {% if warn %}
-  <div class="banner banner--warn"><strong>{{ warn }}</strong></div>
-  {% endif %}
+
+  {% set name_value = form.name if form else (persisted.profile.name if not fresh else '') %}
+  {% set pos = form.position if form else (persisted.profile.position.value if not fresh else '') %}
+  {% set hourly_value = form.hourly_rate if form else ('%.2f'|format(persisted.profile.hourly_rate) if not fresh else '') %}
+  {# pilot_id_value comes straight from the route context (GET and POST's
+     _rerender both compute it) — it is NOT recomputed here, since that
+     was exactly the bug: a route-side correction (dropping a code the
+     current directory no longer recognizes) never reached the page
+     when this template independently re-derived the value from
+     persisted/form. Single source of truth lives in onboarding_routes.py. #}
 
   <form action="/onboarding/profile" method="post" class="auth-form">
     <label>
       <span class="form-label">Display name</span>
-      <input type="text" name="name"
-             value="{{ form.name if form else persisted.profile.name }}" required>
+      <input type="text" name="name" value="{{ name_value }}"
+             placeholder="e.g. Fred Smith" required>
     </label>
+
     <label>
-      <span class="form-label">Pilot code (3-letter on Final Award)</span>
-      <input type="text" name="pilot_id"
-             value="{{ form.pilot_id if form else persisted.profile.pilot_id }}"
-             maxlength="4" required>
-      <span class="form-hint">
-        Look at the leftmost column of your row on the Final Award (e.g.
-        DFI for FISHER). Used to find your row when parsing the FA PDF.
-      </span>
+      <span class="form-label">Find your pilot code — enter your last name</span>
+      <input type="text" id="lastname-lookup" autocomplete="off"
+             placeholder="e.g. Smith"
+             {% if pilot_id_value %}disabled{% endif %}>
     </label>
-    <div id="code-hint" class="form-hint" aria-live="polite"></div>
-    <details>
-      <summary class="subtle">Find my code</summary>
-      <label>
-        <span class="form-label">Last name</span>
-        <input type="text" id="lastname-lookup" autocomplete="off">
-      </label>
-      <div id="lookup-results" class="form-hint"></div>
-    </details>
-    <input type="hidden" name="confirmed_code" value="{{ confirmed_code or '' }}">
+    <div id="lookup-results" class="form-hint lookup-results"></div>
+    <input type="hidden" name="pilot_id" id="pilot-id" value="{{ pilot_id_value }}">
+    <div id="code-hint" class="form-hint" aria-live="polite">
+      {% if pilot_id_value and pilot_id_lastname %}
+      <span class="confirm-check">&#10003;</span>
+      {{ pilot_id_value }} — matches {{ pilot_id_lastname }} on the
+      {{ month_label }} Final Award
+      &nbsp;<a href="#" id="clear-code" class="link-button">Clear</a>
+      {% endif %}
+    </div>
+
     <label>
       <span class="form-label">Position</span>
-      {% set pos = form.position if form else persisted.profile.position.value %}
-      <select name="position">
+      <select name="position" required>
+        {% if pos not in ['FO', 'CPT'] %}
+        <option value="" disabled selected>Select position…</option>
+        {% endif %}
         <option value="FO" {% if pos == 'FO' %}selected{% endif %}>First Officer</option>
         <option value="CPT" {% if pos == 'CPT' %}selected{% endif %}>Captain</option>
       </select>
     </label>
     <label>
       <span class="form-label">Hourly rate (USD)</span>
-      <input type="text" name="hourly_rate"
-             value="{{ form.hourly_rate if form else '%.2f'|format(persisted.profile.hourly_rate) }}"
-             inputmode="decimal" required>
+      <input type="text" name="hourly_rate" value="{{ hourly_value }}"
+             placeholder="e.g. 124.59" inputmode="decimal" required>
       <span class="form-hint">From your Appendix A row. Excludes premiums.</span>
     </label>
     <button type="submit" class="btn btn--primary">Continue → Connect schedule</button>
@@ -63,43 +69,86 @@
 
 <script>
 (function () {
-  var codeInput = document.querySelector('input[name="pilot_id"]');
+  var search = document.getElementById('lastname-lookup');
+  var results = document.getElementById('lookup-results');
+  var hidden = document.getElementById('pilot-id');
   var hint = document.getElementById('code-hint');
-  var ln = document.getElementById('lastname-lookup');
-  var out = document.getElementById('lookup-results');
-  function check() {
-    var v = (codeInput.value || '').trim();
-    if (v.length < 2) { hint.textContent = ''; return; }
-    fetch('/onboarding/code-lookup?code=' + encodeURIComponent(v))
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (!d.month_label) { hint.textContent = ''; return; }
-        hint.textContent = d.matches.length
-          ? '✓ ' + d.matches[0].code + ' — matches ' + d.matches[0].last_name +
-            ' on the ' + d.month_label + ' Final Award'
-          : 'Not found on the ' + d.month_label + ' Final Award — double-check ' +
-            'the code printed on your award sheet.';
-      })
-      .catch(function () { hint.textContent = ''; });
-  }
-  if (codeInput) {
-    codeInput.addEventListener('blur', check);
-    codeInput.addEventListener('input', function () {
-      clearTimeout(codeInput._t); codeInput._t = setTimeout(check, 400);
+
+  function bindClear() {
+    var link = document.getElementById('clear-code');
+    if (link) link.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      clearSelection();
     });
   }
-  if (ln) ln.addEventListener('input', function () {
-    var v = (ln.value || '').trim();
-    if (v.length < 2) { out.textContent = ''; return; }
-    fetch('/onboarding/code-lookup?last_name=' + encodeURIComponent(v))
+
+  function clearSelection() {
+    if (hidden) hidden.value = '';
+    if (hint) hint.innerHTML = '';
+    if (results) results.innerHTML = '';
+    if (search) { search.disabled = false; search.value = ''; search.focus(); }
+  }
+
+  function selectMatch(code, lastName, label) {
+    if (hidden) hidden.value = code;
+    if (hint) {
+      hint.innerHTML = '<span class="confirm-check">&#10003;</span> ' + code +
+        ' — matches ' + lastName + ' on the ' + label + ' Final Award' +
+        '&nbsp;<a href="#" id="clear-code" class="link-button">Clear</a>';
+      bindClear();
+    }
+    if (results) results.innerHTML = '';
+    if (search) { search.value = lastName; search.disabled = true; }
+  }
+
+  function renderMatches(matches, label) {
+    if (!results) return;
+    results.innerHTML = '';
+    if (!matches.length) {
+      results.textContent = 'No match on the ' + (label || 'current') +
+        " Final Award — contact the site admin if your name isn't listed.";
+      return;
+    }
+    matches.forEach(function (m) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'link-button lookup-row';
+      btn.textContent = m.code + ' — ' + m.last_name;
+      btn.addEventListener('click', function () {
+        selectMatch(m.code, m.last_name, label);
+      });
+      results.appendChild(btn);
+    });
+  }
+
+  if (search) {
+    search.addEventListener('input', function () {
+      var v = (search.value || '').trim();
+      clearTimeout(search._t);
+      if (v.length < 2) { if (results) results.innerHTML = ''; return; }
+      search._t = setTimeout(function () {
+        fetch('/onboarding/code-lookup?last_name=' + encodeURIComponent(v))
+          .then(function (r) { return r.json(); })
+          .then(function (d) { renderMatches(d.matches, d.month_label); })
+          .catch(function () { if (results) results.innerHTML = ''; });
+      }, 300);
+    });
+  }
+
+  // A pilot_id preserved from a re-render (or an existing saved profile)
+  // is already shown server-side; refresh it against the CURRENT shared
+  // Final Award so a stale month label never lingers, and wire up Clear.
+  bindClear();
+  if (hidden && hidden.value) {
+    fetch('/onboarding/code-lookup?code=' + encodeURIComponent(hidden.value))
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        out.textContent = d.matches.length
-          ? d.matches.map(function (m) { return m.code + ' — ' + m.last_name; }).join(', ')
-          : 'No match on the ' + (d.month_label || 'current') + ' Final Award.';
+        if (d.matches && d.matches.length) {
+          selectMatch(d.matches[0].code, d.matches[0].last_name, d.month_label);
+        }
       })
-      .catch(function () { out.textContent = ''; });
-  });
+      .catch(function () {});
+  }
 })();
 </script>
 {% endblock %}

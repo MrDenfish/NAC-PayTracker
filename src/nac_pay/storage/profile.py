@@ -56,6 +56,24 @@ class PilotProfileStore:
                 feed_auto_update=row.feed_auto_update,
             )
 
+    def exists(self) -> bool:
+        """True iff this user already has a saved profile row.
+
+        Backs the onboarding fresh-vs-returning check: fresh users must
+        never see the bundled example profile's values (name, pilot code,
+        rate) prefilled into step 1 — see ``load_persisted_profile``'s
+        ``DEFAULT_PERSISTED`` fallback, which this deliberately bypasses."""
+        from .db import session_scope
+        from .db_models import PilotProfileRow
+
+        with session_scope() as sess:
+            row = sess.execute(
+                select(PilotProfileRow).where(
+                    PilotProfileRow.user_id == self._user_id
+                )
+            ).scalar_one_or_none()
+            return row is not None
+
     def save(self, persisted: PersistedPilotProfile) -> None:
         from .db import session_scope
         from .db_models import PilotProfileRow, UserRow

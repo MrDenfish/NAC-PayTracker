@@ -24,6 +24,7 @@ that shared result.
 from __future__ import annotations
 
 import calendar as _cal
+import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import date as date_t
 from datetime import datetime as datetime_t
@@ -188,6 +189,23 @@ _MONTH_NAMES = [
     "", "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
 ]
+
+
+# Characters folded away by normalize_name: straight + curly apostrophe,
+# hyphen-minus, Unicode hyphen (U+2010), en dash, and space.
+_NAME_FOLD_STRIP = set("'’‐-– ")
+
+
+def normalize_name(s: str) -> str:
+    """Fold a surname for matching: uppercase, accents stripped
+    (NFKD, combining marks dropped), apostrophes/hyphens/spaces removed —
+    so Muñoz↔MUNOZ, O'Brien↔OBRIEN, Smith-Jones↔SMITHJONES."""
+    decomposed = unicodedata.normalize("NFKD", s)
+    folded = "".join(
+        c for c in decomposed
+        if not unicodedata.combining(c) and c not in _NAME_FOLD_STRIP
+    )
+    return folded.upper()
 
 
 def shared_pilot_directory(
