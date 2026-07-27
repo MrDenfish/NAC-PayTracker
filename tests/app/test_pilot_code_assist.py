@@ -208,11 +208,60 @@ def test_profile_post_code_not_on_directory_rerenders_with_error(monkeypatch):
     assert "Final Award" in r.text
     assert "Find my code" in r.text
 
+    # The rejected code must NOT come back as a disabled, dead-end search
+    # box: the directory has just proven "ZZZ" invalid, so the widget
+    # drops it (empty hidden field, search re-enabled) — the error banner
+    # already explains why, and re-searching should just work.
+    lookup_input = re.search(r'<input[^>]*id="lastname-lookup"[^>]*>', r.text)
+    assert lookup_input is not None
+    assert "disabled" not in lookup_input.group(0)
+    hidden_input = re.search(r'<input[^>]*id="pilot-id"[^>]*>', r.text)
+    assert hidden_input is not None
+    assert 'value=""' in hidden_input.group(0)
+
     from nac_pay.storage import PilotProfileStore, get_data_dir
     assert PilotProfileStore(get_data_dir(), uid).exists() is False
 
 
+def test_profile_post_blank_name_with_valid_code_keeps_clear_link(monkeypatch):
+    """A DIFFERENT error (blank name) must not disturb an already-valid,
+    directory-confirmed pilot_id: it stays shown, with its server-rendered
+    Clear link intact — recoverability only kicks in for a code the
+    directory has actually rejected."""
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    _publish_shared_current_month()
+    client = TestClient(app)
+    _signup_and_verify(client, "nia@example.com")
+
+    r = client.post(
+        "/onboarding/profile",
+        data={
+            "name": "",
+            "pilot_id": _KNOWN_CODE,
+            "position": "FO",
+            "hourly_rate": "130.00",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert "Enter your display name" in r.text
+    hidden_input = re.search(r'<input[^>]*id="pilot-id"[^>]*>', r.text)
+    assert hidden_input is not None
+    assert f'value="{_KNOWN_CODE}"' in hidden_input.group(0)
+    # "id=\"clear-code\"" also appears inside the <script> block's JS
+    # template literal, so check the SERVER-RENDERED #code-hint div
+    # specifically — the Clear link must be there without any JS running.
+    hint_div = re.search(r'<div id="code-hint"[^>]*>(.*?)</div>', r.text, re.S)
+    assert hint_div is not None
+    assert 'id="clear-code"' in hint_div.group(1)
+
+
 def test_profile_post_no_shared_fa_rerenders_with_contact_admin(monkeypatch):
+    """The real UI never lets a pilot type a code before a match is found —
+    with no FA published, Find-my-Code can't return anything, so pilot_id
+    is blank. The admin-contact message must win here, not the 2-4-letter
+    shape check (checked ordering fix), and the pilot's other entered
+    values must survive the re-render."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     client = TestClient(app)
     uid = _signup_and_verify(client, "seth@example.com")
@@ -221,7 +270,7 @@ def test_profile_post_no_shared_fa_rerenders_with_contact_admin(monkeypatch):
         "/onboarding/profile",
         data={
             "name": "Seth Pilot",
-            "pilot_id": "SET",
+            "pilot_id": "",
             "position": "FO",
             "hourly_rate": "130.00",
         },
@@ -229,6 +278,7 @@ def test_profile_post_no_shared_fa_rerenders_with_contact_admin(monkeypatch):
     )
     assert r.status_code == 200
     assert "Contact the site admin" in r.text
+    assert 'value="Seth Pilot"' in r.text
 
     from nac_pay.storage import PilotProfileStore, get_data_dir
     assert PilotProfileStore(get_data_dir(), uid).exists() is False

@@ -253,7 +253,14 @@ def test_profile_step_rejects_invalid_position(monkeypatch):
 
 
 def test_profile_step_rejects_bad_pilot_id_length(monkeypatch):
+    """The 2-4 letter shape check now re-renders (value-preserving), and
+    only runs AFTER the directory-empty check — so it needs a published
+    FA to actually be reached (see the check-ordering fix: an unpublished
+    FA must surface the "contact the site admin" message first, not this
+    shape check, since a real no-JS submit would have a blank pilot_id
+    in that case anyway)."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
+    _publish_shared_current_month()
     isolated = TestClient(app)
     _signup_and_verify(isolated, "ivy@example.com")
     r = isolated.post(
@@ -261,7 +268,9 @@ def test_profile_step_rejects_bad_pilot_id_length(monkeypatch):
         data={"name": "x", "pilot_id": "ABCDE", "position": "FO", "hourly_rate": "100"},
         follow_redirects=False,
     )
-    assert "2-4+letters" in r.headers["location"]
+    assert r.status_code == 200
+    assert "2-4" in r.text
+    assert 'value="x"' in r.text
 
 
 def test_profile_step_button_copy_matches_step_2(monkeypatch):

@@ -90,6 +90,14 @@ def onboarding_profile_get(request: Request, error: str = "") -> HTMLResponse:
     fresh = not PilotProfileStore(get_data_dir(), user_id).exists()
     month_label, directory = shared_pilot_directory()
     pilot_id_value = "" if fresh else persisted.profile.pilot_id
+    # A saved code the CURRENT shared FA no longer recognizes (a stale
+    # signup, or an admin republish that dropped the pilot) would otherwise
+    # render the last-name search permanently disabled with no way to
+    # recover it — drop it so the search re-enables. Only when we actually
+    # have a directory to check against; an unpublished FA can't disprove
+    # anything, so a persisted code still shows in that case.
+    if directory and pilot_id_value and pilot_id_value not in directory:
+        pilot_id_value = ""
     pilot_id_lastname = directory.get(pilot_id_value, "") if pilot_id_value else ""
     return _TEMPLATES.TemplateResponse(
         request,
@@ -156,6 +164,16 @@ def onboarding_profile_post(
 
     def _rerender(error: str) -> HTMLResponse:
         month_label, directory = shared_pilot_directory()
+        # A carried pilot_id the CURRENT directory has just proven invalid
+        # (rejected code, malformed shape) must not render as a disabled,
+        # dead-end search box — the error banner already explains why, so
+        # drop it and re-enable the search instead of trapping the pilot
+        # into reloading and losing name/position/rate. A code the
+        # directory HASN'T disproven (still a match, or nothing published
+        # to check against) stays shown.
+        shown_pilot_id = pilot_id_clean
+        if directory and pilot_id_clean and pilot_id_clean not in directory:
+            shown_pilot_id = ""
         return _TEMPLATES.TemplateResponse(
             request, "onboarding/profile.html",
             {
@@ -164,11 +182,11 @@ def onboarding_profile_post(
                 "fresh": not PilotProfileStore(get_data_dir(), user_id).exists(),
                 "month_label": month_label,
                 "pilot_id_lastname": (
-                    directory.get(pilot_id_clean, "") if pilot_id_clean else ""
+                    directory.get(shown_pilot_id, "") if shown_pilot_id else ""
                 ),
                 "active_screen": "onboarding",
                 "form": {
-                    "name": name, "pilot_id": pilot_id_clean,
+                    "name": name, "pilot_id": shown_pilot_id,
                     "position": position, "hourly_rate": hourly_rate,
                 },
             },
@@ -192,21 +210,21 @@ def onboarding_profile_post(
     if rate <= 0:
         return _rerender("Hourly rate must be positive")
 
-    if len(pilot_id_clean) < 2 or len(pilot_id_clean) > 4:
-        return RedirectResponse(
-            "/onboarding/profile?error=Pilot+code+is+2-4+letters",
-            status_code=303,
-        )
-
-    # B. Find-my-Code is the ONLY path to a pilot_id — hard block. The
-    # submitted code must be on the currently-published shared Final
-    # Award; there is no warn-and-continue-anyway escape hatch anymore.
+    # B. Find-my-Code is the ONLY path to a pilot_id — hard block. Checked
+    # in an order that always names the REAL blocker: an unpublished FA
+    # (checked first) used to be masked by the shape-check redirect firing
+    # on the inevitably-blank pilot_id, which also discarded the pilot's
+    # other preserved fields via a redirect instead of a re-render.
     label, directory = shared_pilot_directory()
     if not directory:
         return _rerender(
             "Signups need the current Final Award published to the site "
             "— it isn't yet. Contact the site admin."
         )
+    if not pilot_id_clean:
+        return _rerender("Use Find my code to select your pilot code.")
+    if len(pilot_id_clean) < 2 or len(pilot_id_clean) > 4:
+        return _rerender("Pilot code is 2-4 letters")
     if pilot_id_clean not in directory:
         return _rerender(
             f"Code {pilot_id_clean} isn't on the {label} Final Award. "
