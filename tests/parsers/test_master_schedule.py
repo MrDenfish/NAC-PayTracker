@@ -166,3 +166,52 @@ def test_june_fisher_line_value(jun_pilots):
         D("0"),
     )
     assert pch_sum == fisher.line_value
+
+
+# ── August 2026 — UPGRADE section (second table on the page) ────────────
+AUG_PDF = DOCS / "AUGUST 2026 ANC 737 - FINAL AWARDS - FO - 1 PAGE.pdf"
+
+
+@pytest.fixture(scope="module")
+def aug_pilots():
+    return parse_master_schedule(str(AUG_PDF))
+
+
+def test_august_parses_upgrade_section_pilots(aug_pilots):
+    """The FO award can carry a second UPGRADE grid below the main lines
+    grid (its own header rows, same layout). Its pilots must parse too —
+    a new hire in upgrade training signs up via Find-my-Code like anyone
+    else."""
+    assert aug_pilots["TJE"].last_name == "JENSEN"
+    assert aug_pilots["KDO"].last_name == "DOHERTY"
+
+
+def test_august_parses_main_grid_alongside_upgrade(aug_pilots):
+    assert len(aug_pilots) == 16  # 14 main-grid + 2 UPGRADE
+    assert aug_pilots["DFI"].last_name == "FISHER"
+    assert aug_pilots["SBO"].last_name == "HOUGHTON"
+
+
+def test_august_upgrade_band_has_real_schedule(aug_pilots):
+    """UPGRADE rows carry real day cells (SIM/CLASS assignments) and a
+    printed line value — spot-check DOHERTY's 119.74 total."""
+    doherty = aug_pilots["KDO"]
+    assert doherty.line_value == D("119.74")
+    assert any(not d.is_off for d in doherty.days)
+
+
+def test_august_line_values_survive_stacked_wd_column(aug_pilots):
+    """The August revision stacks the workday count above the monthly
+    total in the WD column — one cell ("16\\n112.73") or separate rows.
+    The total must win, never the count and never a 0 fallback (a wrong
+    line value silently understates the pay guarantee)."""
+    expected = {
+        "DFI": D("112.73"),   # stacked in one cell
+        "SBO": D("77.16"),    # count and total on separate rows
+        "EST": D("79.21"),
+        "DCU": D("55.16"),    # total only (floored to 65 downstream)
+        "BMA": D("64.94"),
+        "JHU": D("98.18"),
+    }
+    for code, want in expected.items():
+        assert aug_pilots[code].line_value == want, code

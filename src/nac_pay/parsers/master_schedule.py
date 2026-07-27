@@ -97,27 +97,48 @@ class PilotMonthSchedule:
 
 # ── Public entry point ──────────────────────────────────────────────────
 def parse_master_schedule(pdf_path: str) -> dict[str, PilotMonthSchedule]:
-    """Parse a Final Awards PDF into one PilotMonthSchedule per pilot."""
-    with pdfplumber.open(pdf_path) as pdf:
-        table = pdf.pages[0].extract_tables()[0]
+    """Parse a Final Awards PDF into one PilotMonthSchedule per pilot.
 
-    year, month = _parse_year_month(table)
-    day_col_indexes = _identify_day_columns(table, month, year)
-    wd_col = _identify_wd_column(table)
-    bands = _identify_bands(table)
+    A page can carry more than one schedule grid: the FO award sometimes
+    prints a second UPGRADE table (pilots in upgrade training) below the
+    main lines grid, with its own header rows but the same layout. Every
+    grid on every page is parsed; the month/year come from the titled main
+    grid (the UPGRADE grid's title row has no month name). A table that
+    doesn't look like a schedule grid (no WD column / no day-of-week
+    header) is skipped."""
+    with pdfplumber.open(pdf_path) as pdf:
+        tables = [t for page in pdf.pages for t in page.extract_tables()]
+
+    year = month = 0
+    for table in tables:
+        try:
+            year, month = _parse_year_month(table)
+            break
+        except ValueError:
+            continue
+    if not (year and month):
+        raise ValueError("Could not parse year/month from Final Awards header")
 
     out: dict[str, PilotMonthSchedule] = {}
-    for band in bands:
-        sched = _build_pilot_schedule(
-            table=table,
-            band=band,
-            day_cols=day_col_indexes,
-            wd_col=wd_col,
-            year=year,
-            month=month,
-        )
-        if sched is not None:
-            out[sched.pilot_code] = sched
+    for table in tables:
+        try:
+            day_col_indexes = _identify_day_columns(table, month, year)
+            wd_col = _identify_wd_column(table)
+        except ValueError:
+            continue  # not a schedule grid (legend/footnote table)
+        if not day_col_indexes:
+            continue
+        for band in _identify_bands(table):
+            sched = _build_pilot_schedule(
+                table=table,
+                band=band,
+                day_cols=day_col_indexes,
+                wd_col=wd_col,
+                year=year,
+                month=month,
+            )
+            if sched is not None:
+                out[sched.pilot_code] = sched
     return out
 
 
@@ -296,7 +317,14 @@ def _extract_line_value(
     band: _Band,
     wd_col: int,
 ) -> Decimal:
-    """The WD column carries the monthly PCH total on one of the band's rows."""
+    """The WD column carries the monthly PCH total on one of the band's rows.
+
+    Some revisions also print the workday COUNT in the same column, above
+    the total — either stacked in one cell ("16\\n112.73") or on an earlier
+    row. The count always precedes the total, so the LAST numeric token in
+    the band's WD column is the total. (May/June-style PDFs print the total
+    alone; last-of-one is that same value.)"""
+    last: Decimal | None = None
     for ri in range(band.start_row, band.end_row):
         row = table[ri]
         if wd_col >= len(row):
@@ -304,11 +332,15 @@ def _extract_line_value(
         v = row[wd_col]
         if not v:
             continue
-        try:
-            return Decimal(v.strip())
-        except (InvalidOperation, AttributeError):
-            continue
-    return Decimal("0")
+        for token in v.split("\n"):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                last = Decimal(token)
+            except InvalidOperation:
+                continue
+    return last if last is not None else Decimal("0")
 
 
 # ── Cell parsing ────────────────────────────────────────────────────────
