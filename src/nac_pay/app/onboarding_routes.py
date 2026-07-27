@@ -109,6 +109,12 @@ def onboarding_profile_get(request: Request, error: str = "") -> HTMLResponse:
             "persisted": persisted,
             "fresh": fresh,
             "month_label": month_label,
+            # Single source of truth for the code widget's state — the
+            # template must use THIS, not recompute from persisted/form
+            # itself, or a route-side correction (like dropping a stale
+            # code below) never reaches the page. POST's _rerender feeds
+            # the same key for the same reason.
+            "pilot_id_value": pilot_id_value,
             "pilot_id_lastname": pilot_id_lastname,
             "active_screen": "onboarding",
             "form": None,
@@ -181,12 +187,14 @@ def onboarding_profile_post(
                 "persisted": load_persisted_profile(user_id),
                 "fresh": not PilotProfileStore(get_data_dir(), user_id).exists(),
                 "month_label": month_label,
+                # Same single-source-of-truth key as the GET handler.
+                "pilot_id_value": shown_pilot_id,
                 "pilot_id_lastname": (
                     directory.get(shown_pilot_id, "") if shown_pilot_id else ""
                 ),
                 "active_screen": "onboarding",
                 "form": {
-                    "name": name, "pilot_id": shown_pilot_id,
+                    "name": name,
                     "position": position, "hourly_rate": hourly_rate,
                 },
             },

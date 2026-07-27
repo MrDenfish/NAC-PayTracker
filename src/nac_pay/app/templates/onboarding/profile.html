@@ -14,9 +14,14 @@
   {% endif %}
 
   {% set name_value = form.name if form else (persisted.profile.name if not fresh else '') %}
-  {% set pilot_id_value = form.pilot_id if form else (persisted.profile.pilot_id if not fresh else '') %}
   {% set pos = form.position if form else (persisted.profile.position.value if not fresh else '') %}
   {% set hourly_value = form.hourly_rate if form else ('%.2f'|format(persisted.profile.hourly_rate) if not fresh else '') %}
+  {# pilot_id_value comes straight from the route context (GET and POST's
+     _rerender both compute it) — it is NOT recomputed here, since that
+     was exactly the bug: a route-side correction (dropping a code the
+     current directory no longer recognizes) never reached the page
+     when this template independently re-derived the value from
+     persisted/form. Single source of truth lives in onboarding_routes.py. #}
 
   <form action="/onboarding/profile" method="post" class="auth-form">
     <label>

@@ -223,6 +223,87 @@ def test_profile_post_code_not_on_directory_rerenders_with_error(monkeypatch):
     assert PilotProfileStore(get_data_dir(), uid).exists() is False
 
 
+# ── GET /onboarding/profile stale-code recoverability ────────────────
+
+
+def test_profile_get_existing_user_stale_code_is_recoverable(monkeypatch):
+    """An existing user's saved pilot_id that the CURRENTLY published FA
+    no longer recognizes (an admin republish that dropped them, or a
+    stale/corrected signup) must not render as a permanently disabled,
+    dead-end search box on GET — same recoverability guarantee as the
+    POST re-render paths. Regression test: a first fix pass added the
+    route-side correction but the template independently recomputed
+    pilot_id_value from persisted.profile.pilot_id, so the corrected
+    value never actually reached the page — verified dead live (saved
+    ZZZ + published FA without ZZZ = stuck disabled box, stale hidden
+    value, no Clear link)."""
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    client = TestClient(app)
+    uid = _signup_and_verify(client, "olga@example.com")
+
+    from decimal import Decimal
+
+    from nac_pay.schedule import PilotProfile, Position
+    from nac_pay.storage import PersistedPilotProfile, PilotProfileStore, get_data_dir
+
+    PilotProfileStore(get_data_dir(), uid).save(
+        PersistedPilotProfile(
+            profile=PilotProfile(
+                pilot_id="ZZZ", name="Olga Pilot",
+                position=Position.FO, hourly_rate=Decimal("140.00"),
+            ),
+        )
+    )
+    _publish_shared_current_month()  # fixture FA does not contain "ZZZ"
+
+    r = client.get("/onboarding/profile")
+    assert r.status_code == 200
+
+    lookup_input = re.search(r'<input[^>]*id="lastname-lookup"[^>]*>', r.text)
+    assert lookup_input is not None
+    assert "disabled" not in lookup_input.group(0)
+
+    hidden_input = re.search(r'<input[^>]*id="pilot-id"[^>]*>', r.text)
+    assert hidden_input is not None
+    assert 'value=""' in hidden_input.group(0)
+    assert "ZZZ" not in hidden_input.group(0)
+
+    # Name/position/rate prefill still shows — only the stale code drops.
+    assert 'value="Olga Pilot"' in r.text
+    assert 'value="140.00"' in r.text
+
+
+def test_profile_get_existing_user_code_kept_when_no_directory_published(monkeypatch):
+    """Counterpart to the stale-code test above: with NO shared FA
+    published at all, there is nothing to disprove the saved code against
+    — a missing FA month must not wipe an existing user's (e.g. the
+    author's own) valid code display."""
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    client = TestClient(app)
+    uid = _signup_and_verify(client, "peggy@example.com")
+
+    from decimal import Decimal
+
+    from nac_pay.schedule import PilotProfile, Position
+    from nac_pay.storage import PersistedPilotProfile, PilotProfileStore, get_data_dir
+
+    PilotProfileStore(get_data_dir(), uid).save(
+        PersistedPilotProfile(
+            profile=PilotProfile(
+                pilot_id="PEG", name="Peggy Pilot",
+                position=Position.FO, hourly_rate=Decimal("140.00"),
+            ),
+        )
+    )
+    # Deliberately no _publish_shared_current_month() call.
+
+    r = client.get("/onboarding/profile")
+    assert r.status_code == 200
+    hidden_input = re.search(r'<input[^>]*id="pilot-id"[^>]*>', r.text)
+    assert hidden_input is not None
+    assert 'value="PEG"' in hidden_input.group(0)
+
+
 def test_profile_post_blank_name_with_valid_code_keeps_clear_link(monkeypatch):
     """A DIFFERENT error (blank name) must not disturb an already-valid,
     directory-confirmed pilot_id: it stays shown, with its server-rendered
