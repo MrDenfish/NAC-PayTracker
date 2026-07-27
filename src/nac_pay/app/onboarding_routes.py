@@ -31,7 +31,12 @@ from nac_pay.storage import (
 )
 
 from .feed_updater import FeedFetchError, update_user_feed
-from .services import invalidate_caches, load_persisted_profile, shared_pilot_directory
+from .services import (
+    invalidate_caches,
+    load_persisted_profile,
+    normalize_name,
+    shared_pilot_directory,
+)
 from .static_version import register as _register_static_v
 
 _HERE = Path(__file__).resolve().parent
@@ -77,7 +82,15 @@ def onboarding_skip(request: Request) -> RedirectResponse:
 
 @router.get("/onboarding/profile", response_class=HTMLResponse)
 def onboarding_profile_get(request: Request, error: str = "") -> HTMLResponse:
-    persisted = load_persisted_profile(_user_id_for(request))
+    user_id = _user_id_for(request)
+    persisted = load_persisted_profile(user_id)
+    # Fresh (no saved profile row) users must see empty fields — falling
+    # back to the bundled DEFAULT_PERSISTED example profile's values here
+    # is exactly the "Fred Smith inherited DFI / 124.59" bug this fixes.
+    fresh = not PilotProfileStore(get_data_dir(), user_id).exists()
+    month_label, directory = shared_pilot_directory()
+    pilot_id_value = "" if fresh else persisted.profile.pilot_id
+    pilot_id_lastname = directory.get(pilot_id_value, "") if pilot_id_value else ""
     return _TEMPLATES.TemplateResponse(
         request,
         "onboarding/profile.html",
@@ -86,9 +99,10 @@ def onboarding_profile_get(request: Request, error: str = "") -> HTMLResponse:
             "step_total": 3,
             "error": error,
             "persisted": persisted,
+            "fresh": fresh,
+            "month_label": month_label,
+            "pilot_id_lastname": pilot_id_lastname,
             "active_screen": "onboarding",
-            "warn": "",
-            "confirmed_code": "",
             "form": None,
         },
     )
@@ -111,11 +125,11 @@ def onboarding_code_lookup(
         if c in directory:
             matches = [{"code": c, "last_name": directory[c]}]
     elif last_name.strip():
-        q = last_name.strip().lower()
+        q = normalize_name(last_name.strip())
         matches = [
             {"code": c, "last_name": ln}
             for c, ln in sorted(directory.items())
-            if ln.lower().startswith(q)
+            if normalize_name(ln).startswith(q)
         ][:10]
     return JSONResponse({"month_label": label, "matches": matches})
 
@@ -123,15 +137,47 @@ def onboarding_code_lookup(
 @router.post("/onboarding/profile", response_model=None)
 def onboarding_profile_post(
     request: Request,
-    name: str = Form(...),
-    pilot_id: str = Form(...),
-    position: str = Form(...),
-    hourly_rate: str = Form(...),
-    confirmed_code: str = Form(""),
+    # Form("") rather than Form(...): this FastAPI version treats an
+    # all-blank required Form field as "missing" (422) rather than an
+    # empty string, which would short-circuit before our own "Enter your
+    # display name" etc. validation ever ran. Required-ness is enforced
+    # by the checks below instead, so every blank-fields submission
+    # re-renders with a proper error banner, not a raw 422.
+    name: str = Form(""),
+    pilot_id: str = Form(""),
+    position: str = Form(""),
+    hourly_rate: str = Form(""),
 ) -> HTMLResponse | RedirectResponse:
     user_id = _user_id_for(request)
     if user_id is None:
         return RedirectResponse("/login", status_code=303)
+
+    pilot_id_clean = (pilot_id or "").strip().upper()
+
+    def _rerender(error: str) -> HTMLResponse:
+        month_label, directory = shared_pilot_directory()
+        return _TEMPLATES.TemplateResponse(
+            request, "onboarding/profile.html",
+            {
+                "step": 1, "step_total": 3, "error": error,
+                "persisted": load_persisted_profile(user_id),
+                "fresh": not PilotProfileStore(get_data_dir(), user_id).exists(),
+                "month_label": month_label,
+                "pilot_id_lastname": (
+                    directory.get(pilot_id_clean, "") if pilot_id_clean else ""
+                ),
+                "active_screen": "onboarding",
+                "form": {
+                    "name": name, "pilot_id": pilot_id_clean,
+                    "position": position, "hourly_rate": hourly_rate,
+                },
+            },
+        )
+
+    # A. All four step-1 fields are required, independent of the client
+    # `required` attributes (which a no-JS or scripted submit can bypass).
+    if not name.strip():
+        return _rerender("Enter your display name")
 
     try:
         position_enum = Position(position)
@@ -142,53 +188,36 @@ def onboarding_profile_post(
     try:
         rate = Decimal(hourly_rate)
     except InvalidOperation:
-        return RedirectResponse(
-            "/onboarding/profile?error=Enter+a+valid+hourly+rate",
-            status_code=303,
-        )
+        return _rerender("Enter a valid hourly rate")
     if rate <= 0:
-        return RedirectResponse(
-            "/onboarding/profile?error=Hourly+rate+must+be+positive",
-            status_code=303,
-        )
-    pilot_id_clean = (pilot_id or "").strip().upper()
+        return _rerender("Hourly rate must be positive")
+
     if len(pilot_id_clean) < 2 or len(pilot_id_clean) > 4:
         return RedirectResponse(
             "/onboarding/profile?error=Pilot+code+is+2-4+letters",
             status_code=303,
         )
 
-    # Non-JS warn-once gate: if the code isn't on the shared Final Award
-    # and the pilot hasn't already re-submitted past this same warning,
-    # re-render the form with a warning instead of saving straight through.
-    # JS users get the live inline check; this is the no-JS fallback.
+    # B. Find-my-Code is the ONLY path to a pilot_id — hard block. The
+    # submitted code must be on the currently-published shared Final
+    # Award; there is no warn-and-continue-anyway escape hatch anymore.
     label, directory = shared_pilot_directory()
-    if (
-        directory
-        and pilot_id_clean not in directory
-        and confirmed_code != pilot_id_clean
-    ):
-        return _TEMPLATES.TemplateResponse(
-            request, "onboarding/profile.html",
-            {
-                "step": 1, "step_total": 3, "error": "",
-                "persisted": load_persisted_profile(user_id),
-                "active_screen": "onboarding",
-                "warn": (
-                    f"Code {pilot_id_clean} was not found on the "
-                    f"{label} Final Award — double-check the code printed "
-                    "on your award sheet, or submit again to continue anyway."
-                ),
-                "confirmed_code": pilot_id_clean,
-                "form": {"name": name, "pilot_id": pilot_id_clean,
-                         "position": position, "hourly_rate": hourly_rate},
-            },
+    if not directory:
+        return _rerender(
+            "Signups need the current Final Award published to the site "
+            "— it isn't yet. Contact the site admin."
+        )
+    if pilot_id_clean not in directory:
+        return _rerender(
+            f"Code {pilot_id_clean} isn't on the {label} Final Award. "
+            "Use Find my code — or contact the site admin if your name "
+            "isn't listed."
         )
 
     current = load_persisted_profile(user_id)
     new_profile = PilotProfile(
         pilot_id=pilot_id_clean,
-        name=name.strip() or current.profile.name,
+        name=name.strip(),
         position=position_enum,
         hourly_rate=rate,
         fleet="737",

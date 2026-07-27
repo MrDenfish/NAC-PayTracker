@@ -7,10 +7,11 @@ import re
 from datetime import date
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from nac_pay.app.main import app
-from nac_pay.app.services import invalidate_caches, shared_pilot_directory
+from nac_pay.app.services import invalidate_caches, normalize_name, shared_pilot_directory
 from nac_pay.auth import find_by_email, get_email_sender
 from nac_pay.storage import SharedDocumentsStore, get_data_dir
 
@@ -140,14 +141,55 @@ def test_code_lookup_empty_when_no_shared_fa(monkeypatch):
     assert r.json() == {"month_label": "", "matches": []}
 
 
-# ── POST /onboarding/profile warn-once gate ──────────────────────────
-
-
-def test_profile_post_warns_once_then_accepts(monkeypatch):
+def test_code_lookup_last_name_normalized_prefix(monkeypatch):
+    """Last-name matching is normalized-prefix (accents/apostrophes/
+    hyphens/spaces folded), not a plain substring/prefix on the raw
+    stored text — a query with folded-away punctuation still matches."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     _publish_shared_current_month()
     client = TestClient(app)
-    _signup_and_verify(client, "sara@example.com")
+    _signup_and_verify(client, "uma@example.com")
+
+    # First 3 letters, lowercase — plain normalized-prefix case.
+    r = client.get("/onboarding/code-lookup?last_name=fis")
+    assert r.status_code == 200
+    codes = [m["code"] for m in r.json()["matches"]]
+    assert _KNOWN_CODE in codes
+
+    # A hyphen inserted mid-query is folded away by normalize_name before
+    # the prefix comparison, so it still matches the real (unhyphenated)
+    # fixture surname.
+    r2 = client.get("/onboarding/code-lookup?last_name=fi-sh")
+    assert r2.status_code == 200
+    codes2 = [m["code"] for m in r2.json()["matches"]]
+    assert _KNOWN_CODE in codes2
+
+
+# ── normalize_name ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Muñoz", "MUNOZ"),
+        ("O'Brien", "OBRIEN"),
+        ("Smith-Jones", "SMITHJONES"),
+        ("De La Cruz", "DELACRUZ"),
+        ("muñoz", "MUNOZ"),
+    ],
+)
+def test_normalize_name(raw: str, expected: str) -> None:
+    assert normalize_name(raw) == expected
+
+
+# ── POST /onboarding/profile hard block (Find-my-Code is the only path) ──
+
+
+def test_profile_post_code_not_on_directory_rerenders_with_error(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    _publish_shared_current_month()
+    client = TestClient(app)
+    uid = _signup_and_verify(client, "sara@example.com")
 
     r = client.post(
         "/onboarding/profile",
@@ -160,24 +202,36 @@ def test_profile_post_warns_once_then_accepts(monkeypatch):
         follow_redirects=False,
     )
     assert r.status_code == 200
-    assert "not found" in r.text
-    assert 'name="confirmed_code" value="ZZZ"' in r.text
-    # The typed values are preserved, not reset to the persisted defaults.
-    assert 'value="Sara Pilot"' in r.text
+    # Jinja auto-escapes the apostrophe in "isn't" (isn&#39;t) — assert on
+    # the surrounding text instead of the raw contraction.
+    assert "Code ZZZ" in r.text
+    assert "Final Award" in r.text
+    assert "Find my code" in r.text
 
-    r2 = client.post(
+    from nac_pay.storage import PilotProfileStore, get_data_dir
+    assert PilotProfileStore(get_data_dir(), uid).exists() is False
+
+
+def test_profile_post_no_shared_fa_rerenders_with_contact_admin(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    client = TestClient(app)
+    uid = _signup_and_verify(client, "seth@example.com")
+
+    r = client.post(
         "/onboarding/profile",
         data={
-            "name": "Sara Pilot",
-            "pilot_id": "ZZZ",
+            "name": "Seth Pilot",
+            "pilot_id": "SET",
             "position": "FO",
             "hourly_rate": "130.00",
-            "confirmed_code": "ZZZ",
         },
         follow_redirects=False,
     )
-    assert r2.status_code == 303
-    assert r2.headers["location"] == "/onboarding/feed"
+    assert r.status_code == 200
+    assert "Contact the site admin" in r.text
+
+    from nac_pay.storage import PilotProfileStore, get_data_dir
+    assert PilotProfileStore(get_data_dir(), uid).exists() is False
 
 
 def test_profile_post_known_code_passes_straight_through(monkeypatch):

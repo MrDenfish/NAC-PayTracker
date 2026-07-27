@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from datetime import date
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +15,34 @@ from nac_pay.auth import find_by_email, get_email_sender
 from nac_pay.onboarding import mark_completed, should_onboard
 from nac_pay.storage.db import session_scope
 from nac_pay.storage.db_models import UserRow
+
+# Fixture Final Award used to publish a shared directory so the hard-block
+# pilot-code check (Find-my-Code is the only path) has a real code to
+# accept. Same fixture + known code used by test_pilot_code_assist.py.
+_FA_FIXTURE = "MAY 2026 ANC 737 - FO FINAL AWARDS.pdf"
+_PACKET_FIXTURE = "MAY  2026  Trip Pairing Packet.pdf"
+_KNOWN_CODE = "DFI"
+
+
+def _fixture(name: str) -> bytes:
+    return (Path(__file__).resolve().parents[2] / "docs" / name).read_bytes()
+
+
+def _publish_shared_current_month() -> None:
+    from nac_pay.app.services import invalidate_caches
+    from nac_pay.storage import SharedDocumentsStore, get_data_dir
+
+    today = date.today()
+    s = SharedDocumentsStore(get_data_dir())
+    s.save_final_award(
+        today.year, today.month, "fa-shared.pdf",
+        _fixture(_FA_FIXTURE), uploaded_by="admin",
+    )
+    s.save_packet(
+        today.year, today.month, "packet-shared.pdf",
+        _fixture(_PACKET_FIXTURE), uploaded_by="admin",
+    )
+    invalidate_caches()
 
 
 def _verify_token(body: str) -> str:
@@ -122,7 +152,10 @@ def test_onboarding_landing_sends_completed_user_to_dashboard(monkeypatch):
 
 
 def test_profile_step_saves_pilot_id_and_advances(monkeypatch):
+    """Happy path: Find-my-Code is the only path, so the submitted
+    pilot_id must actually be on the published shared Final Award."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
+    _publish_shared_current_month()
     isolated = TestClient(app)
     uid = _signup_and_verify(isolated, "greg@example.com")
 
@@ -130,7 +163,7 @@ def test_profile_step_saves_pilot_id_and_advances(monkeypatch):
         "/onboarding/profile",
         data={
             "name": "Greg Pilot",
-            "pilot_id": "GRG",
+            "pilot_id": _KNOWN_CODE,
             "position": "FO",
             "hourly_rate": "130.00",
         },
@@ -142,8 +175,69 @@ def test_profile_step_saves_pilot_id_and_advances(monkeypatch):
     # Profile persisted with the entered pilot_id (uppercased).
     from nac_pay.app.services import load_persisted_profile
     p = load_persisted_profile(uid)
-    assert p.profile.pilot_id == "GRG"
+    assert p.profile.pilot_id == _KNOWN_CODE
     assert p.profile.name == "Greg Pilot"
+
+
+def test_profile_get_fresh_user_renders_empty_fields(monkeypatch):
+    """Regression test for the "Fred Smith" bug: a brand-new signup with
+    no profile row must NOT inherit the bundled example profile's values
+    (pilot code DFI, hourly rate 124.59) as prefilled input values."""
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    isolated = TestClient(app)
+    _signup_and_verify(isolated, "fred@example.com")
+
+    r = isolated.get("/onboarding/profile")
+    assert r.status_code == 200
+    assert 'value="DFI"' not in r.text
+    assert 'value="124.59"' not in r.text
+    assert "Select position" in r.text
+    assert 'placeholder="e.g. 124.59"' in r.text
+
+
+def test_profile_get_existing_user_keeps_prefill(monkeypatch):
+    """A user revisiting step 1 with an already-saved profile row (e.g.
+    the author's own account) still sees their saved values prefilled."""
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    isolated = TestClient(app)
+    uid = _signup_and_verify(isolated, "gina@example.com")
+
+    from decimal import Decimal
+
+    from nac_pay.schedule import PilotProfile, Position
+    from nac_pay.storage import PersistedPilotProfile, PilotProfileStore, get_data_dir
+
+    PilotProfileStore(get_data_dir(), uid).save(
+        PersistedPilotProfile(
+            profile=PilotProfile(
+                pilot_id="GNA", name="Gina Pilot",
+                position=Position.CPT, hourly_rate=Decimal("150.25"),
+            ),
+        )
+    )
+
+    r = isolated.get("/onboarding/profile")
+    assert r.status_code == 200
+    assert 'value="GNA"' in r.text
+    assert 'value="Gina Pilot"' in r.text
+    assert 'value="150.25"' in r.text
+
+
+def test_profile_post_blank_fields_rerenders_with_name_error(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    isolated = TestClient(app)
+    uid = _signup_and_verify(isolated, "harry@example.com")
+
+    r = isolated.post(
+        "/onboarding/profile",
+        data={"name": "", "pilot_id": "", "position": "", "hourly_rate": ""},
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert "Enter your display name" in r.text
+
+    from nac_pay.storage import PilotProfileStore, get_data_dir
+    assert PilotProfileStore(get_data_dir(), uid).exists() is False
 
 
 def test_profile_step_rejects_invalid_position(monkeypatch):
