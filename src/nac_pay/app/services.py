@@ -1088,6 +1088,12 @@ class DayDetailData:
     # Activity log on this date
     applied_events: tuple[AppliedEvent, ...]
 
+    # The packet's OWN §3.E trip PCH (max of the components + DH). May be less
+    # than effective_pch when actual operations (a longer actual block, a
+    # reassignment, or a callout) credited the greater value — the card notes
+    # that divergence instead of the footer silently mismatching its rows.
+    packet_trip_pch: Decimal | None = None
+
     # Editing — form options + saved-banner flag
     reason_options: tuple[FormOption, ...] = ()
     premium_options: tuple[FormOption, ...] = ()
@@ -1854,11 +1860,24 @@ def _build_day_detail(
             if actual_block is not None and sch_block is not None
             else None
         )
+        # Resolve the packet trip for the §3.E-components card. Prefer the
+        # feed-reconciled match; fall back to resolving it from the assignment
+        # id (feed-independent, via the packet catalog) so the card still shows
+        # once a day's legs have aged out of BlueOne's rolling feed window —
+        # the same fallback the "how it's credited" card already uses.
+        comp_packet = packet_trip
+        if comp_packet is None and trip is not None:
+            from nac_pay.schedule.apply_actuals import packet_trip_for_aid
+            comp_packet = packet_trip_for_aid(trip.trip_id, pr.packet)
         components = (
-            _packet_components(packet_trip) if packet_trip is not None else ()
+            _packet_components(comp_packet) if comp_packet is not None else ()
         )
-        in_packet = packet_trip is not None
-        packet_trip_id = packet_trip.trip_id if packet_trip else None
+        # The packet's OWN trip PCH (max of the components + DH) — for the card
+        # footer's note when the credited effective beat it (actual block /
+        # reassignment / callout).
+        packet_trip_pch = comp_packet.trip_pch_value if comp_packet is not None else None
+        in_packet = comp_packet is not None
+        packet_trip_id = comp_packet.trip_id if comp_packet else None
         versions = _build_history(
             published=published,
             effective=effective,
@@ -1898,6 +1917,7 @@ def _build_day_detail(
         components = ()
         in_packet = False
         packet_trip_id = None
+        packet_trip_pch = None
         # Render the pilot-version history on non-trip days too (OFF-day
         # pickups, lifted RSV/PTO/training). The "Original published"
         # baseline is the pre-pickup PCH preserved on the Day (0 for a
@@ -1936,6 +1956,7 @@ def _build_day_detail(
         components = ()
         in_packet = False
         packet_trip_id = None
+        packet_trip_pch = None
         versions = ()
 
     # The Assignment card shows the CURRENT assignment. Reassignment versions
@@ -2141,6 +2162,7 @@ def _build_day_detail(
         premium_multiplier=premium_multiplier,
         packet_trip_id=packet_trip_id,
         packet_components=components,
+        packet_trip_pch=packet_trip_pch,
         sch_block_hours=sch_block,
         sch_duty_hours=sch_duty,
         sch_tafb_hours=sch_tafb,
