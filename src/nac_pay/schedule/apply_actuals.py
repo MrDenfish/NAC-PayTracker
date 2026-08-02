@@ -73,7 +73,12 @@ from nac_pay.timeutil import local_date as _local_date
 from .labels import EntryMode, PremiumCategory, ReasonCode
 from .models import AssignmentVersion, Day, Month, Trip
 
-_DUTY_EXTENSION_TOLERANCE_HOURS: Decimal = Decimal("0.05")  # 3 minutes
+_DUTY_EXTENSION_TOLERANCE_HOURS: Decimal = Decimal("0.05")  # 3 minutes — the
+# noisier duty-rig path (built on ESTIMATED report/release padding) keeps this
+# wider guard so pad estimates don't spawn spurious versions.
+_BLOCK_EXTENSION_TOLERANCE_HOURS: Decimal = Decimal("0.01")  # ~0.6 min — actual
+# BLOCK is directly measured (iCal out/in), so a real minute-level overrun must
+# credit (§3.E flight-op = actual block); only sub-minute float noise is swallowed.
 
 
 class AppliedEventKind(StrEnum):
@@ -150,6 +155,7 @@ def apply_actuals_to_month(
     reconciliation: ReconciliationResult,
     *,
     duty_extension_tolerance_hours: Decimal = _DUTY_EXTENSION_TOLERANCE_HOURS,
+    block_extension_tolerance_hours: Decimal = _BLOCK_EXTENSION_TOLERANCE_HOURS,
     packet: dict | None = None,
     feed_reassignment_decisions: dict[tuple[str, str], str] | None = None,
     feed_reassignment_pch_overrides: dict[tuple[str, str], Decimal] | None = None,
@@ -209,6 +215,7 @@ def apply_actuals_to_month(
             baseline_trip = baseline.trips[idx]
             extended = _apply_duty_extension(
                 baseline_trip, rt, duty_extension_tolerance_hours, events,
+                block_extension_tolerance_hours,
             )
             if extended is not baseline_trip:
                 duty_extension_by_index[idx] = extended
@@ -218,14 +225,13 @@ def apply_actuals_to_month(
         ):
             # A callout is a protected trip — auto-credit the greater of the
             # published value and the §3.E recompute from actual times (a long
-            # callout / duty extension), same as a matched trip gets.
-            recomputed = _recomputed_actual_pch(rt)
-            callout_pch = rt.published_pch
-            if (
-                recomputed is not None
-                and recomputed > rt.published_pch + duty_extension_tolerance_hours
-            ):
-                callout_pch = recomputed
+            # callout / duty extension), same as a matched trip gets. Block and
+            # duty-rig carry their own tolerances (see _extension_recompute).
+            recomputed = _extension_recompute(
+                rt, rt.published_pch,
+                block_extension_tolerance_hours, duty_extension_tolerance_hours,
+            )
+            callout_pch = recomputed if recomputed is not None else rt.published_pch
             callout_pch_by_date[first_date] = callout_pch
             callout_published_by_date[first_date] = rt.published_pch
             callout_aid_by_date[first_date] = rt.trip_id
@@ -925,23 +931,48 @@ def _actual_duty_hours(rt: ReconciledTrip) -> Decimal:
     return Decimal(seconds) / Decimal("3600")
 
 
-def _recomputed_actual_pch(rt: ReconciledTrip) -> Decimal | None:
-    """§3.E PCH recomputed from ACTUAL iCal times — the greater of actual
-    flight-op (block) and actual duty rig (padded duty ÷ 2), plus trip rig /
-    cumulative DPG / deadhead from the packet (the feed doesn't publish TAFB
-    or DH separately). None when there's no matched packet to source those.
+def _recomputed_actual_components(rt: ReconciledTrip):
+    """§3.E components recomputed from ACTUAL iCal times — actual flight-op
+    (block) and actual duty rig (padded duty ÷ 2), plus trip rig / cumulative
+    DPG / deadhead from the packet (the feed doesn't publish TAFB or DH
+    separately). None when there's no matched packet to source those.
     """
     packet = rt.packet_trip
     if packet is None:
         return None
-    recomputed = components_from_times(
+    return components_from_times(
         block_hours=rt.actual_block_hours,
         duty_hours=_actual_duty_hours(rt),
         tafb_hours=packet.tafb_hours,
         workdays=packet.workdays,
         deadhead=packet.deadhead_pch,
     )
-    return recomputed.trip_pch
+
+
+def _extension_recompute(
+    rt: ReconciledTrip,
+    published_pch: Decimal,
+    block_tolerance_hours: Decimal,
+    duty_tolerance_hours: Decimal,
+) -> Decimal | None:
+    """Return the §3.E recompute-from-actuals value when it beats
+    ``published_pch`` past the appropriate tolerance, else None.
+
+    The two actual-driven components carry DIFFERENT tolerances: actual BLOCK
+    (directly measured out/in times) credits past a tight ``block_tolerance``,
+    while actual DUTY-RIG (built on estimated report/release padding) keeps the
+    wider ``duty_tolerance``. Trip-rig / cumulative-DPG / deadhead come from the
+    packet and are already ≤ published (published = the packet's trip PCH), so
+    they never independently trigger. When either drive clears its tolerance the
+    credited value is the full greatest-of recompute (``trip_pch``)."""
+    comp = _recomputed_actual_components(rt)
+    if comp is None:
+        return None
+    block_beats = comp.flight_op > published_pch + block_tolerance_hours
+    duty_beats = comp.duty_rig > published_pch + duty_tolerance_hours
+    if not (block_beats or duty_beats):
+        return None
+    return comp.trip_pch
 
 
 def _apply_duty_extension(
@@ -949,24 +980,26 @@ def _apply_duty_extension(
     rt: ReconciledTrip,
     tolerance_hours: Decimal,
     events: list[AppliedEvent],
+    block_tolerance_hours: Decimal = _BLOCK_EXTENSION_TOLERANCE_HOURS,
 ) -> Trip:
     """Auto-credit a duty extension: recompute §3.E PCH from the ACTUAL iCal
-    times (padded duty rig + block) and, if it beats the published value by
-    more than the tolerance, append an AssignmentVersion so the engine's
+    times (padded duty rig + block) and, if it beats the published value past
+    the relevant tolerance, append an AssignmentVersion so the engine's
     ``Trip.effective_pch`` pays ``max(published, recomputed)``. Otherwise
     return the baseline Trip unchanged.
 
     Triggered by either a longer actual block OR a longer actual duty (the
-    rig over the report→release window) — previously only a block overrun
-    triggered, which missed extensions driven by ground/duty time.
+    rig over the report→release window). Block (directly measured) credits past
+    a tight ``block_tolerance``; duty-rig (estimated padding) keeps the wider
+    ``tolerance_hours`` — see :func:`_extension_recompute`.
     """
     packet = rt.packet_trip
     assert packet is not None  # MatchStatus.MATCHED implies packet_trip set
 
-    recomputed_pch = _recomputed_actual_pch(rt)
+    recomputed_pch = _extension_recompute(
+        rt, baseline_trip.published_pch, block_tolerance_hours, tolerance_hours,
+    )
     if recomputed_pch is None:
-        return baseline_trip
-    if recomputed_pch <= baseline_trip.published_pch + tolerance_hours:
         return baseline_trip
 
     new_version = AssignmentVersion(
