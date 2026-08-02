@@ -273,9 +273,9 @@ def test_no_event_when_actual_block_matches_packet():
     assert all(e.kind is not AppliedEventKind.DUTY_EXTENSION for e in events)
 
 
-def test_sub_tolerance_extension_does_not_trigger():
-    """A 2-minute (0.033h) overrun shouldn't bump anything — below the
-    3-minute default tolerance."""
+def test_sub_block_tolerance_extension_does_not_trigger():
+    """A sub-minute (0.005h) block diff is float noise, not a real overrun —
+    it stays below the tight block tolerance and doesn't churn a version."""
     baseline_trip = Trip(
         trip_id="766",
         published_pch=D("4.17"),
@@ -283,7 +283,54 @@ def test_sub_tolerance_extension_does_not_trigger():
         workdays=1,
     )
     baseline = _empty_month(trips=(baseline_trip,))
-    rt = _matched_trip("766", actual_block="4.20")    # +0.03h over 4.17
+    rt = _matched_trip("766", actual_block="4.175")   # +0.005h — sub-minute noise
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
+    assert updated.trips[0].versions == ()
+
+
+def test_small_block_overrun_within_old_duty_tolerance_credits():
+    """The Aug 1 720/1780 case: actual BLOCK 6.12 vs published 6.08 — a real
+    ~2.4-min flight-op overrun that the old 0.05 duty tolerance swallowed
+    (effective stuck at 6.08). Block is directly measured, so it credits past
+    the tight block tolerance: effective_pch must be 6.12."""
+    baseline_trip = Trip(
+        trip_id="720/1780",
+        published_pch=D("6.08"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+    )
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _matched_trip(
+        "720/1780", packet_pch="6.08", packet_block="6.08",
+        packet_duty="11.42", actual_block="6.12",
+    )
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
+    trip = updated.trips[0]
+    assert trip.effective_pch == D("6.12")
+    assert any(e.kind is AppliedEventKind.DUTY_EXTENSION for e in events)
+
+
+def test_small_duty_rig_overrun_keeps_wider_tolerance():
+    """The duty-rig path (built on estimated report/release padding) keeps the
+    wider 0.05 tolerance — a duty-only overrun that clears the block tolerance
+    but not the duty tolerance must NOT trigger. Block flown as scheduled
+    (4.17); padded duty 8.42h → rig 4.21, only +0.04 over published 4.17."""
+    baseline_trip = Trip(
+        trip_id="766",
+        published_pch=D("4.17"),
+        reason_code=ReasonCode.FLOWN,
+        workdays=1,
+    )
+    baseline = _empty_month(trips=(baseline_trip,))
+    # span 7.17h + 1.25h pad = 8.42h duty → rig 4.21 (published + 0.04, < 0.05);
+    # block held at 4.17 so only the sub-tolerance duty-rig could trigger.
+    rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="7.17")
     reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
 
     updated, events, _ = apply_actuals_to_month(baseline, reconciliation)
