@@ -208,10 +208,21 @@ def normalize_name(s: str) -> str:
     return folded.upper()
 
 
+@dataclass(frozen=True)
+class PilotDirectoryEntry:
+    code: str
+    last_name: str
+    position: str      # "FO" / "CPT" / "" — the seat the code belongs to
+
+
 def shared_pilot_directory(
     today: date_t | None = None,
-) -> tuple[str, dict[str, str]]:
-    """(month_label, {pilot_code: last_name}) from the shared Final Award.
+) -> tuple[str, tuple[PilotDirectoryEntry, ...]]:
+    """(month_label, entries) from the shared Final Award, one entry per
+    (pilot_code, seat). A 3-letter code is only unique WITHIN a seat, so the
+    same code can appear on both the FO and CA sheets as two different pilots
+    (e.g. PBG = BAGIAN/FO and BIAGIONI/CPT); both are returned as distinct
+    entries rather than one silently shadowing the other.
 
     Month-selection rule, in priority order:
       1. The current month's shared FA, if published.
@@ -228,17 +239,23 @@ def shared_pilot_directory(
     shared = SharedDocumentsStore(get_data_dir())
     months = shared.months_with_full_set()           # newest first
     if not months:
-        return ("", {})
+        return ("", ())
     past = [(y, m) for (y, m) in months if (y, m) <= (today.year, today.month)]
     year, month = past[0] if past else months[-1]
-    directory: dict[str, str] = {}
+    # Keyed by (code, seat) so both PBG pilots survive; slot order means a
+    # later slot only replaces a same-(code, seat) entry, never the other seat.
+    by_key: dict[tuple[str, str], PilotDirectoryEntry] = {}
     for rec in shared.list_final_awards(year, month):
         try:
             grids = _parse_master_schedule(str(rec.path))
         except Exception:                            # a bad slot never breaks signup
             continue
-        directory.update({code: s.last_name for code, s in grids.items()})
-    return (f"{_MONTH_NAMES[month]} {year}", directory)
+        for code, s in grids.items():
+            by_key[(code, s.position)] = PilotDirectoryEntry(
+                code=code, last_name=s.last_name, position=s.position,
+            )
+    entries = tuple(sorted(by_key.values(), key=lambda e: (e.code, e.position)))
+    return (f"{_MONTH_NAMES[month]} {year}", entries)
 
 
 # ── Shared pipeline result ─────────────────────────────────────────────
@@ -409,6 +426,34 @@ def _parse_trip_pairing_packet(path: str) -> dict[str, TripPairing]:
     return dict(_parse_trip_pairing_packet_cached(path, st.st_mtime_ns, st.st_size))
 
 
+def _fa_grids_by_seat(fa_paths) -> dict[tuple[str, str], object]:
+    """Merge the shared/personal FA slots into one dict keyed by
+    (pilot_code, seat). Keying by seat (not bare code) keeps two pilots who
+    share a 3-letter code across the FO and CA sheets from shadowing each
+    other; a later slot only replaces a same-(code, seat) entry. The per-file
+    parse is cached in ``_parse_master_schedule`` (by mtime), so this stays
+    cheap without a cache of its own."""
+    grids: dict[tuple[str, str], object] = {}
+    for p in fa_paths:  # slot order
+        for code, s in _parse_master_schedule(str(p)).items():
+            grids[(code, s.position)] = s
+    return grids
+
+
+def _resolve_pilot_schedule(grids: dict[tuple[str, str], object], code: str, position):
+    """Resolve a pilot's schedule seat-aware, with a safe fallback. Prefer the
+    exact (code, seat) match; else, when the code is unique across seats (seat
+    undetected on the sheet, a single-seat month, or a legacy profile with no
+    recorded seat), fall back to that sole entry. A colliding code with no
+    seat match resolves to None (correctly "not found")."""
+    pos = getattr(position, "value", position) or ""
+    exact = grids.get((code, pos))
+    if exact is not None:
+        return exact
+    same_code = [s for (c, _), s in grids.items() if c == code]
+    return same_code[0] if len(same_code) == 1 else None
+
+
 @lru_cache(maxsize=64)
 def _pipeline(
     year: int,
@@ -429,16 +474,15 @@ def _pipeline(
     pilot = persisted.profile
     pilot_code = pilot.pilot_id
 
-    fa_grids: dict[str, object] = {}
-    for p in fa_paths:  # slot order; later slot wins a duplicate pilot code
-        fa_grids.update(_parse_master_schedule(str(p)))
-    sched = fa_grids.get(pilot_code)
+    fa_grids = _fa_grids_by_seat(fa_paths)
+    sched = _resolve_pilot_schedule(fa_grids, pilot_code, pilot.position)
     if sched is None:
         fa_names = ", ".join(p.name for p in fa_paths)
+        available = sorted(f"{c}/{pos or '?'}" for (c, pos) in fa_grids)
         raise MonthDataError(
             "pilot_not_found", year, month,
-            f"Pilot {pilot_code} not found in {fa_names}. "
-            f"Available: {sorted(fa_grids)}",
+            f"Pilot {pilot_code} ({pilot.position}) not found in {fa_names}. "
+            f"Available: {available}",
             pilot_code=pilot_code,
         )
     baseline, _warnings = month_from_master_schedule(sched, pilot)
