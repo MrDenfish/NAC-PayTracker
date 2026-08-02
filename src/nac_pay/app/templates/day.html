@@ -379,11 +379,19 @@
       </tbody>
       <tfoot>
         <tr>
-          <td>Trip PCH = max + DH</td>
+          <td>Credited (effective) PCH</td>
           <td class="num strong">{{ "%.2f"|format(data.effective_pch) }}</td>
         </tr>
       </tfoot>
     </table>
+    {% if data.packet_trip_pch is not none and data.effective_pch is not none
+          and data.effective_pch - data.packet_trip_pch > 0.005 %}
+    <p class="form-hint">
+      Packet §3.E trip PCH is {{ "%.2f"|format(data.packet_trip_pch) }}
+      (max component + DH); actual operations credited the greater
+      {{ "%.2f"|format(data.effective_pch) }} — §3.E pays the greater.
+    </p>
+    {% endif %}
   </div>
   {% endif %}
 

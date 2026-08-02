@@ -97,6 +97,14 @@ def test_load_day_flt_pulls_packet_components():
     assert winning[0].label == "Flight Operation"
     assert winning[0].pch == Decimal("4.17")
 
+    # The card footer is the PACKET's own §3.E trip PCH (max component + DH),
+    # not the credited effective — so it always reflects the rows above it.
+    # Flown-as-scheduled here, so they coincide (no divergence note).
+    non_dh = [c.pch for c in d.packet_components if c.label != "Deadhead"]
+    dh = next(c.pch for c in d.packet_components if c.label == "Deadhead")
+    assert d.packet_trip_pch == max(non_dh) + dh == Decimal("4.17")
+    assert d.packet_trip_pch == d.effective_pch   # no actual/reassignment uplift
+
 
 def test_load_day_flt_includes_ical_legs():
     """June 12 has 3 legs in the iCal sample (768 ANC-BRW, 768 BRW-SCC,
