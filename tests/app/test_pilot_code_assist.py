@@ -78,14 +78,15 @@ def test_shared_pilot_directory_prefers_current_then_falls_back():
     _publish_shared(2026, 5)
     label, directory = shared_pilot_directory(today=date(2026, 7, 1))
     assert "May 2026" in label
-    assert all(len(code) <= 4 for code in directory)
+    assert all(len(e.code) <= 4 for e in directory)
+    assert all(e.position == "FO" for e in directory)   # May FA is the FO sheet
     assert directory
 
 
 def test_shared_pilot_directory_empty_when_nothing_published():
     label, directory = shared_pilot_directory(today=date(2026, 7, 1))
     assert label == ""
-    assert directory == {}
+    assert directory == ()
 
 
 def test_shared_pilot_directory_future_only_still_used():

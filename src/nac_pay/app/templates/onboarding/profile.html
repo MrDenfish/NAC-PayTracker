@@ -73,6 +73,13 @@
   var results = document.getElementById('lookup-results');
   var hidden = document.getElementById('pilot-id');
   var hint = document.getElementById('code-hint');
+  var posSelect = document.querySelector('select[name="position"]');
+
+  function seatName(pos) {
+    if (pos === 'FO') return 'First Officer';
+    if (pos === 'CPT') return 'Captain';
+    return '';
+  }
 
   function bindClear() {
     var link = document.getElementById('clear-code');
@@ -89,11 +96,16 @@
     if (search) { search.disabled = false; search.value = ''; search.focus(); }
   }
 
-  function selectMatch(code, lastName, label) {
+  function selectMatch(code, lastName, label, position) {
     if (hidden) hidden.value = code;
+    // Lock the seat the picked pilot belongs to, so a code shared across
+    // seats can't be submitted against the wrong position.
+    if (position && posSelect) posSelect.value = position;
+    var seat = seatName(position);
     if (hint) {
       hint.innerHTML = '<span class="confirm-check">&#10003;</span> ' + code +
-        ' — matches ' + lastName + ' on the ' + label + ' Final Award' +
+        ' — matches ' + lastName + (seat ? ' (' + seat + ')' : '') +
+        ' on the ' + label + ' Final Award' +
         '&nbsp;<a href="#" id="clear-code" class="link-button">Clear</a>';
       bindClear();
     }
@@ -113,9 +125,10 @@
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'link-button lookup-row';
-      btn.textContent = m.code + ' — ' + m.last_name;
+      var seat = seatName(m.position);
+      btn.textContent = m.code + ' — ' + m.last_name + (seat ? ' (' + seat + ')' : '');
       btn.addEventListener('click', function () {
-        selectMatch(m.code, m.last_name, label);
+        selectMatch(m.code, m.last_name, label, m.position);
       });
       results.appendChild(btn);
     });
@@ -144,7 +157,17 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.matches && d.matches.length) {
-          selectMatch(d.matches[0].code, d.matches[0].last_name, d.month_label);
+          // A shared code returns both seats — keep the one matching the
+          // pilot's already-selected position (from a saved profile / rerender).
+          var want = posSelect ? posSelect.value : '';
+          var m = null;
+          if (want) {
+            for (var i = 0; i < d.matches.length; i++) {
+              if (d.matches[i].position === want) { m = d.matches[i]; break; }
+            }
+          }
+          m = m || d.matches[0];
+          selectMatch(m.code, m.last_name, d.month_label, m.position);
         }
       })
       .catch(function () {});

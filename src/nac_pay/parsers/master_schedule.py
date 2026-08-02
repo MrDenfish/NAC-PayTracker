@@ -89,6 +89,7 @@ class PilotMonthSchedule:
     line_value: Decimal
     monthly_floor: Decimal      # max(line_value, MPG)
     days: tuple[DayCell, ...]   # one per scheduled day (1..N for the month)
+    position: str = ""          # seat from the grid title: "FO" / "CPT" / "" (unknown)
 
     @property
     def assigned_days(self) -> tuple[DayCell, ...]:
@@ -119,6 +120,16 @@ def parse_master_schedule(pdf_path: str) -> dict[str, PilotMonthSchedule]:
     if not (year and month):
         raise ValueError("Could not parse year/month from Final Awards header")
 
+    # Seat (FO/CPT) qualifies the pilot code — codes are only unique within a
+    # seat, so two pilots can share a 3-letter code across the FO and CA sheets.
+    # The seat is in each grid's title; an UPGRADE sub-grid (no seat in its
+    # title) inherits the document's seat from the first titled grid.
+    doc_position = ""
+    for table in tables:
+        doc_position = _parse_position(table)
+        if doc_position:
+            break
+
     out: dict[str, PilotMonthSchedule] = {}
     for table in tables:
         try:
@@ -128,6 +139,7 @@ def parse_master_schedule(pdf_path: str) -> dict[str, PilotMonthSchedule]:
             continue  # not a schedule grid (legend/footnote table)
         if not day_col_indexes:
             continue
+        grid_position = _parse_position(table) or doc_position
         for band in _identify_bands(table):
             sched = _build_pilot_schedule(
                 table=table,
@@ -136,6 +148,7 @@ def parse_master_schedule(pdf_path: str) -> dict[str, PilotMonthSchedule]:
                 wd_col=wd_col,
                 year=year,
                 month=month,
+                position=grid_position,
             )
             if sched is not None:
                 out[sched.pilot_code] = sched
@@ -143,6 +156,19 @@ def parse_master_schedule(pdf_path: str) -> dict[str, PilotMonthSchedule]:
 
 
 # ── Header parsing ──────────────────────────────────────────────────────
+def _parse_position(table: list[list[str | None]]) -> str:
+    """Seat from the grid title ('MAY - First Officer Lines' → 'FO';
+    '... Captain Lines' → 'CPT'). Returns '' when the title names no seat
+    (e.g. an UPGRADE sub-grid, or a non-schedule table). Matches the
+    ``Position`` StrEnum values so downstream can key by (code, position)."""
+    title = " ".join(c for c in (table[0] or []) if c).upper() if table else ""
+    if "CAPTAIN" in title or "CPT" in title:
+        return "CPT"
+    if "FIRST OFFICER" in title or "F/O" in title:
+        return "FO"
+    return ""
+
+
 def _parse_year_month(table: list[list[str | None]]) -> tuple[int, int]:
     """Extract month from page title ('MAY - First Officer Lines') and
     year from the revision date stamp ('4/19/2026 12:19')."""
@@ -263,6 +289,7 @@ def _build_pilot_schedule(
     wd_col: int,
     year: int,
     month: int,
+    position: str = "",
 ) -> PilotMonthSchedule | None:
     code = (table[band.code_row][0] or "").strip()
     if not code:
@@ -292,6 +319,7 @@ def _build_pilot_schedule(
         line_value=line_value,
         monthly_floor=floor,
         days=tuple(days),
+        position=position,
     )
 
 

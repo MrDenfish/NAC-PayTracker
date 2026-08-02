@@ -16,7 +16,7 @@ import pytest
 
 from nac_pay.engine.constants import MPG
 from nac_pay.parsers import parse_master_schedule
-from nac_pay.parsers.master_schedule import _parse_cell
+from nac_pay.parsers.master_schedule import _parse_cell, _parse_position
 
 
 # ── _parse_cell: wrapped assignment-ID reassembly ───────────────────────
@@ -42,6 +42,24 @@ def test_parse_cell_single_token_assignment_unchanged():
     cell = _parse_cell("768\nFLT\n5.33")
     assert cell.assignment_id == "768"
 
+
+# ── _parse_position: seat from the grid title ───────────────────────────
+
+
+def test_parse_position_first_officer():
+    assert _parse_position([["MAY - First Officer Lines"], []]) == "FO"
+
+
+def test_parse_position_captain():
+    assert _parse_position([["MAY - Captain Lines"], []]) == "CPT"
+
+
+def test_parse_position_unknown_is_blank():
+    # An UPGRADE sub-grid title carries no seat; a bare/blank title too.
+    assert _parse_position([["UPGRADE"], []]) == ""
+    assert _parse_position([[None], []]) == ""
+
+
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 MAY_PDF = DOCS / "MAY 2026 ANC 737 - FO FINAL AWARDS.pdf"
 JUN_PDF = DOCS / "JUNE 2026 ANC 737 - FIRST OFFICER FINAL AWARDS.pdf"
@@ -57,6 +75,13 @@ def may_pilots():
 
 def test_may_parses_15_pilots(may_pilots):
     assert len(may_pilots) == 15
+
+
+def test_may_pilots_carry_fo_position(may_pilots):
+    """Every band on the FO Final Award parses with seat FO (from the grid
+    title), so downstream can key (code, position) without collisions."""
+    assert may_pilots
+    assert all(s.position == "FO" for s in may_pilots.values())
 
 
 def test_may_year_and_month_inferred(may_pilots):

@@ -52,6 +52,21 @@ def _user_id_for(request: Request) -> str | None:
     return request.session.get("user_id")
 
 
+def _directory_lastname(entries, code: str, position: str) -> str:
+    """Last name for a (code, seat) in the shared directory. Prefer the exact
+    seat; fall back to the code alone (single-seat, or seat not yet chosen) so
+    a returning pilot's confirmation still renders."""
+    if not code:
+        return ""
+    exact = next(
+        (e for e in entries if e.code == code and e.position == position), None
+    )
+    if exact is not None:
+        return exact.last_name
+    any_seat = next((e for e in entries if e.code == code), None)
+    return any_seat.last_name if any_seat is not None else ""
+
+
 # ── Step router ──────────────────────────────────────────────────────
 
 
@@ -88,17 +103,19 @@ def onboarding_profile_get(request: Request, error: str = "") -> HTMLResponse:
     # back to the bundled DEFAULT_PERSISTED example profile's values here
     # is exactly the "Fred Smith inherited DFI / 124.59" bug this fixes.
     fresh = not PilotProfileStore(get_data_dir(), user_id).exists()
-    month_label, directory = shared_pilot_directory()
+    month_label, entries = shared_pilot_directory()
     pilot_id_value = "" if fresh else persisted.profile.pilot_id
+    saved_pos = "" if fresh else getattr(persisted.profile.position, "value", "")
     # A saved code the CURRENT shared FA no longer recognizes (a stale
     # signup, or an admin republish that dropped the pilot) would otherwise
     # render the last-name search permanently disabled with no way to
     # recover it — drop it so the search re-enables. Only when we actually
     # have a directory to check against; an unpublished FA can't disprove
     # anything, so a persisted code still shows in that case.
-    if directory and pilot_id_value and pilot_id_value not in directory:
+    codes = {e.code for e in entries}
+    if entries and pilot_id_value and pilot_id_value not in codes:
         pilot_id_value = ""
-    pilot_id_lastname = directory.get(pilot_id_value, "") if pilot_id_value else ""
+    pilot_id_lastname = _directory_lastname(entries, pilot_id_value, saved_pos)
     return _TEMPLATES.TemplateResponse(
         request,
         "onboarding/profile.html",
@@ -132,18 +149,22 @@ def onboarding_code_lookup(
     """Live check against the shared Final Award — exact code match, or a
     case-insensitive last-name prefix search (max 10). Backs the "Find my
     code" helper and the inline check on step 1."""
-    label, directory = shared_pilot_directory()
+    label, entries = shared_pilot_directory()
     matches: list[dict[str, str]] = []
     if code.strip():
         c = code.strip().upper()
-        if c in directory:
-            matches = [{"code": c, "last_name": directory[c]}]
+        # A code shared across seats returns BOTH pilots — the UI shows each
+        # tagged by seat so the pilot picks the right one.
+        matches = [
+            {"code": e.code, "last_name": e.last_name, "position": e.position}
+            for e in entries if e.code == c
+        ]
     elif last_name.strip():
         q = normalize_name(last_name.strip())
         matches = [
-            {"code": c, "last_name": ln}
-            for c, ln in sorted(directory.items())
-            if normalize_name(ln).startswith(q)
+            {"code": e.code, "last_name": e.last_name, "position": e.position}
+            for e in entries
+            if normalize_name(e.last_name).startswith(q)
         ][:10]
     return JSONResponse({"month_label": label, "matches": matches})
 
@@ -169,7 +190,7 @@ def onboarding_profile_post(
     pilot_id_clean = (pilot_id or "").strip().upper()
 
     def _rerender(error: str) -> HTMLResponse:
-        month_label, directory = shared_pilot_directory()
+        month_label, entries = shared_pilot_directory()
         # A carried pilot_id the CURRENT directory has just proven invalid
         # (rejected code, malformed shape) must not render as a disabled,
         # dead-end search box — the error banner already explains why, so
@@ -177,8 +198,9 @@ def onboarding_profile_post(
         # into reloading and losing name/position/rate. A code the
         # directory HASN'T disproven (still a match, or nothing published
         # to check against) stays shown.
+        codes = {e.code for e in entries}
         shown_pilot_id = pilot_id_clean
-        if directory and pilot_id_clean and pilot_id_clean not in directory:
+        if entries and pilot_id_clean and pilot_id_clean not in codes:
             shown_pilot_id = ""
         return _TEMPLATES.TemplateResponse(
             request, "onboarding/profile.html",
@@ -189,8 +211,8 @@ def onboarding_profile_post(
                 "month_label": month_label,
                 # Same single-source-of-truth key as the GET handler.
                 "pilot_id_value": shown_pilot_id,
-                "pilot_id_lastname": (
-                    directory.get(shown_pilot_id, "") if shown_pilot_id else ""
+                "pilot_id_lastname": _directory_lastname(
+                    entries, shown_pilot_id, position,
                 ),
                 "active_screen": "onboarding",
                 "form": {
@@ -223,8 +245,8 @@ def onboarding_profile_post(
     # (checked first) used to be masked by the shape-check redirect firing
     # on the inevitably-blank pilot_id, which also discarded the pilot's
     # other preserved fields via a redirect instead of a re-render.
-    label, directory = shared_pilot_directory()
-    if not directory:
+    label, entries = shared_pilot_directory()
+    if not entries:
         return _rerender(
             "Signups need the current Final Award published to the site "
             "— it isn't yet. Contact the site admin."
@@ -233,11 +255,28 @@ def onboarding_profile_post(
         return _rerender("Use Find my code to select your pilot code.")
     if len(pilot_id_clean) < 2 or len(pilot_id_clean) > 4:
         return _rerender("Pilot code is 2-4 letters")
-    if pilot_id_clean not in directory:
+    if pilot_id_clean not in {e.code for e in entries}:
         return _rerender(
             f"Code {pilot_id_clean} isn't on the {label} Final Award. "
             "Use Find my code — or contact the site admin if your name "
             "isn't listed."
+        )
+    # Seat-aware: a code shared across seats (e.g. PBG = a Captain AND a First
+    # Officer) must match the position the pilot chose, so the CA pilot can't
+    # sign up as the FO pilot with the same code. A seat-less entry ("" — an
+    # older sheet whose title lacked a seat) matches any position (the code is
+    # then unique anyway, per the resolver's fallback).
+    pos_str = position_enum.value
+    if not any(
+        e.code == pilot_id_clean and e.position in (pos_str, "")
+        for e in entries
+    ):
+        other = next((e for e in entries if e.code == pilot_id_clean), None)
+        seat = {"FO": "First Officer", "CPT": "Captain"}
+        return _rerender(
+            f"Code {pilot_id_clean} is a {seat.get(other.position, other.position)} "
+            f"code on the {label} Final Award, but you selected "
+            f"{seat.get(pos_str, pos_str)}. Use Find my code to pick the right seat."
         )
 
     current = load_persisted_profile(user_id)
