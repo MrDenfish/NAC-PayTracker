@@ -12,7 +12,7 @@
 
 **What this program does:** It tracks a pilot's monthly pay per Section 3, using the company's own published values as the baseline and only recomputing when actual operations deviate. It also runs a one-time-per-month validation check that recomputes the contract's pay formulas from the packet's raw times and flags any discrepancy against the published values.
 
-**Distribution model:** A **public-signup, subscription-funded SaaS** (NAC Pay Tracker). Anyone — initially the author, eventually any NAC pilot — creates an account with email + password and runs the tool against their own monthly schedule and pay. Account-isolated: each user uploads their own Final Award / Trip Pairing Packet / iCal feed, and their data is namespaced per-user; no operator-visible BlueOne credentials, no shared data. Local-development mode bundles the author's own May/June 2026 documents under a default user for offline iteration. See §14 for the SaaS wrapper architecture.
+**Distribution model:** A **public-signup, subscription-funded SaaS** (NAC Pay Tracker). Anyone — initially the author, eventually any NAC pilot — creates an account with email + password and runs the tool against their own monthly schedule and pay. Account-isolated: since the **2026-07-26 onboarding overhaul**, an admin publishes each month's Final Award + Trip Pairing Packet **centrally** (see §10), and every pilot resolves to those shared copies unless they upload their own override; the **iCal feed is always per-user** (it carries one pilot's live actuals). Data is namespaced per-user; no operator-visible BlueOne credentials. Local-development mode bundles the author's own documents under a default user for offline iteration. See §14 for the SaaS wrapper architecture.
 
 **What it is NOT:**
 - **Not a system of record for actual pay.** It's an *independent informational tracker* the pilot uses to estimate and verify their own pay against the company's stub. The company's paycheck remains authoritative; this program does not determine, owe, or pay anything.
@@ -463,9 +463,9 @@ The pipeline (`services._pipeline`) loads all rows for the month, runs the activ
 - Default user cannot upload (it reads the bundled `docs/` directory, including the May 2026 stub pair). All other users must upload before any pay computation works.
 - The Compare screen resolves stubs via `stubs_for_user(user_id, year, month)` — default user reads the bundled corpus, real users read `UserDocumentsStore.list_stubs()`. The hardcoded `_STUB_INDEX` from earlier phases is gone.
 
-### 14.5 Onboarding wizard (Phase E)
+### 14.5 Onboarding wizard (Phase E; feed-link step 2026-07-26)
 
-- Three steps: **profile** (name, 3-letter pilot code, position, hourly rate) → **documents** (current-month FA + Packet + optional iCal) → **done**.
+- Three steps: **profile** (name, pilot code — selected via the "Find your pilot code" lookup against the shared FA, not a free-text field — position, hourly rate) → **"Connect your live schedule (optional)"** (paste the BlueOne iCal feed *link*; saved to `pilot_profiles.feed_url` with `feed_auto_update` on; fetches once immediately so the first dashboard already has live data, and a bad link re-renders with the error) → **done**. **No file uploads happen during onboarding** — the Final Award + Trip Pairing Packet are published centrally by an admin (see §10 and the §13 Onboarding row); the old `/onboarding/documents` upload step is gone (its route now just redirects to `/onboarding/feed`). A pilot who wants to override the shared FA/Packet uploads their own afterward via `/documents`.
 - `OnboardingMiddleware` redirects fresh users (no `onboarding_completed_at` stamp) from any non-exempt path to `/onboarding`. Exempt paths: `/settings`, `/documents`, `/billing`, all auth routes, `/static`, `/webhooks`, and `/onboarding` itself — so the wizard never becomes a trap.
 - "Skip for now" stamps completion and lands on the dashboard; the user can populate Settings + Documents later via the regular pages.
 

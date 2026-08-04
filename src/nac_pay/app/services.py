@@ -317,7 +317,15 @@ def documents_for_user(
     Personal uploads always win; the admin-published shared documents are
     the fallback (FA may be several files — FO sheet + CA sheet — merged
     downstream by pilot code). Returns None when neither source has both
-    an FA and a packet. The iCal feed is personal-only."""
+    an FA and a packet. The iCal feed is personal-only.
+
+    NOTE — single packet per (year, month): the packet resolves to ONE path
+    (one slot; re-upload replaces in place). A mid-month schedule revision that
+    ships a *second* dedicated packet authoritative for a different span of days
+    (~2-3x/yr) is deliberately not modelled — uploading the revised packet
+    overwrites the first, so trips defined only in the earlier packet silently
+    vanish (no error surfaced, no per-day packet selection). Deferred open item;
+    the downstream catalog is a single flat dict in `_pipeline`."""
     if user_id == DEFAULT_USER_ID and (year, month) in _DOC_INDEX:
         fa, packet, ical = _DOC_INDEX[(year, month)]
         return ((fa,), packet, ical)
@@ -487,6 +495,10 @@ def _pipeline(
         )
     baseline, _warnings = month_from_master_schedule(sched, pilot)
 
+    # One packet = one flat `dict[str, TripPairing]` for the whole month. A
+    # revised mid-month packet (~2-3x/yr) is NOT supported here: two packets
+    # redefining the same trip_id would collapse last-write-wins, and there is
+    # no per-day packet selection. Deferred; see documents_for_user's NOTE.
     packet = _parse_trip_pairing_packet(str(packet_path))
     validation = tuple(validate_trip_pairing_packet(packet))
 
