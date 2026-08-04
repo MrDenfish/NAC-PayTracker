@@ -322,9 +322,11 @@ def documents_for_user(
     NOTE — single packet per (year, month): the packet resolves to ONE path
     (one slot; re-upload replaces in place). A mid-month schedule revision that
     ships a *second* dedicated packet authoritative for a different span of days
-    (~2-3x/yr) is deliberately not modelled — uploading the revised packet
-    overwrites the first, so trips defined only in the earlier packet silently
-    vanish (no error surfaced, no per-day packet selection). Deferred open item;
+    (usually twice a year — spring and fall) is deliberately not modelled —
+    uploading the revised packet overwrites the first, so trips defined only in
+    the earlier packet silently vanish (no error surfaced, no per-day packet
+    selection). The split's effective date arrives WITH the Final Awards, not
+    inside the packet PDF (which carries only day-of-week). Deferred open item;
     the downstream catalog is a single flat dict in `_pipeline`."""
     if user_id == DEFAULT_USER_ID and (year, month) in _DOC_INDEX:
         fa, packet, ical = _DOC_INDEX[(year, month)]
@@ -496,9 +498,11 @@ def _pipeline(
     baseline, _warnings = month_from_master_schedule(sched, pilot)
 
     # One packet = one flat `dict[str, TripPairing]` for the whole month. A
-    # revised mid-month packet (~2-3x/yr) is NOT supported here: two packets
-    # redefining the same trip_id would collapse last-write-wins, and there is
-    # no per-day packet selection. Deferred; see documents_for_user's NOTE.
+    # revised mid-month packet (usually twice a year, spring and fall) is NOT
+    # supported here: two packets redefining the same trip_id would collapse
+    # last-write-wins, and there is no per-day packet selection. The split's
+    # effective date ships with the Final Awards. Deferred; see
+    # documents_for_user's NOTE.
     packet = _parse_trip_pairing_packet(str(packet_path))
     validation = tuple(validate_trip_pairing_packet(packet))
 
