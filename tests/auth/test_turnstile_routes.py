@@ -46,7 +46,8 @@ def test_forgot_page_renders_widget_when_enabled(fake_turnstile):
     assert 'data-sitekey="fake-site-key"' in r.text
 
 
-def test_signup_page_has_no_widget_when_disabled():
+def test_signup_page_has_no_widget_when_disabled(monkeypatch):
+    monkeypatch.delenv("TURNSTILE_BACKEND", raising=False)
     r = client.get("/signup")
     assert r.status_code == 200
     assert "cf-turnstile" not in r.text
@@ -97,7 +98,8 @@ def test_signup_passes_client_ip_to_siteverify(fake_turnstile):
     assert fake_turnstile.attempts[-1].remote_ip == "203.0.113.5"
 
 
-def test_signup_still_works_when_backend_disabled():
+def test_signup_still_works_when_backend_disabled(monkeypatch):
+    monkeypatch.delenv("TURNSTILE_BACKEND", raising=False)
     r = client.post("/signup", data=SIGNUP_FORM, follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/signup?sent=1"
