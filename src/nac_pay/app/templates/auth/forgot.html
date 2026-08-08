@@ -10,13 +10,24 @@
   {% else %}
   <h1>Reset your password</h1>
   <p class="subtle">Enter your email and we'll send a reset link.</p>
+
+  {% if error %}
+  <div class="banner banner--warn"><strong>{{ error }}</strong></div>
+  {% endif %}
+
   <form action="/forgot" method="post" class="auth-form">
     <label>
       <span class="form-label">Email</span>
       <input type="email" name="email" required autofocus>
     </label>
+    {% if turnstile_site_key %}
+    <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="turnstile-spin-v2"></div>
+    {% endif %}
     <button type="submit" class="btn btn--primary">Send reset link</button>
   </form>
+  {% if turnstile_site_key %}
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  {% endif %}
   <p class="subtle auth-foot"><a href="/login">Back to sign in</a></p>
   {% endif %}
 </div>

@@ -111,8 +111,23 @@ async function cacheFirst(req) {
 /* PREWARM: the page hands us the per-user URL list from /offline-manifest.json
  * and we fetch each into the cache (throttled) so every month/view is
  * available offline. We post START/PROGRESS/DONE back to the page so it can
- * show an "Available offline" indicator. */
+ * show an "Available offline" indicator.
+ *
+ * A full pre-warm is ~100+ server-rendered page fetches, and the page
+ * requests one on every load — so runs are stamp-gated: at most one per
+ * PREWARM_TTL_MS per cache version. The stamp lives in the versioned
+ * cache, so a deploy (new cache name) always re-warms immediately. */
 let prewarming = false;
+
+const PREWARM_TTL_MS = 6 * 60 * 60 * 1000; // 6h — feed updates hourly, pages go mildly stale, not wrong
+const PREWARM_STAMP = "/__prewarm-stamp__";
+
+async function prewarmDue(cache) {
+  const stamp = await cache.match(PREWARM_STAMP);
+  if (!stamp) return true;
+  const at = Number(await stamp.text());
+  return !(at && Date.now() - at < PREWARM_TTL_MS);
+}
 
 self.addEventListener("message", (event) => {
   const data = event.data || {};
@@ -131,6 +146,7 @@ async function prewarm(urls) {
   prewarming = true;
   try {
     const cache = await caches.open(CACHE);
+    if (!(await prewarmDue(cache))) return; // warmed recently — skip quietly
     const total = urls.length;
     await notifyClients({ type: "PREWARM_START", total: total });
     const CONCURRENCY = 4;
@@ -154,6 +170,11 @@ async function prewarm(urls) {
       }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+    // Only stamp a run that actually cached something — an all-failures
+    // run (flaky connection) should retry on the next page load.
+    if (cached > 0 || total === 0) {
+      await cache.put(PREWARM_STAMP, new Response(String(Date.now())));
+    }
     await notifyClients({ type: "PREWARM_DONE", cached: cached, total: total });
   } finally {
     prewarming = false;

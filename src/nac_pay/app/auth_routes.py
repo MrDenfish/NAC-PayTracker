@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from nac_pay.auth import (
@@ -30,6 +30,14 @@ from nac_pay.auth import (
     set_session_user,
     update_password,
 )
+from nac_pay.auth.client_ip import client_ip
+from nac_pay.auth.rate_limit import (
+    FORGOT_LIMITER,
+    LOGIN_LIMITER,
+    SIGNUP_LIMITER,
+    RateLimiter,
+)
+from nac_pay.auth.turnstile import get_turnstile
 from nac_pay.billing import start_trial
 
 from .static_version import register as _register_static_v
@@ -47,6 +55,28 @@ def _validate_password(password: str) -> str | None:
     return None
 
 
+def _turnstile_site_key() -> str:
+    """Site key for the widget, or "" when the backend is disabled
+    (templates render no widget for an empty key)."""
+    verifier = get_turnstile()
+    return verifier.site_key if verifier.enabled else ""
+
+
+def _turnstile_ok(request: Request, token: str) -> bool:
+    return get_turnstile().verify(token, client_ip(request))
+
+
+def _rate_limited(request: Request, limiter: RateLimiter) -> PlainTextResponse | None:
+    """429 response when this client is over the limit, else None.
+    Checked before any hashing/DB/email work."""
+    if limiter.allow(client_ip(request)):
+        return None
+    return PlainTextResponse(
+        "Too many attempts. Please wait a while and try again.",
+        status_code=429,
+    )
+
+
 # ── Signup ────────────────────────────────────────────────────────────
 
 
@@ -55,16 +85,32 @@ def signup_get(request: Request, sent: int = 0, error: str = "") -> HTMLResponse
     return _TEMPLATES.TemplateResponse(
         request,
         "auth/signup.html",
-        {"sent": bool(sent), "error": error, "active_screen": "auth"},
+        {
+            "sent": bool(sent),
+            "error": error,
+            "active_screen": "auth",
+            "turnstile_site_key": _turnstile_site_key(),
+        },
     )
 
 
-@router.post("/signup")
+@router.post("/signup", response_model=None)
 def signup_post(
+    request: Request,
     email: str = Form(...),
     password: str = Form(...),
     confirm: str = Form(...),
-) -> RedirectResponse:
+    turnstile_token: str = Form("", alias="cf-turnstile-response"),
+) -> PlainTextResponse | RedirectResponse:
+    limited = _rate_limited(request, SIGNUP_LIMITER)
+    if limited is not None:
+        return limited
+    # Bot gate next — still before any hashing or email work.
+    if not _turnstile_ok(request, turnstile_token):
+        return RedirectResponse(
+            "/signup?error=Human+verification+failed.+Please+try+again.",
+            status_code=303,
+        )
     email = email.strip().lower()
     if password != confirm:
         return RedirectResponse(
@@ -124,12 +170,15 @@ def login_get(
     )
 
 
-@router.post("/login")
+@router.post("/login", response_model=None)
 def login_post(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
-) -> RedirectResponse:
+) -> PlainTextResponse | RedirectResponse:
+    limited = _rate_limited(request, LOGIN_LIMITER)
+    if limited is not None:
+        return limited
     user_id = authenticate(email, password)
     if user_id is None:
         return RedirectResponse(
@@ -158,16 +207,33 @@ def logout_post(request: Request) -> RedirectResponse:
 
 
 @router.get("/forgot", response_class=HTMLResponse)
-def forgot_get(request: Request, sent: int = 0) -> HTMLResponse:
+def forgot_get(request: Request, sent: int = 0, error: str = "") -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(
         request,
         "auth/forgot.html",
-        {"sent": bool(sent), "active_screen": "auth"},
+        {
+            "sent": bool(sent),
+            "error": error,
+            "active_screen": "auth",
+            "turnstile_site_key": _turnstile_site_key(),
+        },
     )
 
 
-@router.post("/forgot")
-def forgot_post(email: str = Form(...)) -> RedirectResponse:
+@router.post("/forgot", response_model=None)
+def forgot_post(
+    request: Request,
+    email: str = Form(...),
+    turnstile_token: str = Form("", alias="cf-turnstile-response"),
+) -> PlainTextResponse | RedirectResponse:
+    limited = _rate_limited(request, FORGOT_LIMITER)
+    if limited is not None:
+        return limited
+    if not _turnstile_ok(request, turnstile_token):
+        return RedirectResponse(
+            "/forgot?error=Human+verification+failed.+Please+try+again.",
+            status_code=303,
+        )
     user_id = find_by_email(email)
     if user_id is not None:
         token = issue_password_reset(user_id)

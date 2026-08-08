@@ -29,8 +29,14 @@
       <span class="form-label">Confirm password</span>
       <input type="password" name="confirm" required minlength="10">
     </label>
+    {% if turnstile_site_key %}
+    <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="turnstile-spin-v2"></div>
+    {% endif %}
     <button type="submit" class="btn btn--primary">Create account</button>
   </form>
+  {% if turnstile_site_key %}
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  {% endif %}
   <p class="subtle auth-foot">
     Already have an account? <a href="/login">Sign in</a>.
   </p>

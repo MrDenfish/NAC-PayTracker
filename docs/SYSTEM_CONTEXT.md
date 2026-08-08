@@ -504,6 +504,9 @@ Each middleware short-circuits on its own exempt path list (auth pages exempt th
 | `STRIPE_WEBHOOK_SECRET` | unset | required for `live` | Signature on `/webhooks/stripe` |
 | `APP_BASE_URL` | `http://127.0.0.1:8000` | public URL | Used to build email + Stripe return links |
 | `FEED_UPDATER_ENABLED` | `false` | `true` | Starts the hourly feed-updater background task (§14.10) |
+| `TURNSTILE_BACKEND` | `off` | `cloudflare` | Bot gate on signup + forgot. `off` = no widget; `fake` = test backend (magic token `pass`); `cloudflare` = real siteverify |
+| `TURNSTILE_SITE_KEY` | unset | required for `cloudflare` | Public widget key (rendered into the form pages) |
+| `TURNSTILE_SECRET` | unset | required for `cloudflare` | Server-side siteverify secret — never in the repo |
 | `FEED_UPDATE_INTERVAL_SECONDS` | `3600` | `3600` | Refresh cadence; overridable for ops tuning |
 | `ADMIN_EMAILS` | unset | `dennfish@gmail.com` | Comma-separated, case-insensitive account emails allowed to publish shared documents at `/admin/documents` (§13, §10). Empty ⇒ no admins (route 404s for everyone). With `AUTH_REQUIRED=false` (dev), `is_admin()` returns true unconditionally — the default user is treated as admin so the page stays testable locally regardless of this var. |
 

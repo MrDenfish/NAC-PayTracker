@@ -41,10 +41,13 @@ def _reset_persisted_state(_isolated_storage_dir):
     into another test's load_day().
     """
     from nac_pay.app.services import invalidate_caches
+    from nac_pay.auth.rate_limit import reset_rate_limits
     from nac_pay.storage import dispose_engine, reset_tables
 
     dispose_engine()
     reset_tables()
     invalidate_caches()
+    reset_rate_limits()
     yield
     invalidate_caches()
+    reset_rate_limits()
