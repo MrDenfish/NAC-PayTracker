@@ -12,3 +12,13 @@ def _reset_email_sender():
     reset_email_sender()
     yield
     reset_email_sender()
+
+
+@pytest.fixture(autouse=True)
+def _reset_turnstile():
+    from nac_pay.auth.turnstile import reset_turnstile
+    reset_turnstile()
+    yield
+    reset_turnstile()
+
+

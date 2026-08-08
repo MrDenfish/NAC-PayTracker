@@ -81,7 +81,10 @@ def test_fresh_user_redirects_from_dashboard_to_onboarding(monkeypatch):
 
     r = isolated.get("/", follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/onboarding"
+    # Straight to step 1 — the old /onboarding hop doubled every
+    # redirect (and tripled Cloudflare pageview counts during the
+    # 2026-08 bot crawl).
+    assert r.headers["location"] == "/onboarding/profile"
 
 
 def test_default_user_never_redirected_to_onboarding():

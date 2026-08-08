@@ -120,5 +120,7 @@ class OnboardingMiddleware(BaseHTTPMiddleware):
         if not user_id:
             return await call_next(request)
         if should_onboard(user_id):
-            return RedirectResponse("/onboarding", status_code=303)
+            # Straight to step 1: hopping through the /onboarding landing
+            # route would double every redirect for a fresh session.
+            return RedirectResponse("/onboarding/profile", status_code=303)
         return await call_next(request)
