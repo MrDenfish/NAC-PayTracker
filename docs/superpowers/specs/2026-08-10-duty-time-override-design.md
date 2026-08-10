@@ -42,7 +42,23 @@ One helper, three tiers, highest wins:
 2. **Packet scheduled show** for the front; last actual block-in + `TRIP_END_PAD_HOURS` for the back (PR #76 behaviour)
 3. **Actual first block-out − `REPORT_PAD_HOURS`** when no packet trip resolves (reroute, off-day pickup, unparsed show)
 
-Pay follows automatically — clocks → `duty_hours` → duty rig → `pch_value` — through existing machinery. The feed-side `_actual_duty_hours` is deliberately untouched: a filed version already outranks it downstream.
+### 3a. `DUTY_CORRECTION` — the override must work DOWNWARD (PR A)
+
+**The problem.** `Trip.effective_pch` is `max(published, *all version pch_values)`, and `apply_actuals._apply_duty_extension` appends its own `AssignmentVersion` ("Duty extension from iCal", `apply_actuals.py:1028`) whenever actual block or duty beats published. A pilot override that *shortens* duty produces a lower `pch_value`, so `max()` ignores it and the correction silently does nothing. `CORRECTION` cannot rescue this: `correction_of` targets a **user** version seq, and the auto extension is not a user version — it is regenerated from the feed on every pipeline run.
+
+**The fix: a duty correction is an INPUT, not a competing candidate.** New `VersionType.DUTY_CORRECTION` (a `StrEnum` value on an existing string column — no migration). When one exists for a date, `apply_actuals` uses the pilot's duty hours **in place of** `_actual_duty_hours(rt)` when recomputing the §3.E components. The recomputed trip PCH then flows through the normal `max(published, recomputed)` path untouched.
+
+Why this and not "suppress the auto version": the auto extension credits **block** as well as duty. Suppressing it would discard flight-op credit the pilot never disputed — on Aug 8 that would drop a correct 7.13 to whatever duty alone gave. Replacing only the duty input keeps flight-op, trip-rig, and cumulative-DPG intact.
+
+Consequences, all intended:
+
+- Downward correction where **block still wins** → block keeps winning. Correct.
+- Downward correction where **duty rig was winning** → effective drops to the corrected value, but never below `published`. The §3.E guarantee is structural and still holds.
+- Upward correction → lifts exactly as any recompute does today.
+
+Plumbing: `apply_actuals_to_month` takes a new `duty_overrides: dict[str, Decimal]` (date_iso → duty hours), the same shape as the existing `feed_reassignment_pch_overrides` parameter. The engine keeps its headless invariant — no import of `nac_pay.storage` from the engine; `_pipeline` resolves the dict and passes it in.
+
+This also fixes the history label: a clock fix files a `DUTY_CORRECTION`, not a `REASSIGNMENT` for something that was never reassigned.
 
 ### 4. Deviation detection + banner (PR B)
 
@@ -55,7 +71,7 @@ Triggers, either one sufficient:
 
 Only for days with a **resolvable packet trip**. Unmatched days already surface as reroutes or off-day pickups; double-notifying them is noise. Note this deliberately excludes *missing*-leg days (`730/731` flown against packet `730/731/732/733`): the matcher leaves them unmatched by design, so they are already on the reassignment path and are not a deviation case here.
 
-`signature = flown_sequence + "|" + duty delta rounded to 2dp`. A *changed* deviation re-raises a previously reviewed day; an unchanged one stays quiet.
+`signature = flown_sequence + "|" + duty delta rounded to 2dp`, where the duty window is **always the feed-derived one, never the pilot's override**. This matters: if the signature were computed from the overridden window, correcting your duty times would change the delta, change the signature, and re-raise the banner you had just reviewed. Conversely, comparing only feed actuals means an override can never re-raise a reviewed day, while a genuinely new deviation (a new leg appears, the feed times move again) still does.
 
 **Reviewed** persists in a new table `deviation_decisions` (`user_id`, `date_iso`, `signature`, `decided_at`; absence of a row = unreviewed). New *tables* need no migration — `create_all` handles them. Same pattern as `feed_drop_decisions`.
 
@@ -78,8 +94,15 @@ Only for days with a **resolvable packet trip**. Unmatched days already surface 
 
 **Derivation:** `duty_hours` from clocks; the midnight-crossing rule; precedence across all three tiers (override beats packet show beats actual-out fallback).
 
-**Form/route:** posting both clocks persists them and derives `duty_hours`; posting neither leaves old behaviour intact; the derived `pch_value` reflects the overridden duty.
+**`DUTY_CORRECTION` (the case the whole feature turns on):**
+- Downward correction on a day where duty rig was winning → effective **drops** to the corrected value (this is the test that would have caught the silent no-op).
+- Downward correction on a day where block still wins → block keeps winning, flight-op credit is NOT lost (the Aug 8 shape: 7.13 must survive a shortened duty).
+- Effective never falls below `published`, in either direction.
+- Upward correction lifts as any recompute does.
+- No `DUTY_CORRECTION` for a date → `_actual_duty_hours` used exactly as today.
 
-**Detection (PR B):** structural trigger (extra leg / missing leg); timing trigger above and below the 0:15 threshold; no deviation raised for a day without a packet trip; signature change re-raises a reviewed day; `Reviewed` round-trip.
+**Form/route:** posting both clocks persists them and derives `duty_hours`; posting neither leaves old behaviour intact; the derived `pch_value` reflects the overridden duty; the filed version's type is `DUTY_CORRECTION`, not `REASSIGNMENT`.
+
+**Detection (PR B):** structural trigger (extra leg); timing trigger above and below the 0:15 threshold; no deviation raised for a day without a packet trip; a feed change re-raises a reviewed day; **a pilot duty override does NOT re-raise a reviewed day** (the signature ignores the override); `Reviewed` round-trip.
 
 **Prod verify:** Aug 8 2026 — override duty on/off, confirm the day page and duty rig follow, and confirm the credited PCH moves only if duty rig becomes the winning candidate. Measure the retroactive impact read-only across all accounts before deploying, as done for PR #76.
