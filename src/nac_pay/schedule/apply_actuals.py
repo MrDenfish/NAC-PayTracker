@@ -69,6 +69,7 @@ from nac_pay.parsers import OffEvent, ReconciledTrip, ReconciliationResult
 # month-scoping, and the /day/<date> routes. Shared helper (nac_pay.timeutil)
 # so the parsers/schedule/app layers can't drift.
 from nac_pay.timeutil import local_date as _local_date
+from nac_pay.timeutil import scheduled_report_utc
 
 from .labels import EntryMode, PremiumCategory, ReasonCode
 from .models import AssignmentVersion, Day, Month, Trip
@@ -920,12 +921,34 @@ def _is_ordered_subsequence(needle: tuple[str, ...], haystack: list[str]) -> boo
     return False
 
 
+def _duty_start_utc(rt: ReconciledTrip) -> datetime_t:
+    """When duty began: the packet's scheduled report (show) time.
+
+    Duty starts when the pilot reports, and the pilot reports on the
+    PUBLISHED schedule — a late push lengthens the duty day, it does not
+    move its start. So the anchor is the packet's "L Day Show", not the
+    actual block-out. Aug 8 2026: show 04:41, flight pushed to 06:00, and
+    anchoring on the actual out gave duty-on 05:00 — swallowing the delay
+    and understating duty by 0.32h (duty rig by 0.16).
+
+    Falls back to actual-out − REPORT_PAD when there is no packet trip (a
+    reroute, an off-day pickup) or the packet's show time didn't parse:
+    an estimate is better than inventing a report time.
+    """
+    packet = rt.packet_trip
+    if packet is not None and packet.sched_duty_on:
+        report = scheduled_report_utc(packet.sched_duty_on, rt.first_dt_utc)
+        if report is not None:
+            return report
+    return rt.first_dt_utc - timedelta(hours=float(REPORT_PAD_HOURS))
+
+
 def _actual_duty_hours(rt: ReconciledTrip) -> Decimal:
-    """The ACTUAL duty period from iCal, padded to report→release so it's
-    comparable to the packet's already-padded scheduled duty: report
-    REPORT_PAD before the first leg out, release TRIP_END_PAD after the last
-    leg in (§3.E; same padding the day-detail duty window uses)."""
-    duty_start = rt.first_dt_utc - timedelta(hours=float(REPORT_PAD_HOURS))
+    """The ACTUAL duty period from iCal, run report→release so it's
+    comparable to the packet's already-padded scheduled duty: scheduled
+    report (see ``_duty_start_utc``) to TRIP_END_PAD after the last leg in
+    (§3.E; same window the day-detail duty display uses)."""
+    duty_start = _duty_start_utc(rt)
     duty_end = rt.last_dt_utc + timedelta(hours=float(TRIP_END_PAD_HOURS))
     seconds = int((duty_end - duty_start).total_seconds())
     return Decimal(seconds) / Decimal("3600")

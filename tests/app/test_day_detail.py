@@ -219,6 +219,41 @@ def test_day_detail_callout_header_shows_flown_trip():
     assert d.duty_label == "CALLOUT"
 
 
+def test_day_duty_window_anchors_to_the_scheduled_show_time():
+    """A delayed push must not shorten the duty day — the pilot reported at
+    the scheduled show time regardless. Aug 8 2026: show 04:41, flight
+    pushed to 06:00 local; duty runs 04:41 → 18:15, not 05:00 → 18:15."""
+    from datetime import datetime, timezone
+
+    from nac_pay.app.services import _day_duty_window
+
+    first_out = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)   # 06:00 AKDT
+    last_in = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)      # 18:00 AKDT
+
+    w = _day_duty_window(first_out, last_in, "04:41")
+
+    assert w.duty_on == "04:41"
+    assert w.duty_off == "18:15"
+    assert abs(w.duty_hours - Decimal("13.5667")) < Decimal("0.001")
+    assert w.duty_rig_pch == w.duty_hours / Decimal("2")
+
+
+def test_day_duty_window_falls_back_to_blockout_pad_without_a_show_time():
+    """No matched packet trip (a reroute, an off-day pickup) leaves nothing
+    to anchor to — keep the actual-out − 1:00 estimate."""
+    from datetime import datetime, timezone
+
+    from nac_pay.app.services import _day_duty_window
+
+    first_out = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+    last_in = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
+
+    w = _day_duty_window(first_out, last_in, None)
+
+    assert w.duty_on == "05:00"
+    assert abs(w.duty_hours - Decimal("13.25")) < Decimal("0.001")
+
+
 def test_load_day_duty_window_matches_padding():
     """Duty window = first leg out − 1:00 report, last leg in + 0:15, with
     duty rig = duty/2. Checked against the real June 12 iCal legs."""

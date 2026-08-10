@@ -6,6 +6,7 @@ against real June 2026 data (Final Award + Trip Pairing Packet + iCal feed).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -312,6 +313,50 @@ def test_small_block_overrun_within_old_duty_tolerance_credits():
     trip = updated.trips[0]
     assert trip.effective_pch == D("6.12")
     assert any(e.kind is AppliedEventKind.DUTY_EXTENSION for e in events)
+
+
+def test_actual_duty_starts_at_the_packet_report_time_not_actual_blockout():
+    """Duty starts when the pilot reports, and the pilot reports on the
+    published schedule — a late push does not shorten the duty day.
+
+    Aug 8 2026: packet show 04:41 (1:00 before the scheduled 05:41
+    departure), flight actually pushed at 06:00 local. Anchoring on the
+    actual block-out gave duty-on 05:00 and swallowed the 19-minute delay,
+    understating duty by 0.32h and the duty rig by 0.16."""
+    from nac_pay.schedule.apply_actuals import _actual_duty_hours
+
+    packet = _trip_pairing("720/721/1780/1781", "6.08")
+    packet = replace(packet, sched_duty_on="04:41")
+    # 14:00Z = 06:00 AKDT (the delayed push); 02:00Z next day = 18:00 AKDT.
+    start = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
+    rt = ReconciledTrip(
+        flight_sequence="720/721/1780/1781/1781",
+        legs=(_leg("720", start, end),), packet_trip=packet,
+        match_status=MatchStatus.MATCHED,
+        first_dt_utc=start, last_dt_utc=end, actual_block_hours=D("7.13"),
+    )
+
+    # 04:41 → 18:15 (last in + 0:15) = 13:34 = 13.5667h, not 05:00 → 18:15.
+    assert abs(_actual_duty_hours(rt) - D("13.5667")) < D("0.001")
+
+
+def test_actual_duty_falls_back_to_blockout_pad_without_a_packet_show_time():
+    """No packet trip (a reroute, an off-day pickup) or an unparsed show
+    time leaves nothing to anchor to — keep the actual-out − 1:00 estimate
+    rather than inventing a report time."""
+    from nac_pay.schedule.apply_actuals import _actual_duty_hours
+
+    start = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
+    rt = ReconciledTrip(
+        flight_sequence="9999", legs=(_leg("9999", start, end),),
+        packet_trip=None, match_status=MatchStatus.UNMATCHED_NO_PACKET,
+        first_dt_utc=start, last_dt_utc=end, actual_block_hours=D("7.13"),
+    )
+
+    # 05:00 → 18:15 = 13.25h.
+    assert abs(_actual_duty_hours(rt) - D("13.25")) < D("0.001")
 
 
 def test_small_duty_rig_overrun_keeps_wider_tolerance():
