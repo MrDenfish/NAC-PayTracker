@@ -1406,6 +1406,55 @@ def _entry_mode_options(selected_value: str) -> tuple[FormOption, ...]:
     )
 
 
+@dataclass(frozen=True)
+class _DutyWindow:
+    duty_on: str
+    duty_off: str
+    duty_hours: Decimal
+    duty_rig_pch: Decimal
+
+
+def _day_duty_window(
+    first_out_utc: datetime_t,
+    last_in_utc: datetime_t,
+    sched_duty_on: str | None,
+) -> _DutyWindow:
+    """The day's duty window: scheduled report → last block-in + release.
+
+    Duty starts when the pilot reports, and the report time is published —
+    a late push lengthens the duty day rather than moving its start. So the
+    front anchor is the packet's scheduled show time ("L Day Show") when we
+    have one. Aug 8 2026: show 04:41, flight pushed to 06:00, and anchoring
+    on the actual block-out showed duty-on 05:00 — hiding the 19-minute
+    delay and understating duty by 0.32h (duty rig by 0.16).
+
+    ``sched_duty_on`` is None for a day with no matched packet trip (a
+    reroute, an off-day pickup); there the actual-out − REPORT_PAD estimate
+    is all we have. The back anchor is always actual.
+    """
+    from datetime import timedelta as _td
+
+    from nac_pay.engine.constants import REPORT_PAD_HOURS, TRIP_END_PAD_HOURS
+    from nac_pay.timeutil import scheduled_report_utc
+
+    duty_end = last_in_utc + _td(hours=float(TRIP_END_PAD_HOURS))
+    duty_start = (
+        scheduled_report_utc(sched_duty_on, first_out_utc)
+        if sched_duty_on else None
+    )
+    if duty_start is None:
+        duty_start = first_out_utc - _td(hours=float(REPORT_PAD_HOURS))
+    duty_hours = (
+        Decimal((duty_end - duty_start).total_seconds()) / Decimal("3600")
+    )
+    return _DutyWindow(
+        duty_on=duty_start.astimezone(_DOMICILE_TZ).strftime("%H:%M"),
+        duty_off=duty_end.astimezone(_DOMICILE_TZ).strftime("%H:%M"),
+        duty_hours=duty_hours,
+        duty_rig_pch=duty_hours / Decimal("2"),
+    )
+
+
 def load_day(
     year: int,
     month: int,
@@ -1443,6 +1492,21 @@ def load_day(
     day_pay_rows, day_pay_total = _build_day_pay_rows(
         pr=pr, trip=trip, day_entry=day_entry,
     )
+
+    # Matched packet trip via reconciliation. Resolved BEFORE the duty window
+    # below, which anchors duty-on to this trip's scheduled show time. The
+    # date test also means packet_trip is only set on the trip's FIRST day,
+    # so a multi-day pairing can't apply day 1's show time to day 2.
+    packet_trip: TripPairing | None = None
+    if pr.reconciliation is not None and trip is not None:
+        for rt in pr.reconciliation.matched:
+            if (
+                _local_date(rt.first_dt_utc) == target
+                and rt.packet_trip is not None
+                and _ordered_subseq(trip.trip_id.split("/"), rt.trip_id.split("/"))
+            ):
+                packet_trip = rt.packet_trip
+                break
 
     # iCal legs on this date.
     legs: tuple[DayLeg, ...] = ()
@@ -1504,39 +1568,20 @@ def load_day(
                 (leg.block_hours for leg in date_legs),
                 Decimal("0"),
             )
-            # Duty window from iCal actuals + contractual padding: report
-            # REPORT_PAD before the first leg out, release TRIP_END_PAD after
-            # the last leg in. Times shown Anchorage-local; the duration (and
-            # duty rig = duty/2) is tz-independent. Auto-computed for display;
-            # the pilot can amend the credited value (see the greater-of path).
-            from datetime import timedelta as _td
-
-            from nac_pay.engine.constants import (
-                REPORT_PAD_HOURS,
-                TRIP_END_PAD_HOURS,
+            # Duty window: scheduled report (the packet's "L Day Show") →
+            # last block-in + TRIP_END_PAD. Times shown Anchorage-local; the
+            # duration (and duty rig = duty/2) is tz-independent.
+            # Auto-computed for display; the pilot can amend the credited
+            # value (see the greater-of path).
+            window = _day_duty_window(
+                date_legs[0].dt_start_utc,
+                date_legs[-1].dt_end_utc,
+                packet_trip.sched_duty_on if packet_trip is not None else None,
             )
-            report_pad = _td(hours=float(REPORT_PAD_HOURS))
-            end_pad = _td(hours=float(TRIP_END_PAD_HOURS))
-            duty_start = date_legs[0].dt_start_utc - report_pad
-            duty_end = date_legs[-1].dt_end_utc + end_pad
-            duty_on = duty_start.astimezone(_DOMICILE_TZ).strftime("%H:%M")
-            duty_off = duty_end.astimezone(_DOMICILE_TZ).strftime("%H:%M")
-            duty_hours = (
-                Decimal((duty_end - duty_start).total_seconds()) / Decimal("3600")
-            )
-            duty_rig_pch = duty_hours / Decimal("2")
-
-    # Matched packet trip via reconciliation.
-    packet_trip: TripPairing | None = None
-    if pr.reconciliation is not None and trip is not None:
-        for rt in pr.reconciliation.matched:
-            if (
-                _local_date(rt.first_dt_utc) == target
-                and rt.packet_trip is not None
-                and _ordered_subseq(trip.trip_id.split("/"), rt.trip_id.split("/"))
-            ):
-                packet_trip = rt.packet_trip
-                break
+            duty_on = window.duty_on
+            duty_off = window.duty_off
+            duty_hours = window.duty_hours
+            duty_rig_pch = window.duty_rig_pch
 
     # Applied events on this date.
     events_today = tuple(e for e in pr.applied_events if e.date == target)

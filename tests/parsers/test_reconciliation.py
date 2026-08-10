@@ -51,6 +51,64 @@ def test_match_packet_trip_resolves_reserve_designator_pairing():
     assert _match_packet_trip("999/998", packet) is None
 
 
+# ── Unscheduled extra legs (Aug 8 2026) ────────────────────────────────
+
+
+def test_match_packet_trip_tolerates_an_extra_unscheduled_leg():
+    """A flight routinely picks up extra legs — a diversion, a tech stop, a
+    field that won't take the landing. The packet can't know about them, so
+    the flown sequence carries a segment the pairing doesn't. It is still
+    the awarded pairing, not a reroute.
+
+    Aug 8 2026: NC1781 flew DGG-OTZ then OTZ-ANC instead of the scheduled
+    DGG-ANC, so the flown sequence repeated 1781 and exact-key matching
+    dropped the whole day to UNMATCHED."""
+    from nac_pay.parsers.reconciliation import _match_packet_trip
+
+    trip = object()
+    packet = {"720/721/1780/1781": trip}
+
+    assert _match_packet_trip("720/721/1780/1781/1781", packet) is trip
+    # An extra leg under a *different* flight number is the same case.
+    assert _match_packet_trip("720/721/1780/9999/1781", packet) is trip
+
+
+def test_match_packet_trip_rejects_a_partially_flown_pairing():
+    """Extra legs are tolerated; MISSING ones are not. Flying only 730/731
+    of 730/731/732/733 means the back half went somewhere else — a real
+    schedule change that must stay unmatched for the reassignment path."""
+    from nac_pay.parsers.reconciliation import _match_packet_trip
+
+    packet = {"730/731/732/733": object()}
+
+    assert _match_packet_trip("730/731", packet) is None
+
+
+def test_match_packet_trip_will_not_absorb_a_fused_overnight_group():
+    """Containment must be anchored at both ends. A group fused across an
+    overnight rest contains a shorter pairing in order, but matching it
+    would skip the overnight split that breaks the fusion apart — the
+    2026-07-23 13.21-PCH phantom reassignment."""
+    from nac_pay.parsers.reconciliation import _match_packet_trip
+
+    packet = {"768/769": object(), "720/721/1780/1781": object()}
+
+    assert _match_packet_trip("768/769/720/721/1780/1781", packet) is None
+
+
+def test_match_packet_trip_prefers_the_longest_pairing_it_contains():
+    """With an extra leg in play a short pairing can also be contained in the
+    flown sequence. The most specific (longest) pairing is the real one —
+    same rule packet_trip_for_aid uses."""
+    from nac_pay.parsers.reconciliation import _match_packet_trip
+
+    short = object()
+    full = object()
+    packet = {"720/721/R1": short, "720/721/1780/1781": full}
+
+    assert _match_packet_trip("720/721/1780/1781/1781", packet) is full
+
+
 # ── End-to-end: sample feed + June packet ──────────────────────────────
 @pytest.fixture(scope="module")
 def reconciled():

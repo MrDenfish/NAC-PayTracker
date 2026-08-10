@@ -466,8 +466,10 @@
       </tbody>
     </table>
     <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
-      Duty on = first departure − 1:00 report; duty off = last arrival + 0:15.
-      Times in Anchorage local. Auto-computed from iCal actuals.
+      Duty on = scheduled report (1:00 before the scheduled departure), so a
+      late push lengthens the duty day rather than moving its start; duty off
+      = last arrival + 0:15. Falls back to actual departure − 1:00 when the
+      day has no matched packet trip. Times in Anchorage local.
     </p>
     {% endif %}
 

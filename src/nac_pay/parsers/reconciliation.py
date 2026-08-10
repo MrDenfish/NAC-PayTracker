@@ -47,6 +47,14 @@ from .trip_pairing_packet import TripPairing
 _RESERVE_SUFFIX_RE = re.compile(r"/R\d+$", re.IGNORECASE)
 
 
+def _is_ordered_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    """Do ``needle``'s items appear in ``haystack`` in order (gaps allowed)?"""
+    if not needle:
+        return False
+    it = iter(haystack)
+    return all(seg in it for seg in needle)
+
+
 def _match_packet_trip(
     sequence: str, packet: dict[str, TripPairing],
 ) -> TripPairing | None:
@@ -56,14 +64,51 @@ def _match_packet_trip(
     by its flying portion — ``"722/723"`` flown matches packet
     ``"722/723/R1"`` (the trailing ``/R<n>`` is reserve, not a leg). Exact
     equality after stripping the suffix keeps this unambiguous (a fully-flown
-    ``722/723/750/751`` still matches its own key first)."""
+    ``722/723/750/751`` still matches its own key first).
+
+    Failing both, match a pairing whose flight numbers all appear IN ORDER
+    within the flown sequence. A trip routinely grows legs the packet can't
+    know about — a diversion, a tech stop, a field that won't take the
+    landing — and the extra segment must not cost the day its pairing.
+    Aug 8 2026: NC1781 flew DGG-OTZ + OTZ-ANC instead of the scheduled
+    DGG-ANC, so "720/721/1780/1781/1781" missed "720/721/1780/1781" and the
+    whole day fell through to the reassignment path, losing its packet
+    (and with it the scheduled duty window).
+
+    Containment is one-directional on purpose: EXTRA legs are tolerated,
+    MISSING ones are not. Flying only "730/731" of "730/731/732/733" means
+    the back half of the trip went elsewhere — a real schedule change that
+    must stay unmatched. The longest contained pairing wins, so a bare
+    "720/721/R1" can't out-match the full "720/721/1780/1781".
+
+    Containment alone is too loose, so the match is ANCHORED: the pairing's
+    first and last flight numbers must be the flown sequence's first and
+    last. An unscheduled leg is inserted *within* a trip (the aircraft still
+    starts and ends on the pairing's own flights); a sequence that merely
+    *contains* a pairing somewhere in the middle is something else. Without
+    the anchor a group fused across an overnight rest
+    ("768/769/720/721/1780/1781") would match "768/769" and skip the
+    overnight split that exists to break it apart — the 2026-07-23
+    13.21-PCH phantom reassignment. Cost of the anchor: an extra leg
+    appended under a NEW flight number (a ferry after the last scheduled
+    leg) still won't match, which is the safe way to fail — it stays
+    flagged rather than silently absorbed."""
     trip = packet.get(sequence)
     if trip is not None:
         return trip
     for tid, tp in packet.items():
         if _RESERVE_SUFFIX_RE.search(tid) and _RESERVE_SUFFIX_RE.sub("", tid) == sequence:
             return tp
-    return None
+    flown = sequence.split("/")
+    best: TripPairing | None = None
+    best_len = -1
+    for tid, tp in packet.items():
+        segs = _RESERVE_SUFFIX_RE.sub("", tid).split("/")
+        if segs[0] != flown[0] or segs[-1] != flown[-1]:
+            continue
+        if _is_ordered_subsequence(segs, flown) and len(segs) > best_len:
+            best, best_len = tp, len(segs)
+    return best
 
 DEFAULT_LAYOVER_MAX_HOURS: float = 12.0
 
