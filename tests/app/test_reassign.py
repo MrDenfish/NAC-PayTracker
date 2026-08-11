@@ -393,6 +393,33 @@ def test_day_detail_pre_fills_for_correction(monkeypatch):
     assert 'name="correction_of"' in body and 'value="1"' in body
 
 
+def test_times_card_links_to_duty_correction(monkeypatch):
+    """The Duty on/off table (Times card) offers a direct link to correct
+    them — the only way a pilot reading a wrong actual-derived duty window
+    can reach the amend form from where they see the number."""
+    client, _ = _bootstrap_user_with_june(monkeypatch, "duty-link@x.test")
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+    body = r.text
+    # sanity: this day has an actual duty window rendered, not just scheduled
+    assert "Duty on (actual)" in body
+    assert 'href="/day/2026-06-12?duty=1#reassign-form"' in body
+    assert "Correct duty times" in body
+
+
+def test_duty_query_param_preselects_duty_correction_radio(monkeypatch):
+    """?duty=1 must work WITHOUT JavaScript: the server renders the
+    DUTY_CORRECTION radio (and Detailed entry mode) already checked."""
+    client, _ = _bootstrap_user_with_june(monkeypatch, "duty-param@x.test")
+    r = client.get("/day/2026-06-02?duty=1")
+    assert r.status_code == 200
+    body = r.text
+    fields, radio_options = _parse_reassign_form(body, "2026-06-02")
+    assert "DUTY_CORRECTION" in radio_options.get("version_type", set())
+    assert fields.get("version_type") == ["DUTY_CORRECTION"]
+    assert fields.get("entry_mode") == ["DETAILED"]
+
+
 # ── hard delete of a version (route) ─────────────────────────────────
 
 

@@ -1703,6 +1703,7 @@ def load_day(
     saved_version_deleted: bool = False,
     reassign_error: str = "",
     correct_seq: int | None = None,
+    duty_correction: bool = False,
 ) -> DayDetailData:
     try:
         target = date_t(year, month, day)
@@ -1950,6 +1951,7 @@ def load_day(
     reassign_defaults = _build_reassign_defaults(
         user_versions, correct_seq, restore_pch,
         ical_legs=legs, manual_legs_by_seq=manual_legs_by_seq,
+        duty_correction=duty_correction,
     )
 
     # Packet trip catalog for the assignment_id <datalist>. Sorted by id
@@ -2105,13 +2107,27 @@ def _build_reassign_defaults(
     *,
     ical_legs: tuple = (),
     manual_legs_by_seq: dict | None = None,
+    duty_correction: bool = False,
 ) -> ReassignFormDefaults:
     """Pre-fill the form. Fresh: seed the Detailed leg table with the iCal legs
     (pilot adds only what's missing). Correcting: seed with that version's own
-    legs (falling back to the iCal legs)."""
+    legs (falling back to the iCal legs).
+
+    ``duty_correction`` comes from ``?duty=1`` on the day route — the
+    "Correct duty times" link next to the Duty on/off table. It preselects
+    the DUTY_CORRECTION radio (and Detailed mode, which a duty correction
+    requires) server-side, so the link works without JS. Only applies to a
+    fresh form (``correct_seq is None``); correcting a prior version keeps
+    that version's own type."""
     manual_legs_by_seq = manual_legs_by_seq or {}
     ical_prefill = _ical_legs_prefill(ical_legs)
     if correct_seq is None:
+        if duty_correction:
+            return ReassignFormDefaults(
+                version_type="DUTY_CORRECTION",
+                entry_mode="DETAILED",
+                legs=ical_prefill,
+            )
         return ReassignFormDefaults(legs=ical_prefill)
     target = next((uv for uv in user_versions if uv.seq == correct_seq), None)
     if target is None:
