@@ -1494,3 +1494,29 @@ def test_duty_override_does_not_discard_block_credit():
     )
 
     assert updated.trips[0].effective_pch == D("7.13")
+
+
+def test_duty_override_applies_to_reserve_callout():
+    """The silent no-op also hits callouts: this is the ORIGINAL duty-rig
+    worked example (report 04:41, ~11h duty, rig 5.51) — a callout day is
+    one of the MOST likely places a pilot corrects duty, since duty rig
+    genuinely wins there. No override: feed span 12h → padded 13.25h → rig
+    6.625 wins over published 4.50. Pilot corrects duty down to 10.02h →
+    rig 5.01 → credited instead."""
+    callout_date = date(2026, 6, 12)
+    rsv = Day(date=callout_date, duty_type=DutyType.RSV, pch_value=D("3.82"),
+              reason_code=ReasonCode.FLOWN, workdays=1, label="RSV")
+    baseline = _empty_month(days=(rsv,))
+    rt = _rt_with_span("766", packet_pch="4.50", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="12.0", on_date=callout_date)
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    no_override, _, _ = apply_actuals_to_month(baseline, reconciliation)
+    lowered, _, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("10.02")},
+    )
+
+    assert no_override.days[0].callout_trip_pch == D("6.625")
+    assert lowered.days[0].callout_trip_pch == D("5.01")

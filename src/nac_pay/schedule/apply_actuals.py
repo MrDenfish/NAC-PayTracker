@@ -237,6 +237,7 @@ def apply_actuals_to_month(
             recomputed = _extension_recompute(
                 rt, rt.published_pch,
                 block_extension_tolerance_hours, duty_extension_tolerance_hours,
+                duty_overrides,
             )
             callout_pch = recomputed if recomputed is not None else rt.published_pch
             callout_pch_by_date[first_date] = callout_pch
