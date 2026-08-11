@@ -78,6 +78,10 @@ def get_engine() -> Engine:
 # + Postgres); nullable so no default/backfill of rows is needed.
 _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "feed_reassignment_decisions": [("pch_value", "VARCHAR(16)")],
+    "user_assignment_versions": [
+        ("duty_on_local", "VARCHAR(5)"),
+        ("duty_off_local", "VARCHAR(5)"),
+    ],
 }
 
 

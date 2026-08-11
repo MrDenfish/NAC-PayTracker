@@ -201,6 +201,13 @@ class UserAssignmentVersionRow(Base):
     deadhead_pch: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
     workdays: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Pilot-overridden duty window, bare local "HH:MM" (nullable: rows
+    # predating the columns carry duty_hours only). When present these are
+    # the truth and duty_hours is derived from them — see
+    # timeutil.duty_hours_between.
+    duty_on_local: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    duty_off_local: Mapped[str | None] = mapped_column(String(5), nullable=True)
+
     reason_code: Mapped[str] = mapped_column(String(32), default="FLOWN", nullable=False)
     premium_category: Mapped[str] = mapped_column(String(32), default="NONE", nullable=False)
     notes: Mapped[str] = mapped_column(String(500), default="", nullable=False)

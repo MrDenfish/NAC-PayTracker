@@ -259,3 +259,40 @@ def test_delete_version_cascades_its_legs():
     s.save_legs("2026-06-02", v.seq, [VersionLeg("720", "06:00", "09:00")])
     s.delete("2026-06-02", v.seq)
     assert s.list_legs_for_date("2026-06-02") == {}
+
+
+# ── duty clock override ─────────────────────────────────────────────
+
+
+def test_save_and_read_duty_clocks():
+    store = _store("u_test_clocks")
+    store.save(
+        date_iso="2026-08-08",
+        version_type=VersionType.REASSIGNMENT,
+        assignment_id="720/1780",
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("7.13"),
+        duty_hours=Decimal("13.5667"),
+        duty_on_local="04:41",
+        duty_off_local="18:15",
+    )
+
+    got = store.list_for_month(2026, 8)["2026-08-08"][0]
+    assert got.duty_on_local == "04:41"
+    assert got.duty_off_local == "18:15"
+
+
+def test_version_without_clocks_reads_as_none():
+    """Rows predating the columns must keep resolving — NULL, not crash."""
+    store = _store("u_test_noclocks")
+    store.save(
+        date_iso="2026-08-09",
+        version_type=VersionType.REASSIGNMENT,
+        assignment_id="768",
+        entry_mode=VersionEntryMode.SIMPLE,
+        pch_value=Decimal("4.17"),
+    )
+
+    got = store.list_for_month(2026, 8)["2026-08-09"][0]
+    assert got.duty_on_local is None
+    assert got.duty_off_local is None

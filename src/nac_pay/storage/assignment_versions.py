@@ -75,6 +75,8 @@ class UserAssignmentVersion:
     tafb_hours: Decimal | None
     deadhead_pch: Decimal | None
     workdays: int | None
+    duty_on_local: str | None
+    duty_off_local: str | None
     reason_code: str
     premium_category: str
     notes: str
@@ -119,6 +121,8 @@ class UserAssignmentVersionStore:
         tafb_hours: Decimal | None = None,
         deadhead_pch: Decimal | None = None,
         workdays: int | None = None,
+        duty_on_local: str | None = None,
+        duty_off_local: str | None = None,
         reason_code: str = "FLOWN",
         premium_category: str = "NONE",
         notes: str = "",
@@ -164,6 +168,8 @@ class UserAssignmentVersionStore:
                 tafb_hours=tafb_hours,
                 deadhead_pch=deadhead_pch,
                 workdays=workdays,
+                duty_on_local=duty_on_local,
+                duty_off_local=duty_off_local,
                 reason_code=reason_code,
                 premium_category=premium_category,
                 notes=notes,
@@ -179,6 +185,7 @@ class UserAssignmentVersionStore:
             block_hours=block_hours, duty_hours=duty_hours,
             tafb_hours=tafb_hours, deadhead_pch=deadhead_pch,
             workdays=workdays,
+            duty_on_local=duty_on_local, duty_off_local=duty_off_local,
             reason_code=reason_code, premium_category=premium_category,
             notes=notes, created_at=created_at,
         )
@@ -335,6 +342,8 @@ class UserAssignmentVersionStore:
             tafb_hours=_dec(r.tafb_hours),
             deadhead_pch=_dec(r.deadhead_pch),
             workdays=r.workdays,
+            duty_on_local=r.duty_on_local,
+            duty_off_local=r.duty_off_local,
             reason_code=r.reason_code,
             premium_category=r.premium_category,
             notes=r.notes,
