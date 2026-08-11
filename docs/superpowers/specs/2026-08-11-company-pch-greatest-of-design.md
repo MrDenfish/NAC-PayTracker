@@ -36,7 +36,12 @@ On a day with a CONFIRMED reassignment carrying a company value, add the candida
 
 Replace the single-figure prose ("recomputed 5.05 → 5.17 PCH") with a small comparison consistent with the option-table style: original published, company-assigned (when entered), recomputed from actuals — winner marked. The recompute row notes it is `max` of block and duty-rig so a wrong duty is visible at the point of decision.
 
-Add a **"Correct duty times"** link (`/day/<date>?duty=1#reassign-form` — the PR #78 entry point) next to the recompute row, shown under the same `data.editable` gate PR #78 uses.
+Add two links next to the comparison, both plain navigation into the ONE amend form (never a second write path), both under the same `data.editable` gate PR #78 uses:
+
+- **"Correct duty times"** → `/day/<date>?duty=1#reassign-form` (the PR #78 entry point; Duty correction preselected) — for when the recompute's duty window is wrong.
+- **"Amend this trip"** → `/day/<date>?amend=1#reassign-form` (the pre-existing entry point; Detailed mode, legs prefilled) — for when the routing/legs/values are wrong beyond what confirm-plus-company-PCH expresses.
+
+Rationale (owner question, 2026-08-11): duty editing deliberately REMAINS under Reassign/amend — one form owns the duty-clock write path (the PR #77 reviews traced three separate bugs to two mechanisms writing one value). The reassignment card reacts to the *feed's* claim (confirm/reject/notice value); Reassign/amend asserts the *pilot's own* record. The card links into the form by intent; it never files versions itself.
 
 ### 4. Company PCH field — say what it is
 
