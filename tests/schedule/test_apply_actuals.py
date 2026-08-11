@@ -1520,3 +1520,31 @@ def test_duty_override_applies_to_reserve_callout():
 
     assert no_override.days[0].callout_trip_pch == D("6.625")
     assert lowered.days[0].callout_trip_pch == D("5.01")
+
+
+def test_duty_override_is_keyed_by_anchorage_local_date_not_utc():
+    """Override dict must be keyed by ANC-LOCAL date, not the UTC date — an
+    evening ANC departure is already the next day in UTC (Anchorage is
+    UTC-8 in summer). This exact class of bug has bitten the codebase three
+    times (PRs #42, #52; see timeutil.py header) — a silent no-op on a
+    correction is precisely what this feature exists to remove."""
+    from nac_pay.timeutil import local_date
+    from nac_pay.schedule.apply_actuals import _actual_duty_hours
+
+    start = datetime(2026, 8, 9, 4, 0, tzinfo=timezone.utc)   # 20:00 AKDT Aug 8
+    end = start + _hours_to_timedelta(D("2.00"))
+    packet = _trip_pairing("720/721", "6.08")
+    rt = ReconciledTrip(
+        flight_sequence="720/721", legs=(_leg("720", start, end),),
+        packet_trip=packet, match_status=MatchStatus.MATCHED,
+        first_dt_utc=start, last_dt_utc=end, actual_block_hours=D("2.00"),
+    )
+
+    # Sanity: the ANC-local date and the UTC date genuinely differ for this
+    # timestamp — the test is meaningless otherwise.
+    assert start.date().isoformat() == "2026-08-09"
+    assert local_date(start).isoformat() == "2026-08-08"
+
+    # Keyed by ANC-local date ("2026-08-08"), NOT the UTC date ("2026-08-09").
+    got = _actual_duty_hours(rt, {"2026-08-08": D("9.00")})
+    assert got == D("9.00")
