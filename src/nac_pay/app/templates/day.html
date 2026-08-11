@@ -171,7 +171,7 @@
         {% endif %}
         {% set rec_win = (not ns.marked) and ("%.2f"|format(fr.new_pch)) == ("%.2f"|format(fr.effective_pch)) %}
         <tr class="{% if rec_win %}winning{% endif %}">
-          <td>Recomputed from actual times (max of block and duty-rig){% if rec_win %} ← credited{% endif %}</td>
+          <td>Recomputed from actual times (max of the §3.E components){% if rec_win %} ← credited{% endif %}</td>
           <td class="num">{{ "%.2f"|format(fr.new_pch) }}</td>
         </tr>
       </tbody>

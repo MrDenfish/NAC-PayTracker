@@ -17,6 +17,7 @@ from nac_pay.schedule import AssignmentVersion, lower_month
 from nac_pay.schedule.apply_actuals import (
     REASSIGN_CONFIRMED,
     REASSIGN_PROPOSED,
+    REASSIGN_REJECTED,
     FeedReassignment,
 )
 
@@ -314,17 +315,28 @@ def _fr(
 ) -> FeedReassignment:
     """Build a ``FeedReassignment`` the way ``apply_actuals_to_month``
     would (Task 1's fold: credited = max(override, new_pch) when an
-    override is present, else new_pch)."""
+    override is present, else new_pch). ``effective_pch``/``applied``
+    mirror production for every status, not just the CONFIRMED default:
+    apply_actuals's REROUTE branch computes
+    ``effective = max(published, credited)`` and ``applied=True``
+    identically for CONFIRMED and PROPOSED — status only gates the UI
+    badge, not the value. Only REJECTED is a different code path, which
+    pins the day back to the published original and never applies."""
+    original_pch = Decimal("4.17")
     credited = new_pch if override_pch is None else max(override_pch, new_pch)
+    effective_pch = (
+        original_pch if status == REASSIGN_REJECTED
+        else max(original_pch, credited)
+    )
     return FeedReassignment(
         date=date_,
         signature=signature,
         original_aid="768",
-        original_pch=Decimal("4.17"),
+        original_pch=original_pch,
         new_pch=new_pch,
-        effective_pch=credited if status == REASSIGN_CONFIRMED else new_pch,
+        effective_pch=effective_pch,
         status=status,
-        applied=(status == REASSIGN_CONFIRMED),
+        applied=(status != REASSIGN_REJECTED),
         override_pch=override_pch,
     )
 
@@ -484,6 +496,69 @@ def test_reassignment_card_shows_the_comparison_rows():
     assert "Original" in table and "4.17" in table
     assert "Company-assigned" in table and "5.17" in table
     assert "Recomputed from actual times" in table and "5.05" in table
+
+
+_ROW_RE = re.compile(r'<tr class="([^"]*)">\s*<td>([^<]*)</td>')
+
+
+def _table_rows(table_html: str) -> list[tuple[str, bool]]:
+    """Parse each ``<tr class="...">`` row's label and whether it actually
+    carries the ``winning`` CSS class — a substring check on the label text
+    alone can't tell "marked winning" from "just present", which is exactly
+    the code path (the ``namespace(marked=...)`` first-match logic) this
+    task's winner-marking rule lives in."""
+    return [
+        (label.strip(), "winning" in cls.split())
+        for cls, label in _ROW_RE.findall(table_html)
+    ]
+
+
+def test_reassignment_card_winner_marking_company_wins():
+    """Company (5.17) beats recompute (5.05): the Company row alone is
+    marked winning."""
+    fr = _fr(date(2026, 6, 12), override_pch=Decimal("5.17"), new_pch=Decimal("5.05"))
+    assert fr.effective_pch == Decimal("5.17")
+    poked = _poked_pipeline((fr,), credited_pch=Decimal("5.17"))
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        r = client.get("/day/2026-06-12")
+
+    rows = _table_rows(_comparison_table_html(_reassignment_card_html(r.text)))
+    winners = [label for label, win in rows if win]
+    assert len(winners) == 1
+    assert winners[0].startswith("Company-assigned")
+
+
+def test_reassignment_card_winner_marking_recompute_wins():
+    """Recompute (5.05) beats company (4.80): the Recomputed row alone is
+    marked winning."""
+    fr = _fr(date(2026, 6, 12), override_pch=Decimal("4.80"), new_pch=Decimal("5.05"))
+    assert fr.effective_pch == Decimal("5.05")
+    poked = _poked_pipeline((fr,), credited_pch=Decimal("5.05"))
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        r = client.get("/day/2026-06-12")
+
+    rows = _table_rows(_comparison_table_html(_reassignment_card_html(r.text)))
+    winners = [label for label, win in rows if win]
+    assert len(winners) == 1
+    assert winners[0].startswith("Recomputed from actual times")
+
+
+def test_reassignment_card_winner_marking_tie_prefers_company():
+    """Company == recompute == effective (5.05 all three): Task 2's tie
+    precedence marks Company, and exactly one row is marked — not both."""
+    fr = _fr(date(2026, 6, 12), override_pch=Decimal("5.05"), new_pch=Decimal("5.05"))
+    assert fr.effective_pch == Decimal("5.05")
+    poked = _poked_pipeline((fr,), credited_pch=Decimal("5.05"))
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        r = client.get("/day/2026-06-12")
+
+    rows = _table_rows(_comparison_table_html(_reassignment_card_html(r.text)))
+    winners = [label for label, win in rows if win]
+    assert len(winners) == 1
+    assert winners[0].startswith("Company-assigned")
 
 
 def test_reassignment_card_links_into_the_amend_form():

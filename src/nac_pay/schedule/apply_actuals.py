@@ -173,8 +173,9 @@ def apply_actuals_to_month(
     decisions`` maps ``(date_iso, signature)`` → ``"CONFIRMED"``/``"REJECTED"``
     (absence = PROPOSED); a REJECTED reassignment is suppressed.
     ``feed_reassignment_pch_overrides`` maps ``(date_iso, signature)`` → a
-    pilot-entered company PCH that replaces the recomputed value (still
-    protected: the day pays ``max(published, override)``).
+    pilot-entered company PCH. It does not replace the recomputed value —
+    it's one more §3.E.1.b candidate the fold takes the greatest of: the
+    day pays ``max(published, max(override, recomputed))``.
     ``duty_overrides`` maps a trip's first local date (ISO) to the duty
     hours the pilot recorded in a DUTY_CORRECTION. Where present it
     REPLACES the feed-derived duty in the §3.E recompute, so a correction
