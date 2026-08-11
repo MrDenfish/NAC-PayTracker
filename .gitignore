@@ -37,3 +37,6 @@ pch-ledger.com.txt
 # Build artifacts
 dist/
 build/
+
+# Subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
