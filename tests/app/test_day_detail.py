@@ -413,6 +413,10 @@ def test_candidates_card_includes_the_company_assigned_row():
 
     labels = [c.label for c in d.pch_candidates]
     assert "Company-assigned (reassignment notice)" in labels
+    # This is a REROUTE fixture (fr.kind defaults to REASSIGN_KIND_REROUTE,
+    # not OFF_DAY_PICKUP) — the "Published" row must stay "Published", not
+    # get relabeled "Pickup (credited)" (that relabel is pickup-only).
+    assert "Published" in labels
     winners = [c for c in d.pch_candidates if c.is_winning]
     assert len(winners) == 1
     assert winners[0].pch == d.effective_pch
@@ -553,7 +557,7 @@ def test_candidates_card_without_a_company_value_is_unchanged():
     d = load_day(2026, 6, 12)
     labels = [c.label for c in d.pch_candidates]
     assert "Company-assigned (reassignment notice)" not in labels
-    assert "Recomputed from actual times" not in labels
+    assert not any(l.startswith("Recomputed from actual times") for l in labels)
 
 
 # ── Reassignment card: comparison table + amend-form links (Task 3) ────
