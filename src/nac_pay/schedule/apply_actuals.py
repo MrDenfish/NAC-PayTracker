@@ -374,7 +374,10 @@ def apply_actuals_to_month(
 
             status = decision if decision == REASSIGN_CONFIRMED else REASSIGN_PROPOSED
             override = pch_overrides.get((first_date.isoformat(), signature))
-            credited = override if override is not None else new_pch
+            # §3.E.1.b: the company's reassignment-notice PCH is one more
+            # candidate, not a replacement — the pilot keeps the recompute
+            # when actual times beat the notice (owner contract 2026-08-11).
+            credited = max(override, new_pch) if override is not None else new_pch
             pickups.append(
                 Trip(
                     trip_id=signature,
@@ -455,12 +458,11 @@ def apply_actuals_to_month(
             continue
 
         status = decision if decision == REASSIGN_CONFIRMED else REASSIGN_PROPOSED
-        # A pilot-entered company PCH (CONFIRMED only) replaces the recomputed
-        # value as the reassignment's asserted worth — the company sometimes
-        # assigns a PCH the feed can't express. Still protected: pay the
-        # greater of published and the credited (override-or-recomputed) value.
+        # §3.E.1.b: the company's reassignment-notice PCH is one more
+        # candidate, not a replacement — the pilot keeps the recompute
+        # when actual times beat the notice (owner contract 2026-08-11).
         override = pch_overrides.get((first_date.isoformat(), signature))
-        credited = override if override is not None else new_pch
+        credited = max(override, new_pch) if override is not None else new_pch
         effective = max(baseline_trip.published_pch, credited)
         reassign_version_by_index[idx] = AssignmentVersion(
             seq=0,  # real seq assigned during rebuild (after any duty extension)
