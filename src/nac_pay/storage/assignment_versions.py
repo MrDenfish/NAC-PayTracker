@@ -47,6 +47,15 @@ class VersionType(StrEnum):
     # behind a required checkbox). Reverse a drop by superseding it with a
     # CORRECTION — the active-versions resolver then ignores it.
     DROP = "DROP"
+    # The pilot correcting the DUTY WINDOW itself (duty_on_local /
+    # duty_off_local). Unlike every other type this is not a competing
+    # max() candidate — it is an INPUT: apply_actuals substitutes its
+    # duty hours for the feed-derived _actual_duty_hours when recomputing
+    # the §3.E components, so a correction works DOWNWARD as well as up.
+    # The §3.E guarantee still holds structurally: effective_pch is
+    # max(published, recomputed), so this can never take a day below
+    # published. See docs/superpowers/specs/2026-08-10-duty-time-override-design.md
+    DUTY_CORRECTION = "DUTY_CORRECTION"
 
 
 class VersionEntryMode(StrEnum):

@@ -296,3 +296,23 @@ def test_version_without_clocks_reads_as_none():
     got = store.list_for_month(2026, 8)["2026-08-09"][0]
     assert got.duty_on_local is None
     assert got.duty_off_local is None
+
+
+def test_duty_correction_version_round_trips():
+    """A duty correction is its own type so the history doesn't call a clock
+    fix a 'Reassignment'."""
+
+    store = UserAssignmentVersionStore(user_id="u_test_dutycorr")
+    store.save(
+        date_iso="2026-08-08",
+        version_type=VersionType.DUTY_CORRECTION,
+        assignment_id="720/1780",
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("7.13"),
+        duty_hours=Decimal("13.5667"),
+        duty_on_local="04:41",
+        duty_off_local="18:15",
+    )
+
+    got = store.list_for_month(2026, 8)["2026-08-08"][0]
+    assert got.version_type is VersionType.DUTY_CORRECTION
