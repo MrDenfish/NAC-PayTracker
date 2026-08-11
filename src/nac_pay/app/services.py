@@ -1528,6 +1528,15 @@ class _DutyWindow:
     # not clobber it once this is set, or the page and the credited pay
     # can diverge. Fix-round-1 IMPORTANT 3.
     is_override: bool = False
+    # True only for tier 1b (hours-only correction, no stored clocks) —
+    # this function has no visibility into manual legs, so it anchored
+    # duty_off on the FEED's last block-in + pad as a fallback. A caller
+    # that DOES know about manual legs (_build_day_detail) should prefer
+    # them as the back anchor over this feed-derived guess when the day
+    # has them. False for tier 1a (the pilot's own explicit clocks — the
+    # exact truth, nothing should re-anchor it) and for tiers 2/3 (not
+    # locked at all). Fix-round-2 NEW IMPORTANT.
+    anchor_needs_legs: bool = False
 
 
 def _day_duty_window(
@@ -1549,14 +1558,19 @@ def _day_duty_window(
          1a. Both clocks present → the exact reported/released window.
          1b. Clocks absent but ``duty_hours`` present (a SIMPLE-mode
              correction, or any row the store allows to carry hours with
-             no clocks) → back-anchor to the actual last block-in +
-             TRIP_END_PAD (same anchor tier 2/3 use) and derive duty-on by
-             subtracting the corrected hours — mirrors how
+             no clocks — the COMMON case today, since no write path
+             stores clocks yet) → back-anchor to the actual last block-in
+             + TRIP_END_PAD (same anchor tier 2/3 use) and derive duty-on
+             by subtracting the corrected hours — mirrors how
              ``_build_day_detail``'s manual-legs branch reconstructs
              duty-on from duty-off − duty_hours. This keeps the DISPLAYED
              duty_hours identical to the CREDITED duty_hours even when
              there's no clock pair to render exactly; only the on/off
-             clock split is an approximation.
+             clock split is an approximation, flagged via
+             ``anchor_needs_legs=True`` since this function can't see
+             manual legs — a caller that can (``_build_day_detail``)
+             should prefer them over this feed-anchored guess when the
+             day has them (fix-round-2 NEW IMPORTANT).
        Fix-round-1 IMPORTANT 1: the caller must select tier 1's WINNING
        version the same way the engine does (latest by ``(created_at,
        seq)``) BEFORE deciding which of 1a/1b applies — not filter out
@@ -1605,6 +1619,7 @@ def _day_duty_window(
                 duty_hours=ov_hours,
                 duty_rig_pch=ov_hours / Decimal("2"),
                 is_override=True,
+                anchor_needs_legs=True,
             )
 
     duty_end = last_in_utc + _td(hours=float(TRIP_END_PAD_HOURS))
@@ -1730,6 +1745,11 @@ def load_day(
     # version's legs, or the page would show one window while the
     # credited pay reflects the correction (fix-round-1 IMPORTANT 3).
     duty_window_locked = False
+    # True only when the locked window's anchor came from the feed as a
+    # fallback (tier 1b) rather than the pilot's own explicit clocks (tier
+    # 1a) — _build_day_detail should prefer manual legs over this feed
+    # anchor when the day has them (fix-round-2 NEW IMPORTANT).
+    duty_window_needs_leg_anchor = False
     reserve_window_start: str | None = None
     reserve_window_end: str | None = None
     reserve_base: str | None = None
@@ -1799,6 +1819,7 @@ def load_day(
             duty_hours = window.duty_hours
             duty_rig_pch = window.duty_rig_pch
             duty_window_locked = window.is_override
+            duty_window_needs_leg_anchor = window.anchor_needs_legs
 
     # Applied events on this date.
     events_today = tuple(e for e in pr.applied_events if e.date == target)
@@ -1888,6 +1909,7 @@ def load_day(
         duty_hours=duty_hours,
         duty_rig_pch=duty_rig_pch,
         duty_window_locked=duty_window_locked,
+        duty_window_needs_leg_anchor=duty_window_needs_leg_anchor,
         manual_legs_by_seq=manual_legs_by_seq,
         reserve_window_start=reserve_window_start,
         reserve_window_end=reserve_window_end,
@@ -2080,6 +2102,7 @@ def _build_day_detail(
     duty_hours: Decimal | None = None,
     duty_rig_pch: Decimal | None = None,
     duty_window_locked: bool = False,
+    duty_window_needs_leg_anchor: bool = False,
     manual_legs_by_seq: dict | None = None,
     reserve_window_start: str | None = None,
     reserve_window_end: str | None = None,
@@ -2317,6 +2340,30 @@ def _build_day_detail(
                             duty_on = dw["duty_on"]
                             duty_hours = dw["duty_hours"]
                             duty_rig_pch = dw["duty_rig"]
+                    elif duty_window_needs_leg_anchor:
+                        # Fix-round-2 NEW IMPORTANT: _day_duty_window's tier
+                        # 1b (an hours-only DUTY_CORRECTION — the common
+                        # case, since no write path stores clocks yet; see
+                        # main.py's reassign/correct route) doesn't know
+                        # about manual legs, so it anchored duty_off on the
+                        # FEED's last block-in + pad. The correction supplies
+                        # the DURATION (duty_hours/duty_rig_pch stay locked,
+                        # untouched here); the BEST AVAILABLE legs supply the
+                        # back ANCHOR — the pilot's own manual legs when this
+                        # date has them (as it does here, since we're inside
+                        # the manual-legs branch), else the feed anchor tier
+                        # 1b already computed. Single rule, single owner: this
+                        # is the only place that re-anchors duty_off once
+                        # locked, using the SAME duty_off − duty_hours idiom
+                        # as the un-locked branch above rather than a second,
+                        # divergent one. Tier 1a (duty_window_locked but NOT
+                        # duty_window_needs_leg_anchor — the pilot's own
+                        # EXPLICIT clocks) falls through untouched here: those
+                        # clocks are exact, not a guess to improve on.
+                        duty_off = dw["duty_off"]
+                        on_min = dw["off_min"] - int(duty_hours * 60)
+                        on_min %= 1440
+                        duty_on = f"{on_min // 60:02d}:{on_min % 60:02d}"
         # A feed-detected company reassignment (applied, not rejected) makes the
         # new routing the active assignment — surface its signature, the same as
         # the calendar cell, unless a pilot user-version above already replaced

@@ -666,3 +666,75 @@ def test_load_day_duty_correction_wins_over_a_manual_legs_reassignment():
     assert d.duty_off == "23:00"
     assert d.duty_hours == Decimal("20.00")
     assert d.duty_rig_pch == Decimal("10.00")
+    # D4 (fix-round-2): BLOCK still comes from the legs even though the
+    # duty WINDOW doesn't — this was the un-asserted half of the original
+    # I3 fix, so moving the actual_block assignment inside the
+    # duty_window_locked guard would previously have passed this whole
+    # file undetected.
+    assert d.actual_block_hours == Decimal("6.00")
+
+
+def test_load_day_duty_correction_anchors_duty_off_on_manual_legs_when_present():
+    """NEW IMPORTANT (fix round 2): tier 1b (an hours-only correction — the
+    common case, since no write path stores clocks yet; main.py's
+    reassign/correct route saves DETAILED-mode corrections as duty_hours
+    with duty_on_local/duty_off_local left None) anchors duty_off on the
+    FEED's last block-in + pad, because _day_duty_window has no visibility
+    into manual legs. But the real write path lets that SAME correction
+    carry its own pilot-entered legs (VersionLeg rows under the same seq),
+    and those are the better anchor when present. The correction still
+    supplies the DURATION (duty_hours/duty_rig_pch); only the on/off clock
+    split should shift to the manual-leg anchor.
+
+    Uses trip 768 on 2026-06-12 — a date with REAL feed legs — specifically
+    so the feed-anchored duty_off (whatever the actual iCal last-block-in
+    happens to be) is verifiably DIFFERENT from the manual-leg-anchored one
+    (14:15), proving the anchor actually moved rather than coincidentally
+    matching.
+
+    Mutation-verified: reverting the ``elif duty_window_needs_leg_anchor:``
+    branch in ``_build_day_detail`` (services.py) to a no-op makes this
+    FAIL — duty_off reverts to the feed-anchored value instead of 14:15."""
+    from nac_pay.app.services import _pipeline
+    from nac_pay.storage import (
+        DEFAULT_USER_ID,
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionLeg,
+        VersionType,
+    )
+
+    store = UserAssignmentVersionStore(user_id=DEFAULT_USER_ID)
+    saved = store.save(
+        date_iso="2026-06-12",
+        version_type=VersionType.DUTY_CORRECTION,
+        assignment_id="768",
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("10.00"),
+        duty_hours=Decimal("20.00"),
+        # No duty_on_local / duty_off_local — hours only (tier 1b).
+    )
+    store.save_legs(
+        "2026-06-12", saved.seq,
+        [VersionLeg(flight="768", out_local="03:00", in_local="14:00")],
+    )
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+
+    # Sanity: this date really does carry real feed legs, so the
+    # feed-anchored guess tier 1b would otherwise have used is a live
+    # alternative, not a hypothetical.
+    assert d.legs
+
+    # Duration still comes from the correction...
+    assert d.duty_hours == Decimal("20.00")
+    assert d.duty_rig_pch == Decimal("10.00")
+    assert d.effective_pch == Decimal("10.00")
+    # ...but the back anchor comes from the PILOT'S manual legs (last
+    # in_local 14:00 + 0:15 TRIP_END_PAD = 14:15), not the feed's last
+    # block-in. duty_on is back-computed: 14:15 − 20:00 wraps to the
+    # previous calendar day, rendered without a day marker (existing
+    # ``% 1440`` convention, per the coordinator's D6 ruling).
+    assert d.duty_off == "14:15"
+    assert d.duty_on == "18:15"
