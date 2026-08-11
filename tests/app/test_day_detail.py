@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
+from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from nac_pay.app.main import app
-from nac_pay.app.services import load_day
+from nac_pay.app.services import _pipeline, load_day
+from nac_pay.engine import compute_pay
+from nac_pay.schedule import AssignmentVersion, lower_month
+from nac_pay.schedule.apply_actuals import REASSIGN_CONFIRMED, FeedReassignment
 
 
 client = TestClient(app)
@@ -292,6 +298,75 @@ def test_load_day_pch_candidates_hierarchy():
     winners = [c for c in d.pch_candidates if c.is_winning]
     assert len(winners) == 1
     assert winners[0].pch == d.effective_pch
+
+
+def _poked_pipeline_with_company_pch(override_pch: Decimal):
+    """June 12 / trip 768, with a CONFIRMED feed reassignment carrying a
+    pilot-entered company PCH — the same shape ``load_day`` sees once Task
+    1's ``apply_actuals_to_month`` folds a real reroute's override, but
+    poked onto the real June fixture's pipeline result (no unmatched feed
+    trip exists in the bundled corpus to trigger one for real)."""
+    _pipeline.cache_clear()
+    real = _pipeline(2026, 6)
+    new_trips = []
+    for trip in real.updated_month.trips:
+        if trip.trip_id == "768" and date(2026, 6, 12) in trip.dates:
+            new_trips.append(replace(
+                trip,
+                versions=trip.versions + (
+                    AssignmentVersion(
+                        seq=len(trip.versions) + 1,
+                        pch_value=override_pch,
+                        label="company-assigned (test)",
+                    ),
+                ),
+            ))
+        else:
+            new_trips.append(trip)
+    poked_month = replace(real.updated_month, trips=tuple(new_trips))
+    fr = FeedReassignment(
+        date=date(2026, 6, 12),
+        signature="768/769",
+        original_aid="768",
+        original_pch=Decimal("4.17"),
+        new_pch=Decimal("4.17"),
+        effective_pch=override_pch,
+        status=REASSIGN_CONFIRMED,
+        applied=True,
+        override_pch=override_pch,
+    )
+    return replace(
+        real,
+        updated_month=poked_month,
+        engine_result=compute_pay(lower_month(poked_month)),
+        feed_reassignments=(fr,),
+    )
+
+
+def test_candidates_card_includes_the_company_assigned_row():
+    """Aug 10 class of defect: with a company PCH entered the card listed
+    three candidates, marked NO winner, and asserted a fourth number that
+    appeared nowhere. The company value must be a row, and exactly one
+    row must be marked winning."""
+    poked = _poked_pipeline_with_company_pch(Decimal("5.17"))
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        d = load_day(2026, 6, 12)
+
+    labels = [c.label for c in d.pch_candidates]
+    assert "Company-assigned (reassignment notice)" in labels
+    winners = [c for c in d.pch_candidates if c.is_winning]
+    assert len(winners) == 1
+    assert winners[0].pch == d.effective_pch
+    assert winners[0].label == "Company-assigned (reassignment notice)"
+
+
+def test_candidates_card_without_a_company_value_is_unchanged():
+    """No-override safety: the row is absent and rendering is as before."""
+    _pipeline.cache_clear()
+    d = load_day(2026, 6, 12)
+    assert "Company-assigned (reassignment notice)" not in [
+        c.label for c in d.pch_candidates
+    ]
 
 
 def test_load_day_exposes_scheduled_duty_window_from_packet():

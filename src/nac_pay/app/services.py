@@ -68,6 +68,7 @@ from nac_pay.schedule import (
     lower_month,
     month_from_master_schedule,
 )
+from nac_pay.schedule.apply_actuals import REASSIGN_CONFIRMED
 from nac_pay.storage import (
     DEFAULT_USER_ID,
     DayOverride,
@@ -1916,6 +1917,17 @@ def load_day(
         (fr for fr in pr.feed_reassignments if fr.date == target), None,
     )
 
+    # Only an ACTIVE/CONFIRMED reassignment's company-entered PCH is a
+    # candidate the "how it's credited" card can show — a PROPOSED/REJECTED
+    # one hasn't (or no longer) folds into effective_pch.
+    fr_for_day = next(
+        (
+            fr for fr in pr.feed_reassignments
+            if fr.date == target and fr.status == REASSIGN_CONFIRMED
+        ),
+        None,
+    )
+
     # Feed-detected company drop on this date (confirm/reject card).
     feed_drop = next(
         (fd for fd in pr.feed_drops if fd.date == target), None,
@@ -1979,6 +1991,7 @@ def load_day(
         events_today=events_today,
         feed_reassignment=feed_reassignment,
         feed_drop=feed_drop,
+        fr_for_day=fr_for_day,
         has_override=override is not None,
         saved=saved,
         user_versions=user_versions,
@@ -2190,6 +2203,7 @@ def _build_day_detail(
     events_today: tuple[AppliedEvent, ...],
     feed_reassignment: FeedReassignment | None = None,
     feed_drop: FeedDrop | None = None,
+    fr_for_day: FeedReassignment | None = None,
     has_override: bool = False,
     saved: bool = False,
     user_versions: list | None = None,
@@ -2550,6 +2564,15 @@ def _build_day_detail(
             raw.append(("Assigned trip (published)", sched_packet.trip_pch_value))
         elif published is not None:
             raw.append(("Published", published))
+        if fr_for_day is not None and fr_for_day.override_pch is not None:
+            # Pilot-entered company PCH on a CONFIRMED feed reassignment
+            # (§3.E.1.b) — one more candidate the effective value is the
+            # greatest of, not a silent replacement (2026-08-10 defect: the
+            # card asserted this number without ever listing it).
+            raw.append((
+                "Company-assigned (reassignment notice)",
+                fr_for_day.override_pch,
+            ))
         if actual_block is not None and actual_block > 0:
             raw.append(("Flight-op (actual block)", actual_block))
         if duty_rig_pch is not None:
