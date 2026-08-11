@@ -694,6 +694,135 @@ def test_offday_pickup_renders_confirmable_card(monkeypatch):
     assert "Reject — keep day OFF" in body
 
 
+def test_offday_pickup_candidates_card_relabels_published_row(monkeypatch):
+    """Deferred cosmetic (Finding 1, 2026-08-11): apply_actuals sets an
+    off-day pickup's ``Trip.published_pch`` to the already-credited value
+    (``max(override, new_pch)``), so the credited-candidates card's
+    "Published" row duplicates the credited value and — being listed
+    before the Company/Recomputed rows — steals the mark ahead of the
+    real explanation. This fires on a PROPOSED (auto-applied, not yet
+    confirmed) pickup, the state most pickups sit in on real prod days.
+    Relabel it "Pickup (credited)" so the mark isn't attached to a
+    misleading "Published"."""
+    from nac_pay.app.services import load_day
+
+    client, uid = _bootstrap_user_with_june(monkeypatch, "pickuplabel@x.test")
+    _upload_feed_with_offday_pickup(client)
+
+    d = load_day(2026, 6, 8, user_id=uid)
+    labels = [c.label for c in d.pch_candidates]
+    assert "Pickup (credited)" in labels
+    assert "Published" not in labels
+    winners = [c for c in d.pch_candidates if c.is_winning]
+    assert len(winners) == 1
+    assert winners[0].label == "Pickup (credited)"
+    assert winners[0].pch == d.effective_pch == Decimal("3.82")
+
+
+_ROW_TR_RE = re.compile(r'<tr class="([^"]*)">\s*<td>([^<]*)</td>')
+
+
+def _pickup_card_html(html: str) -> str:
+    """Slice out just the off-day-pickup card's rendered HTML."""
+    start = html.index("New trip on your day off")
+    end = html.index('<h2 class="card-title">', start + 1)
+    return html[start:end]
+
+
+def _pickup_table_html(card: str) -> str:
+    """Slice out just the option-table itself — scoping past the confirmed
+    banner / pch input value= attribute that also echo the company figure
+    elsewhere in the same card."""
+    start = card.index('<table class="option-table">')
+    end = card.index("</table>", start) + len("</table>")
+    return card[start:end]
+
+
+def test_offday_pickup_card_marks_recompute_winner_when_override_trails_it(monkeypatch):
+    """Finding 1 (2026-08-11): the pickup fold is
+    effective = max(override, new_pch), with NO published floor (a pickup
+    has no original). Confirming a company value BELOW the recompute
+    (3.00 < 3.82, the DPG-floored recompute) used to render "Crediting
+    company-assigned 3.00 -> 3.82 PCH" — a false statement, since the
+    credited 3.82 came from the recompute, not the 3.00 it named. The
+    comparison table must name both values and mark Recomputed, not
+    Company-assigned."""
+    client, _ = _bootstrap_user_with_june(monkeypatch, "pickuptable@x.test")
+    _upload_feed_with_offday_pickup(client)
+
+    r = client.post(
+        "/day/2026-06-08/reassignment/confirm",
+        data={"signature": "2720/2721", "pch": "3.00"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    body = client.get("/day/2026-06-08").text
+    table = _pickup_table_html(_pickup_card_html(body))
+    assert "Company-assigned" in table and "3.00" in table
+    assert "Recomputed from actual times" in table and "3.82" in table
+
+    rows = [
+        (label.strip(), "winning" in cls.split())
+        for cls, label in _ROW_TR_RE.findall(table)
+    ]
+    winners = [label for label, win in rows if win]
+    assert len(winners) == 1
+    assert winners[0].startswith("Recomputed from actual times")
+
+
+def test_offday_pickup_card_marks_company_winner_when_it_beats_recompute(monkeypatch):
+    """Company (5.17) beats recompute (3.82): the Company row alone is
+    marked winning — the tie-precedence/single-winner half of the same
+    table, so a naive "always mark Recomputed" fix can't pass both."""
+    client, _ = _bootstrap_user_with_june(monkeypatch, "pickuptable2@x.test")
+    _upload_feed_with_offday_pickup(client)
+
+    r = client.post(
+        "/day/2026-06-08/reassignment/confirm",
+        data={"signature": "2720/2721", "pch": "5.17"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    body = client.get("/day/2026-06-08").text
+    table = _pickup_table_html(_pickup_card_html(body))
+    rows = [
+        (label.strip(), "winning" in cls.split())
+        for cls, label in _ROW_TR_RE.findall(table)
+    ]
+    winners = [label for label, win in rows if win]
+    assert len(winners) == 1
+    assert winners[0].startswith("Company-assigned")
+
+
+def test_offday_pickup_card_winner_marking_tie_prefers_company(monkeypatch):
+    """Company == recompute == effective (3.82 all three): tie precedence
+    marks Company, and exactly one row is marked — not both. This is what
+    actually exercises the ``not ns.marked`` guard on the Recomputed row
+    (the two adjacent-value tests above never tie, so a guard deletion
+    wouldn't surface there)."""
+    client, _ = _bootstrap_user_with_june(monkeypatch, "pickuptable3@x.test")
+    _upload_feed_with_offday_pickup(client)
+
+    r = client.post(
+        "/day/2026-06-08/reassignment/confirm",
+        data={"signature": "2720/2721", "pch": "3.82"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    body = client.get("/day/2026-06-08").text
+    table = _pickup_table_html(_pickup_card_html(body))
+    rows = [
+        (label.strip(), "winning" in cls.split())
+        for cls, label in _ROW_TR_RE.findall(table)
+    ]
+    winners = [label for label, win in rows if win]
+    assert len(winners) == 1
+    assert winners[0].startswith("Company-assigned")
+
+
 def test_offday_pickup_reject_reverts_to_off(monkeypatch):
     client, _ = _bootstrap_user_with_june(monkeypatch, "offday2@x.test")
     _upload_feed_with_offday_pickup(client)
@@ -707,6 +836,37 @@ def test_offday_pickup_reject_reverts_to_off(monkeypatch):
     body = r.text
     assert "this day remains OFF" in body
     assert "New trip on your day off" in body   # rejected card still shown
+
+
+def test_confirm_route_quantizes_a_three_decimal_pch(monkeypatch):
+    """MINOR 3: a typed 3-decimal company PCH (5.015) is the only reachable
+    way the credited-candidates card (Decimal.quantize) and the
+    reassignment card (the template's "%.2f"|format idiom) can mark
+    different rows — "%.2f" % Decimal("5.015") coerces through float first
+    (float(5.015) == 5.014999999999999680...) and rounds DOWN to 5.01,
+    while Decimal("5.015").quantize(Decimal("0.01")) ties to even and
+    rounds UP to 5.02. Quantizing once at the route, before the value is
+    ever stored, makes every downstream render agree."""
+    from nac_pay.storage import FeedReassignmentDecisionStore
+
+    client, uid = _bootstrap_user_with_june(monkeypatch, "quantize@x.test")
+    _upload_feed_with_offday_pickup(client)
+
+    r = client.post(
+        "/day/2026-06-08/reassignment/confirm",
+        data={"signature": "2720/2721", "pch": "5.015"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    stored = FeedReassignmentDecisionStore(user_id=uid).pch_overrides_for_month(
+        2026, 6,
+    )
+    assert stored[("2026-06-08", "2720/2721")] == Decimal("5.02")
+
+    body = client.get("/day/2026-06-08").text
+    assert "Company PCH 5.02 (entered)" in body
+    assert "5.01" not in body
 
 
 # ── Task 7: duty-correction clocks on the amend form ─────────────────

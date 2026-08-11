@@ -381,22 +381,30 @@ def test_candidates_card_includes_the_company_assigned_row():
     appeared nowhere. The company value must be a row, and exactly one
     row must be marked winning.
 
-    Also I1's mutation coverage: two distractors — a CONFIRMED reassignment
-    on a DIFFERENT date (2026-06-13) and a PROPOSED one on the SAME date —
-    are ordered BEFORE the real one so that dropping either the
-    ``fr.date == target`` or the ``fr.status == REASSIGN_CONFIRMED`` clause
-    in ``load_day``'s resolution picks up the wrong entry first (see the
-    mutation transcript in the report)."""
+    Also mutation coverage for ``load_day``'s ``fr_for_day`` resolution,
+    which now reads ``fr.date == target and fr.status != REASSIGN_REJECTED``
+    (Finding 2, 2026-08-11: PROPOSED folds identically to CONFIRMED, so the
+    gate widened from "== CONFIRMED" to "!= REJECTED"). Two distractors,
+    ordered BEFORE the real one, each isolate one clause:
+      - ``distractor_rejected_same_date``: correct date, REJECTED status —
+        picked up first if the ``!= REASSIGN_REJECTED`` clause is deleted
+        (leaving only the date clause).
+      - ``distractor_confirmed_other_date``: wrong date, CONFIRMED status —
+        picked up first if the ``fr.date == target`` clause is deleted
+        (leaving only the status clause).
+    Either mutation leaks a distractor's value onto the card instead of the
+    real winner's 5.17."""
     winner_fr = _fr(date(2026, 6, 12), override_pch=Decimal("5.17"))
-    wrong_date = _fr(
-        date(2026, 6, 13), override_pch=Decimal("8.88"), signature="769/770",
-    )
-    wrong_status = _fr(
-        date(2026, 6, 12), status=REASSIGN_PROPOSED,
+    distractor_rejected_same_date = _fr(
+        date(2026, 6, 12), status=REASSIGN_REJECTED,
         override_pch=Decimal("9.99"), signature="768/771",
     )
+    distractor_confirmed_other_date = _fr(
+        date(2026, 6, 13), override_pch=Decimal("8.88"), signature="769/770",
+    )
     poked = _poked_pipeline(
-        (wrong_date, wrong_status, winner_fr), credited_pch=Decimal("5.17"),
+        (distractor_rejected_same_date, distractor_confirmed_other_date, winner_fr),
+        credited_pch=Decimal("5.17"),
     )
 
     with patch("nac_pay.app.services._pipeline", return_value=poked):
@@ -421,6 +429,36 @@ def test_candidates_card_includes_the_company_assigned_row():
     assert "Company-assigned (reassignment notice)" in r.text
 
 
+def test_candidates_card_marks_recompute_winner_on_a_proposed_reassignment():
+    """Finding 2 (2026-08-11): apply_actuals folds a PROPOSED reassignment
+    into effective_pch exactly like a CONFIRMED one — status only gates the
+    confirm/reject badge. Before the fix, ``fr_for_day`` required
+    ``status == REASSIGN_CONFIRMED``, so a PROPOSED reroute whose recompute
+    wins (trip-rig/DPG/deadhead-driven) marked ZERO winners on this card
+    while the reassignment card on the same page marked "Recomputed ←
+    credited" — the original Aug 10 defect, one status over. No company
+    value is entered, so only the Recomputed row is new; it alone must be
+    marked winning."""
+    fr = _fr(
+        date(2026, 6, 12), status=REASSIGN_PROPOSED,
+        override_pch=None, new_pch=Decimal("5.05"),
+    )
+    assert fr.status == REASSIGN_PROPOSED and fr.applied is True   # sanity
+    assert fr.effective_pch == Decimal("5.05")
+    poked = _poked_pipeline((fr,), credited_pch=Decimal("5.05"))
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        d = load_day(2026, 6, 12)
+
+    labels = [c.label for c in d.pch_candidates]
+    assert "Company-assigned (reassignment notice)" not in labels
+    assert "Recomputed from actual times (max of the §3.E components)" in labels
+    winners = [c for c in d.pch_candidates if c.is_winning]
+    assert len(winners) == 1
+    assert winners[0].label == "Recomputed from actual times (max of the §3.E components)"
+    assert winners[0].pch == d.effective_pch == Decimal("5.05")
+
+
 def test_candidates_card_recompute_row_wins_when_it_beats_the_company_value():
     """I2: Task 1 made recompute-beats-company reachable — when the
     recompute wins (trip-rig/DPG/deadhead-driven, not necessarily equal to
@@ -436,11 +474,73 @@ def test_candidates_card_recompute_row_wins_when_it_beats_the_company_value():
 
     labels = [c.label for c in d.pch_candidates]
     assert "Company-assigned (reassignment notice)" in labels
-    assert "Recomputed from actual times" in labels
+    # Minor 4: Card A's recompute row carries the same "(max of the §3.E
+    # components)" qualifier as Card B's, so the two cards describe the
+    # row identically.
+    assert "Recomputed from actual times (max of the §3.E components)" in labels
     winners = [c for c in d.pch_candidates if c.is_winning]
     assert len(winners) == 1
-    assert winners[0].label == "Recomputed from actual times"
+    assert winners[0].label == "Recomputed from actual times (max of the §3.E components)"
     assert winners[0].pch == d.effective_pch == Decimal("5.05")
+
+
+def test_candidates_card_recompute_wins_a_tie_with_flight_op_confirmed_no_override():
+    """Minor 5: a CONFIRMED FR with ``override_pch=None`` — no company
+    value entered — is the one display change that fires on REAL prod
+    days today (no pilot has to type anything for this row to appear).
+    The recompute row must appear (no Company-assigned row), and when it
+    ties the actual-block ("Flight-op") candidate, the recompute row —
+    listed first in ``raw`` — takes the mark, not Flight-op. Published is
+    poked away from the tie value (3.00) so it can't also claim it; this
+    isolates the Recomputed-vs-Flight-op ordering the fix actually
+    changed, independent of the pre-existing Published/Flight-op tie
+    (both 4.17) that ``_poked_pipeline``'s unmodified fixture carries."""
+    from dataclasses import replace as _replace
+
+    _pipeline.cache_clear()
+    real = _pipeline(2026, 6)
+    tie_value = Decimal("4.17")   # quantizes-ties the real Flight-op 4.1666...
+    fr = _fr(
+        date(2026, 6, 12), status=REASSIGN_CONFIRMED,
+        override_pch=None, new_pch=tie_value,
+    )
+    new_trips = []
+    for trip in real.updated_month.trips:
+        if trip.trip_id == "768" and date(2026, 6, 12) in trip.dates:
+            new_trips.append(_replace(
+                trip,
+                published_pch=Decimal("3.00"),
+                versions=trip.versions + (
+                    AssignmentVersion(
+                        seq=len(trip.versions) + 1,
+                        pch_value=tie_value,
+                        label="company-assigned (test)",
+                    ),
+                ),
+            ))
+        else:
+            new_trips.append(trip)
+    poked_month = _replace(real.updated_month, trips=tuple(new_trips))
+    poked = _replace(
+        real,
+        updated_month=poked_month,
+        engine_result=compute_pay(lower_month(poked_month)),
+        feed_reassignments=(fr,),
+    )
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        d = load_day(2026, 6, 12)
+
+    assert d.effective_pch == Decimal("4.17")
+    labels = [c.label for c in d.pch_candidates]
+    assert "Company-assigned (reassignment notice)" not in labels
+    assert "Recomputed from actual times (max of the §3.E components)" in labels
+    assert any(l.startswith("Flight-op") for l in labels)   # sanity: it's on the card
+
+    winners = [c for c in d.pch_candidates if c.is_winning]
+    assert len(winners) == 1
+    assert winners[0].label == "Recomputed from actual times (max of the §3.E components)"
+    assert winners[0].pch == d.effective_pch
 
 
 def test_candidates_card_without_a_company_value_is_unchanged():
