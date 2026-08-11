@@ -583,10 +583,21 @@ def day_reassign(
             elif on_clock or off_clock:
                 return _bail("Enter both duty on and duty off, or neither.")
             else:
-                # Detailed mode with BOTH clocks blank — same no-op as
-                # Simple mode above, just reached via the other entry
-                # mode. A row with no clocks and no fold participation
-                # would save silently and change nothing.
+                # Detailed mode with BOTH clocks blank. NOT a no-op the way
+                # the Simple-mode rejection above is — _build_duty_overrides
+                # falls back to the stored duty_hours when clocks are absent
+                # (services.py: "if hours is None: hours = v.duty_hours"),
+                # so an hours-only DUTY_CORRECTION genuinely DOES drive the
+                # §3.E recompute (this is the pre-Task-7 tier-1b shape other
+                # write paths, e.g. direct store.save in tests, still use).
+                # Rejected here anyway because THIS route has no way to
+                # reach it validly any more: duty_hours is JS-managed
+                # read-only under DUTY_CORRECTION (see day.html's
+                # syncDutyCorrectionMode), only ever set FROM the clocks —
+                # so "duty_hours has a real value AND both clocks are
+                # blank" cannot happen through the shipped form, and a
+                # hand-built POST hitting it would be submitting a number
+                # the pilot never actually entered as a duty duration.
                 return _bail(
                     "Enter a duty on and duty off time to file a duty "
                     "correction — use Reassignment / amend instead if "

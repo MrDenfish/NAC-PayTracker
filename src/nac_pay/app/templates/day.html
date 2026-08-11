@@ -863,9 +863,12 @@
               <input type="time" id="reassign-report" name="duty_on_local"
                      value="{{ data.duty_on or data.sched_duty_on or '' }}">
               <span class="form-hint">
-                When duty started — the scheduled check-in, 1:00 before the
-                scheduled departure. Not actual block-out: a late push
-                lengthens the duty day, it doesn't move its start.
+                When duty started — read for every type. Defaults to the
+                scheduled check-in (1:00 before scheduled departure); edit
+                it if the company moved the show time. Not actual
+                block-out: a late push lengthens the duty day via a later
+                arrival, it doesn't move this start. For a Duty correction
+                this is your own report clock, entered directly.
               </span>
             </label>
             <label class="reassign-duty-off">
@@ -873,8 +876,12 @@
               <input type="time" id="reassign-duty-off" name="duty_off_local"
                      value="{{ data.duty_off or data.sched_duty_off or '' }}">
               <span class="form-hint">
-                When duty ended — last block-in plus 0:15. Edit either clock
-                to correct the duty day; duty hours and duty rig follow.
+                When duty ended. For Reassignment/Correction this field
+                isn't read — duty off tracks the legs above (last block-in
+                plus 0:15) exactly as it did before duty corrections
+                existed. For a Duty correction, edit this (and duty on
+                above) directly; duty hours and duty rig follow exactly
+                what you enter here.
               </span>
             </label>
             <p class="form-hint">
@@ -1145,23 +1152,29 @@
           lastIn = inAbs;
           prevIn = inAbs;
         }
-        // Duty STARTS at the report/check-in time and ENDS at the duty-off
-        // clock ONLY for a DUTY_CORRECTION (isDutyCorrection) — editing
-        // either clock is how a duty correction is entered; duty hours and
-        // duty rig follow. For every other version_type these two clocks
-        // are ignored entirely: duty falls back to first-out − 1:00 (or the
-        // scheduled report, which the packet's L Day Show already primed
-        // the field with — but that prefill is display-only, not read,
-        // here) through last-in + 0:15, exactly as it did before this
-        // feature existed. Fix round 2, NEW-1: the duty-off field is now
-        // ALWAYS prefilled (see C2), so without this gate `back` would
-        // pin to that stale clock for a Reassignment too and silently
-        // undercredit a real duty extension.
-        var duty_corr = isDutyCorrection();
+        // Duty STARTS at the report/check-in time — this predates the
+        // whole duty-time-override feature and applies to EVERY
+        // version_type: "The report field overrides; fall back to
+        // first-out − 1:00 when it's blank" is the shipped duty-rig entry
+        // flow (a company show-time move is a real, editable input for a
+        // plain Reassignment too, not just a DUTY_CORRECTION). Duty ENDS
+        // at the duty-off clock ONLY for a DUTY_CORRECTION
+        // (isDutyCorrection) — for every other version_type that field is
+        // ignored and duty-off falls back to last-in + 0:15, exactly as it
+        // did before this feature existed. Fix round 2, NEW-1: the
+        // duty-off field is now ALWAYS prefilled (see C2), so without
+        // gating IT SPECIFICALLY, `back` would pin to that stale clock for
+        // a Reassignment too and silently undercredit a real duty
+        // extension. Fix round 3: the ORIGINAL round-2 fix over-gated —
+        // it also silenced the report/front anchor, which was never the
+        // bug; that regressed the pre-existing "edit the report time to
+        // reflect a company show-time move" flow for every non-correction
+        // type. Only `dutyOffMin` is gated here; `reportMin` is read
+        // unconditionally.
         var reportEl = document.getElementById("reassign-report");
         var dutyOffEl = document.getElementById("reassign-duty-off");
-        var reportMin = (duty_corr && reportEl) ? toMin(reportEl.value) : null;
-        var dutyOffMin = (duty_corr && dutyOffEl) ? toMin(dutyOffEl.value) : null;
+        var reportMin = reportEl ? toMin(reportEl.value) : null;
+        var dutyOffMin = (isDutyCorrection() && dutyOffEl) ? toMin(dutyOffEl.value) : null;
         var front = (reportMin !== null) ? reportMin : (firstOut - REPORT_PAD);
         var back = (dutyOffMin !== null) ? dutyOffMin : (lastIn + TRIP_END_PAD);
         var duty = (back - front) / 60;
