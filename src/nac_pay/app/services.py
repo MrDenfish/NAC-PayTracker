@@ -38,6 +38,7 @@ from nac_pay.parsers import (
     FlightLegEvent,
     ParsedFeed,
     PayStub,
+    ReconciledTrip,
     ReconciliationResult,
     TripPairing,
     ValidationDiscrepancy,
@@ -78,6 +79,7 @@ from nac_pay.storage import (
     PilotProfileStore,
     SharedDocumentsStore,
     User,
+    UserAssignmentVersion,
     UserAssignmentVersionStore,
     UserDocumentsStore,
     UserStore,
@@ -466,7 +468,9 @@ def _resolve_pilot_schedule(grids: dict[tuple[str, str], object], code: str, pos
     return same_code[0] if len(same_code) == 1 else None
 
 
-def _resolve_duty_override_key(trips, date_iso: str) -> str:
+def _resolve_duty_override_key(
+    trips: tuple[ReconciledTrip, ...], date_iso: str,
+) -> str:
     """Map a DUTY_CORRECTION's filed date onto the key ``apply_actuals_to_month``
     actually looks its ``duty_overrides`` up by: a reconciled trip's FIRST
     Anchorage-local date (``_local_date(rt.first_dt_utc).isoformat()``).
@@ -477,7 +481,9 @@ def _resolve_duty_override_key(trips, date_iso: str) -> str:
     multi-day pairing a correction filed on day 2 or 3 would otherwise
     never match apply_actuals' lookup and silently no-op. Reuses the same
     day-enumeration idiom as ``ReconciledTrip.calendar_days_touched``
-    (``reconciliation.py``) rather than inventing a new one.
+    (``reconciliation.py``) rather than inventing a new one — including the
+    last leg's END date, which can spill past local midnight and cover a
+    date no leg's START date touches.
 
     Falls back to ``date_iso`` itself when no trip covers that date (e.g.
     the feed already aged the trip out) — a key that might still match is
@@ -494,6 +500,58 @@ def _resolve_duty_override_key(trips, date_iso: str) -> str:
         if target in days:
             return _local_date(rt.first_dt_utc).isoformat()
     return date_iso
+
+
+def _build_duty_overrides(
+    user_versions: dict[str, list[UserAssignmentVersion]],
+    trips: tuple[ReconciledTrip, ...],
+) -> dict[str, Decimal]:
+    """Resolve pilot ``DUTY_CORRECTION`` versions into the dict
+    ``apply_actuals_to_month`` substitutes for feed-derived duty in the
+    §3.E recompute. Pulled out of ``_pipeline`` as its own function so the
+    call site that uses ``_resolve_duty_override_key`` — and the recency
+    rule below — is exercised directly by a unit test, not only indirectly
+    through the full document-parsing pipeline.
+
+    Two "latest wins" rules, BOTH keyed on ``created_at`` — never ``seq``.
+    ``seq`` is allocated per ``(user, date)`` (see
+    ``UserAssignmentVersionStore.save``), so comparing seq across two
+    DIFFERENT dates of the same multi-day pairing is meaningless: a day-1
+    correction edited twice (seq=3) is not "later" than a fresh day-3
+    correction (seq=1) filed afterward — ``created_at`` is. Within a
+    single date, seq order and created_at order always agree, so using
+    created_at there is a pure fix, not a behavior change.
+
+    - Per date: the latest ACTIVE ``DUTY_CORRECTION`` on that date wins
+      (an inactive/superseded one is already excluded by
+      ``active_versions`` before this function sees it).
+    - Per trip: each date is mapped onto its covering reconciled trip's
+      first local date via ``_resolve_duty_override_key``. If two
+      different dates resolve to the SAME trip (the pilot corrected the
+      same pairing from more than one of its days), the version with the
+      later ``created_at`` wins.
+    """
+    best: dict[str, tuple[str, Decimal]] = {}  # key -> (created_at, hours)
+    for date_iso, vlist in user_versions.items():
+        active, _superseded = active_versions(vlist)
+        corrections = [
+            v for v in active if v.version_type is VersionType.DUTY_CORRECTION
+        ]
+        if not corrections:
+            continue
+        v = max(corrections, key=lambda x: x.created_at)
+        hours = None
+        if v.duty_on_local and v.duty_off_local:
+            hours = _duty_hours_between(v.duty_on_local, v.duty_off_local)
+        if hours is None:
+            hours = v.duty_hours
+        if hours is None:
+            continue
+        key = _resolve_duty_override_key(trips, date_iso)
+        prior = best.get(key)
+        if prior is None or v.created_at > prior[0]:
+            best[key] = (v.created_at, hours)
+    return {key: hours for key, (_created_at, hours) in best.items()}
 
 
 @lru_cache(maxsize=64)
@@ -557,33 +615,13 @@ def _pipeline(
     user_versions = UserAssignmentVersionStore(user_id=user_id).list_for_month(year, month)
 
     # Pilot duty corrections resolved to the trip's first local date — the
-    # key apply_actuals looks them up by (see ``_resolve_duty_override_key``).
-    # Highest-seq ACTIVE correction wins per date; if two dates resolve to
-    # the same trip (multi-day pairing corrected from more than one day's
-    # page), the highest seq among those wins too.
-    duty_overrides: dict[str, Decimal] = {}
-    _duty_override_seq: dict[str, int] = {}
+    # key apply_actuals looks them up by. See _build_duty_overrides for the
+    # trip-mapping + recency rules.
     _recon_trips = (
         tuple(reconciliation.matched) + tuple(reconciliation.unmatched)
         if reconciliation is not None else ()
     )
-    for date_iso, vlist in user_versions.items():
-        active, _superseded = active_versions(vlist)
-        corrections = [v for v in active if v.version_type is VersionType.DUTY_CORRECTION]
-        if not corrections:
-            continue
-        v = max(corrections, key=lambda x: x.seq)
-        hours = None
-        if v.duty_on_local and v.duty_off_local:
-            hours = _duty_hours_between(v.duty_on_local, v.duty_off_local)
-        if hours is None:
-            hours = v.duty_hours
-        if hours is None:
-            continue
-        key = _resolve_duty_override_key(_recon_trips, date_iso)
-        if key not in _duty_override_seq or v.seq > _duty_override_seq[key]:
-            duty_overrides[key] = hours
-            _duty_override_seq[key] = v.seq
+    duty_overrides = _build_duty_overrides(user_versions, _recon_trips)
 
     if reconciliation is not None:
         _reassign_store = FeedReassignmentDecisionStore(user_id=user_id)
@@ -2159,26 +2197,6 @@ def _build_day_detail(
                         duty_on = dw["duty_on"]
                         duty_hours = dw["duty_hours"]
                         duty_rig_pch = dw["duty_rig"]
-            # A DUTY_CORRECTION is an INPUT, not a competing max()
-            # candidate (see apply_actuals._actual_duty_hours) — so its
-            # corrected window is authoritative for THIS card whenever it
-            # wins, independent of whether it also carries manual legs.
-            # Same duty_hours_between + stored-duty_hours fallback as the
-            # §3.E recompute in _pipeline, so the Duty card and the
-            # engine's credited PCH always agree.
-            if winner.version_type is _VT.DUTY_CORRECTION:
-                corrected_hours = None
-                if winner.duty_on_local and winner.duty_off_local:
-                    corrected_hours = _duty_hours_between(
-                        winner.duty_on_local, winner.duty_off_local,
-                    )
-                    duty_on = winner.duty_on_local
-                    duty_off = winner.duty_off_local
-                if corrected_hours is None:
-                    corrected_hours = winner.duty_hours
-                if corrected_hours is not None:
-                    duty_hours = corrected_hours
-                    duty_rig_pch = corrected_hours / Decimal("2")
         # A feed-detected company reassignment (applied, not rejected) makes the
         # new routing the active assignment — surface its signature, the same as
         # the calendar cell, unless a pilot user-version above already replaced
