@@ -1266,6 +1266,13 @@ class DayDetailData:
     duty_off: str | None = None
     duty_hours: Decimal | None = None
     duty_rig_pch: Decimal | None = None
+    # True when duty_on/duty_off/duty_hours/duty_rig_pch above came from the
+    # pilot's own active DUTY_CORRECTION (tier 1 in _day_duty_window) rather
+    # than the feed/packet — i.e. these are pilot-entered numbers driving
+    # the CREDITED pay, not a feed-derived observation. Drives the
+    # "Pilot-corrected" provenance note on the duty card (Task 7; same
+    # precedent as the PR #70 "Credited (effective)" relabel).
+    duty_window_is_correction: bool = False
     # Scheduled duty window from the packet (local "HH:MM") + its rig — the
     # reconstruct-from-packet fallback shown when iCal legs are missing.
     sched_duty_on: str | None = None
@@ -2442,7 +2449,11 @@ def _build_day_detail(
         if actual_block is not None and actual_block > 0:
             raw.append(("Flight-op (actual block)", actual_block))
         if duty_rig_pch is not None:
-            raw.append(("Duty-rig (actual)", duty_rig_pch))
+            duty_rig_label = (
+                "Duty-rig (pilot-corrected)" if duty_window_locked
+                else "Duty-rig (actual)"
+            )
+            raw.append((duty_rig_label, duty_rig_pch))
         elif sched_duty_rig_pch is not None:
             # No iCal actuals (legs missing) — fall back to the packet's
             # scheduled duty rig so a duty-rig candidate still shows.
@@ -2532,6 +2543,7 @@ def _build_day_detail(
         duty_off=duty_off,
         duty_hours=duty_hours,
         duty_rig_pch=duty_rig_pch,
+        duty_window_is_correction=duty_window_locked,
         sched_duty_on=sched_duty_on,
         sched_duty_off=sched_duty_off,
         sched_duty_rig_pch=sched_duty_rig_pch,

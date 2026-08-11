@@ -492,6 +492,46 @@ def test_load_day_pch_candidates_mark_the_corrected_duty_rig_as_winner():
     assert winners[0].pch == d.effective_pch
 
 
+def test_load_day_flags_duty_window_provenance_when_corrected():
+    """Task 7 UI note: the day-detail data must say WHOSE numbers are on
+    the duty card. A plain flown day (no correction) is feed-derived;
+    once a DUTY_CORRECTION is active, the SAME fields are the pilot's own
+    entry — the page must not present one as the other."""
+    from nac_pay.app.services import _pipeline
+
+    plain = load_day(2026, 6, 12)
+    assert plain.duty_window_is_correction is False
+
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="23:00",
+        duty_hours=Decimal("20.00"), pch_value=Decimal("4.17"),
+    )
+    _pipeline.cache_clear()
+
+    corrected = load_day(2026, 6, 12)
+    assert corrected.duty_window_is_correction is True
+
+
+def test_day_route_labels_the_corrected_duty_window_as_pilot_entered():
+    """End-to-end through the template: the duty card must say
+    "pilot-corrected" rather than silently reusing the "(actual)" label
+    that implies a feed observation."""
+    from nac_pay.app.services import _pipeline
+
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="23:00",
+        duty_hours=Decimal("20.00"), pch_value=Decimal("4.17"),
+    )
+    _pipeline.cache_clear()
+
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+    assert "pilot-corrected" in r.text
+    assert "Duty-rig (pilot-corrected)" in r.text
+
+
 def test_load_day_duty_override_tiebreak_uses_created_at_then_seq():
     """Two active DUTY_CORRECTION rows CAN coexist on one date — re-editing
     appends a fresh row rather than superseding the old one via

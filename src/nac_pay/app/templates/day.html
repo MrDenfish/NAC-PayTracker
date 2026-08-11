@@ -459,18 +459,32 @@
     {% if data.duty_on %}
     <table class="times-table" style="margin-top: 10px;">
       <tbody>
-        <tr><th>Duty on (actual)</th><td class="num">{{ data.duty_on }}</td></tr>
-        <tr><th>Duty off (actual)</th><td class="num">{{ data.duty_off }}</td></tr>
+        <tr>
+          <th>Duty on{% if data.duty_window_is_correction %} (pilot-corrected){% else %} (actual){% endif %}</th>
+          <td class="num">{{ data.duty_on }}</td>
+        </tr>
+        <tr>
+          <th>Duty off{% if data.duty_window_is_correction %} (pilot-corrected){% else %} (actual){% endif %}</th>
+          <td class="num">{{ data.duty_off }}</td>
+        </tr>
         <tr><th>Total duty</th><td class="num">{{ "%.2f"|format(data.duty_hours) }} h</td></tr>
         <tr><th>Duty rig (duty ÷ 2)</th><td class="num">{{ "%.2f"|format(data.duty_rig_pch) }} PCH</td></tr>
       </tbody>
     </table>
+    {% if data.duty_window_is_correction %}
+    <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
+      This window is the pilot's own filed duty correction, not the feed —
+      it's what the trip is actually credited on. See Assignment history
+      below for the correction's audit trail.
+    </p>
+    {% else %}
     <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
       Duty on = scheduled report (1:00 before the scheduled departure), so a
       late push lengthens the duty day rather than moving its start; duty off
       = last arrival + 0:15. Falls back to actual departure − 1:00 when the
       day has no matched packet trip. Times in Anchorage local.
     </p>
+    {% endif %}
     {% endif %}
 
     {% if data.reserve_window_start %}
@@ -812,13 +826,22 @@
             <button type="button" id="reassign-add-leg" class="btn btn--secondary">+ Add leg</button>
             <p id="reassign-legs-warn" class="form-warn" style="display: none;"></p>
             <label class="reassign-report">
-              <span class="form-label">Report / check-in (local)</span>
-              <input type="time" id="reassign-report"
-                     value="{{ data.sched_duty_on or '' }}">
+              <span class="form-label">Duty on / report (local)</span>
+              <input type="time" id="reassign-report" name="duty_on_local"
+                     value="{{ data.duty_on or data.sched_duty_on or '' }}">
               <span class="form-hint">
-                Defaults to the scheduled check-in (1:00 before scheduled
-                departure). Duty starts here, not at actual block-out — edit it
-                if the company changed your show time.
+                When duty started — the scheduled check-in, 1:00 before the
+                scheduled departure. Not actual block-out: a late push
+                lengthens the duty day, it doesn't move its start.
+              </span>
+            </label>
+            <label class="reassign-duty-off">
+              <span class="form-label">Duty off (local)</span>
+              <input type="time" id="reassign-duty-off" name="duty_off_local"
+                     value="{{ data.duty_off or '' }}">
+              <span class="form-hint">
+                When duty ended — last block-in plus 0:15. Edit either clock
+                to correct the duty day; duty hours and duty rig follow.
               </span>
             </label>
             <p class="form-hint">
@@ -837,7 +860,11 @@
             <label>
               <span class="form-label">Duty hours</span>
               <input type="text" name="duty_hours" inputmode="decimal"
-                     value="{{ defaults.duty_hours }}" placeholder="10.25">
+                     value="{{ defaults.duty_hours }}" placeholder="10.25"
+                     readonly aria-describedby="duty-hours-hint">
+              <span class="form-hint" id="duty-hours-hint">
+                Computed from duty on and duty off.
+              </span>
             </label>
             <label>
               <span class="form-label">TAFB hours</span>
@@ -1016,7 +1043,25 @@
           legs.push({ out: out, dur: dur });
         }
         warn("");
-        if (!legs.length) return;
+        if (!legs.length) {
+          // No legs to derive block/duty/TAFB from (an off-day pickup, or a
+          // day whose feed legs already aged out of BlueOne's rolling
+          // window) — the common case a duty-only correction exists for.
+          // Duty hours can still auto-fill from the two clocks alone; block
+          // and TAFB have no leg data to compute from and are left for the
+          // pilot to enter directly. Server-side validation is
+          // authoritative regardless — this is a convenience, not a gate.
+          var reportOnlyEl = document.getElementById("reassign-report");
+          var dutyOffOnlyEl = document.getElementById("reassign-duty-off");
+          var reportOnlyMin = reportOnlyEl ? toMin(reportOnlyEl.value) : null;
+          var dutyOffOnlyMin = dutyOffOnlyEl ? toMin(dutyOffOnlyEl.value) : null;
+          if (reportOnlyMin !== null && dutyOffOnlyMin !== null) {
+            var clockOnlyDuty = (dutyOffOnlyMin - reportOnlyMin) / 60;
+            if (clockOnlyDuty <= 0) { clockOnlyDuty += 24; }
+            setOut("duty_hours", clockOnlyDuty);
+          }
+          return;
+        }
         // Block is order-independent (sum of leg durations).
         var block = 0;
         legs.forEach(function (l) { block += l.dur; });
@@ -1047,10 +1092,17 @@
         // before scheduled departure), NOT at actual block-out — the pilot
         // reports on the schedule even if the flight pushes late. The report
         // field overrides; fall back to first-out − 1:00 when it's blank.
+        // Duty ENDS at the duty-off clock (default = last block-in + 0:15)
+        // when the pilot has set one — editing either clock is how a duty
+        // correction is entered; duty hours (read-only) and duty rig follow.
         var reportEl = document.getElementById("reassign-report");
+        var dutyOffEl = document.getElementById("reassign-duty-off");
         var reportMin = reportEl ? toMin(reportEl.value) : null;
+        var dutyOffMin = dutyOffEl ? toMin(dutyOffEl.value) : null;
         var front = (reportMin !== null) ? reportMin : (firstOut - REPORT_PAD);
-        var duty = ((lastIn + TRIP_END_PAD) - front) / 60;
+        var back = (dutyOffMin !== null) ? dutyOffMin : (lastIn + TRIP_END_PAD);
+        var duty = (back - front) / 60;
+        if (duty <= 0) { duty += 24; }   // duty off after local midnight
         setOut("block_hours", block / 60);
         setOut("duty_hours", duty);
         setOut("tafb_hours", (lastIn - front) / 60);
@@ -1067,6 +1119,8 @@
       body.addEventListener("input", recompute);
       var reportEl = document.getElementById("reassign-report");
       if (reportEl) reportEl.addEventListener("input", recompute);
+      var dutyOffEl = document.getElementById("reassign-duty-off");
+      if (dutyOffEl) dutyOffEl.addEventListener("input", recompute);
       body.addEventListener("click", function (e) {
         if (!e.target.classList.contains("leg-remove")) return;
         var row = e.target.closest(".reassign-leg-row");

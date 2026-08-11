@@ -412,6 +412,13 @@ def day_reassign(
     tafb_hours: str = Form(""),
     deadhead_pch: str = Form("0"),
     workdays: str = Form("1"),
+    # Duty correction clocks (DUTY_CORRECTION, DETAILED mode). Both-or-
+    # neither: a half-filled pair is rejected rather than guessed. When
+    # present they are the truth — duty_hours is DERIVED from them
+    # server-side (never trusted from the client), so the stored duration
+    # can never disagree with the displayed/credited window.
+    duty_on_local: str = Form(""),
+    duty_off_local: str = Form(""),
     # Detailed-mode legs (parallel lists; the JS computes block/duty/TAFB from
     # them client-side — here we persist them for the merged "Legs" display).
     leg_flight: list[str] = Form([]),
@@ -500,6 +507,9 @@ def day_reassign(
             return _bail("Enter a valid PCH value.")
         block_dec = duty_dec = tafb_dec = dh_dec = None
         workdays_int = None
+        # Only bound in the DETAILED branch below; initialise here too so
+        # the store.save call further down is valid in both modes.
+        on_clock = off_clock = ""
     else:
         try:
             block_dec = Decimal(block_hours)
@@ -511,6 +521,24 @@ def day_reassign(
             return _bail("Detailed mode needs valid numeric block/duty/TAFB/workdays.")
         if min(block_dec, duty_dec, tafb_dec) < 0 or workdays_int < 1:
             return _bail("Detailed-mode inputs must be non-negative; workdays ≥ 1.")
+
+        # Duty clocks, if present, are the truth — the client's duty_hours
+        # is a display convenience only and is never trusted once both
+        # clocks are filled in. Reject a half-filled pair rather than
+        # guessing which clock the pilot meant. This runs BEFORE
+        # recompute_pch_from_times so the (audit-only, for DUTY_CORRECTION)
+        # pch_value reflects the corrected duty, never the stale posted one.
+        on_clock = duty_on_local.strip()
+        off_clock = duty_off_local.strip()
+        if on_clock and off_clock:
+            from nac_pay.timeutil import duty_hours_between
+            derived = duty_hours_between(on_clock, off_clock)
+            if derived is None:
+                return _bail("Enter duty on and duty off as HH:MM.")
+            duty_dec = derived
+        elif on_clock or off_clock:
+            return _bail("Enter both duty on and duty off, or neither.")
+
         from nac_pay.engine import recompute_pch_from_times
         pch_dec = recompute_pch_from_times(
             block_hours=block_dec, duty_hours=duty_dec,
@@ -531,6 +559,8 @@ def day_reassign(
         block_hours=block_dec, duty_hours=duty_dec,
         tafb_hours=tafb_dec, deadhead_pch=dh_dec,
         workdays=workdays_int,
+        duty_on_local=on_clock or None,
+        duty_off_local=off_clock or None,
         reason_code=reason_code.strip() or "FLOWN",
         premium_category=premium_category.strip() or "NONE",
         notes=notes.strip()[:500],

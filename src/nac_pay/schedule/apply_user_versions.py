@@ -37,6 +37,27 @@ if TYPE_CHECKING:
     from nac_pay.storage.assignment_versions import UserAssignmentVersion
 
 
+def _fold_candidates(adds: list["UserAssignmentVersion"]) -> list["UserAssignmentVersion"]:
+    """``adds`` minus any ``DUTY_CORRECTION`` rows.
+
+    Task 3's contract: a ``DUTY_CORRECTION`` is not a competing max()
+    candidate, it is an INPUT to the §3.E recompute (``duty_overrides`` →
+    ``apply_actuals_to_month``, resolved upstream of this module — see
+    ``services._build_duty_overrides``). Every fold site in this module
+    (trip versions, the existing-Day lift, and the synthesized-Day case)
+    must exclude it, or a stored ``pch_value`` computed from the
+    CORRECTED duty (kept only for audit/history display) would compete
+    in ``max(published, *versions)`` and floor the very reduction the
+    feature exists to deliver — a correction that shortens duty would
+    never show its downward effect. This can leave a DUTY_CORRECTION with
+    literally no pay effect on a date with no reconciled trip (feed aged
+    out, or a plain OFF/no-callout day) — apply_actuals has nothing to
+    substitute the corrected duty into. That is a known, reported gap,
+    not something to paper over here."""
+    from nac_pay.storage.assignment_versions import VersionType
+    return [uv for uv in adds if uv.version_type is not VersionType.DUTY_CORRECTION]
+
+
 def _is_drop(adds) -> bool:
     """True if any active version on this date is a company-approved DROP.
 
@@ -79,10 +100,14 @@ def apply_user_versions_to_month(
             continue
         for uv in adds:
             consumed_dates.add(uv.date_iso)
+        # DUTY_CORRECTION never competes in the §3.E.1.b max() fold — it's
+        # an input to the recompute (duty_overrides), not a candidate. See
+        # _fold_candidates.
+        fold_adds = _fold_candidates(adds)
         existing = trip.versions
         next_seq = max((v.seq for v in existing), default=0) + 1
         new_versions = list(existing)
-        for uv in sorted(adds, key=lambda v: v.seq):
+        for uv in sorted(fold_adds, key=lambda v: v.seq):
             new_versions.append(
                 AssignmentVersion(
                     seq=next_seq,
@@ -106,7 +131,7 @@ def apply_user_versions_to_month(
             # before the max is read). No premium on a dropped trip.
             replaced_trip = replace(replaced_trip, reason_code=ReasonCode.VOLUNTARY_DROP)
         else:
-            new_premium = _winning_premium_for_trip(trip, adds)
+            new_premium = _winning_premium_for_trip(trip, fold_adds)
             if new_premium is not None:
                 replaced_trip = replace(replaced_trip, premium_category=new_premium)
         new_trips.append(replaced_trip)
@@ -145,7 +170,17 @@ def apply_user_versions_to_month(
                 )
             )
             continue
-        max_user = max(uv.pch_value for uv in adds)
+        # DUTY_CORRECTION never competes in this lift either — a callout
+        # day's corrected duty already reached the pilot via duty_overrides
+        # → Day.callout_trip_pch inside apply_actuals_to_month (upstream of
+        # this module). Folding its audit-only pch_value into day.pch_value
+        # here would be a second, competing path that could re-inflate a
+        # value the correction was meant to lower. See _fold_candidates.
+        fold_adds = _fold_candidates(adds)
+        if not fold_adds:
+            new_days.append(day)
+            continue
+        max_user = max(uv.pch_value for uv in fold_adds)
         new_pch = max(day.pch_value, max_user)
         # Preserve the pre-pickup PCH so the day-detail history can show the
         # "Original published" baseline (the value is overwritten by the lift).
@@ -155,7 +190,7 @@ def apply_user_versions_to_month(
         # is now driving this day's pay. If the day wins (e.g., callout
         # pch is higher), keep the original.
         if max_user > day.pch_value:
-            winner = max(adds, key=lambda uv: uv.pch_value)
+            winner = max(fold_adds, key=lambda uv: uv.pch_value)
             new_premium = _parse_premium(winner.premium_category)
             if new_premium is not None:
                 new_day = replace(new_day, premium_category=new_premium)
@@ -177,8 +212,18 @@ def apply_user_versions_to_month(
             # here too so a stray drop never synthesizes a phantom day.
             consumed_dates.add(iso)
             continue
-        max_user = max(uv.pch_value for uv in adds)
-        winner = max(adds, key=lambda uv: uv.pch_value)
+        # DUTY_CORRECTION never competes here either (see _fold_candidates).
+        # A DUTY_CORRECTION alone on a date with no Trip and no Day has
+        # nothing for apply_actuals to substitute the corrected duty into
+        # (no reconciled trip) — it is a known no-op, not something this
+        # fold should paper over by synthesizing a phantom paid day from
+        # the row's audit-only pch_value.
+        fold_adds = _fold_candidates(adds)
+        if not fold_adds:
+            consumed_dates.add(iso)
+            continue
+        max_user = max(uv.pch_value for uv in fold_adds)
+        winner = max(fold_adds, key=lambda uv: uv.pch_value)
         new_premium = _parse_premium(winner.premium_category) or PremiumCategory.NONE
         new_days.append(
             Day(
