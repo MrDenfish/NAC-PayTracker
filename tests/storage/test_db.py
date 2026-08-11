@@ -9,6 +9,7 @@ URL resolution, Decimal precision, and table reset hygiene.
 from __future__ import annotations
 
 import os
+import sqlite3
 from decimal import Decimal
 
 import pytest
@@ -145,6 +146,10 @@ def test_get_engine_is_idempotent_within_a_url():
 # hand-maintaining a second, driftable schema definition.
 
 
+@pytest.mark.skipif(
+    sqlite3.sqlite_version_info < (3, 35),
+    reason="ALTER TABLE ... DROP COLUMN requires SQLite >= 3.35",
+)
 def test_ensure_added_columns_backfills_a_pre_migration_schema(monkeypatch, tmp_path):
     from sqlalchemy import inspect as sa_inspect, text
 

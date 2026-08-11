@@ -1298,6 +1298,17 @@ class DayDetailData:
     # "Pilot-corrected" provenance note on the duty card (Task 7; same
     # precedent as the PR #70 "Credited (effective)" relabel).
     duty_window_is_correction: bool = False
+    # The active DUTY_CORRECTION's own raw (duty_on_local, duty_off_local)
+    # pair — set ONLY when the winning correction (same (created_at, seq)
+    # selection _build_duty_overrides uses) actually carries both clocks.
+    # NEW-1: the amend form must round-trip THESE exact clocks over the
+    # packet's scheduled pair below — the pilot's own live correction
+    # outranks the schedule, which outranks a reconstructed window. None
+    # when there's no active correction, or the winning one is clockless
+    # (a SIMPLE-mode/hours-only row — _day_duty_window tier 1b), in which
+    # case the form falls through to the scheduled pair, same as before.
+    correction_duty_on: str | None = None
+    correction_duty_off: str | None = None
     # Scheduled duty window from the packet (local "HH:MM") + its rig — the
     # reconstruct-from-packet fallback shown when iCal legs are missing.
     sched_duty_on: str | None = None
@@ -1772,6 +1783,16 @@ def load_day(
             _winner.duty_on_local, _winner.duty_off_local, _winner.duty_hours,
         )
 
+    # NEW-1: the winning correction's own raw clocks, exposed separately
+    # from duty_on/duty_off below so the amend form can round-trip them
+    # ahead of the packet's scheduled pair — "both or neither", same as
+    # every other tier here (a half-filled pair is not a window to prefill
+    # from; the form falls through to the scheduled pair instead).
+    correction_duty_on: str | None = None
+    correction_duty_off: str | None = None
+    if duty_override and duty_override[0] and duty_override[1]:
+        correction_duty_on, correction_duty_off = duty_override[0], duty_override[1]
+
     # Zero engine change, display only: a DUTY_CORRECTION never competes in
     # the §3.E.1.b max() (apply_user_versions._fold_candidates) — its ONLY
     # pay effect is duty_overrides -> apply_actuals_to_month substituting
@@ -1981,6 +2002,8 @@ def load_day(
         reserve_window_end=reserve_window_end,
         reserve_base=reserve_base,
         duty_correction_no_effect=duty_correction_no_effect,
+        correction_duty_on=correction_duty_on,
+        correction_duty_off=correction_duty_off,
     )
 
 
@@ -2176,6 +2199,8 @@ def _build_day_detail(
     reserve_window_end: str | None = None,
     reserve_base: str | None = None,
     duty_correction_no_effect: bool = False,
+    correction_duty_on: str | None = None,
+    correction_duty_off: str | None = None,
 ) -> DayDetailData:
     user_versions = user_versions or []
     manual_legs_by_seq = manual_legs_by_seq or {}
@@ -2609,6 +2634,8 @@ def _build_day_detail(
         duty_hours=duty_hours,
         duty_rig_pch=duty_rig_pch,
         duty_window_is_correction=duty_window_locked,
+        correction_duty_on=correction_duty_on,
+        correction_duty_off=correction_duty_off,
         sched_duty_on=sched_duty_on,
         sched_duty_off=sched_duty_off,
         sched_duty_rig_pch=sched_duty_rig_pch,
@@ -2764,8 +2791,15 @@ def _build_history(
     # is_effective (DUTY_CORRECTION never competes), so nothing in the
     # history otherwise shows which one is actually live. Mark it here
     # using the exact same (created_at, seq) recency rule
-    # _build_duty_overrides uses, so the label can never disagree with
-    # what's actually credited.
+    # _build_duty_overrides applies WITHIN one date. That's only part of
+    # the picture: `rows` here is scoped to a single date, but
+    # _build_duty_overrides also applies a PER-TRIP rule across dates
+    # (services.py:556) — when two DIFFERENT dates of the same multi-day
+    # pairing each carry an active correction, the later-created_at DATE
+    # wins the trip-wide credit, not necessarily the later-created_at row
+    # on THIS date. So this marker can disagree with what the trip is
+    # actually credited on in that cross-date case; it only promises
+    # "latest on this date", not "the one driving the pay".
     duty_correction_active = [
         r for r in rows
         if r.user_version_type == "DUTY_CORRECTION" and not r.is_superseded

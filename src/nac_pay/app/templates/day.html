@@ -874,15 +874,27 @@
             </table>
             <button type="button" id="reassign-add-leg" class="btn btn--secondary">+ Add leg</button>
             <p id="reassign-legs-warn" class="form-warn" style="display: none;"></p>
-            {# I2: the two prefills must come from ONE source, never mixed —
-               prefer the packet's scheduled pair when BOTH halves exist,
-               else the computed/actual window pair when BOTH halves exist,
-               else leave both blank. Mixing (e.g. computed duty_on with
-               scheduled sched_duty_off) anchors the JS `front`/`back`
-               preview to two different windows, drifting duty_hours on a
-               re-amend of a day whose window was reconstructed by the
-               manual-legs branch. #}
-            {% if data.sched_duty_on and data.sched_duty_off %}
+            {# I2/NEW-1: the two prefills must come from ONE source, never
+               mixed — mixing (e.g. computed duty_on with scheduled
+               sched_duty_off) anchors the JS `front`/`back` preview to two
+               different windows, drifting duty_hours on a re-amend.
+               Precedence, highest first:
+                 1. the active DUTY_CORRECTION's own clocks
+                    (data.correction_duty_on/off) — the pilot's own live
+                    correction must round-trip on re-open, or an
+                    untouched field on save silently reverts the credited
+                    duty to the scheduled/computed window (NEW-1).
+                 2. else the packet's scheduled pair when BOTH halves exist
+                 3. else the computed/actual window pair when BOTH halves
+                    exist (e.g. a day reconstructed by the manual-legs
+                    branch, or no packet match at all)
+                 4. else leave both blank
+               Each tier requires BOTH halves before it wins — a half-
+               filled pair falls through rather than mixing tiers. #}
+            {% if data.correction_duty_on and data.correction_duty_off %}
+              {% set report_prefill = data.correction_duty_on %}
+              {% set duty_off_prefill = data.correction_duty_off %}
+            {% elif data.sched_duty_on and data.sched_duty_off %}
               {% set report_prefill = data.sched_duty_on %}
               {% set duty_off_prefill = data.sched_duty_off %}
             {% elif data.duty_on and data.duty_off %}

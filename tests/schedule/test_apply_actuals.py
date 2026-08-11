@@ -1608,3 +1608,46 @@ def test_duty_extension_note_flags_pilot_corrected_duty():
     assert "(pilot-corrected duty)" not in plain_event.detail
     plain_version = no_override.trips[0].versions[-1]
     assert "(pilot-corrected duty)" not in plain_version.label
+
+
+def test_reserve_callout_note_flags_pilot_corrected_duty():
+    """I3, the third site (apply_actuals.py:249-258): the RESERVE_CALLOUT
+    AppliedEvent detail ("Reserve callout to ... (recomputed from actuals,
+    published ...)") must flag pilot-corrected provenance the same way the
+    other two sites do (test_duty_extension_note_flags_pilot_corrected_duty
+    covers :1073/:1090) — this branch gained the ", pilot-corrected duty"
+    suffix but was only ever verified by a manual script, with no
+    committed test. Same callout fixture as
+    test_duty_override_applies_to_reserve_callout (no override: feed span
+    12h -> padded rig 6.625 beats published 4.50; corrected duty 10.02h ->
+    rig 5.01)."""
+    callout_date = date(2026, 6, 12)
+    rsv = Day(date=callout_date, duty_type=DutyType.RSV, pch_value=D("3.82"),
+              reason_code=ReasonCode.FLOWN, workdays=1, label="RSV")
+    baseline = _empty_month(days=(rsv,))
+    rt = _rt_with_span("766", packet_pch="4.50", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="12.0", on_date=callout_date)
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    no_override, no_events, _ = apply_actuals_to_month(baseline, reconciliation)
+    corrected, events, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("10.02")},
+    )
+
+    # Sanity: the override genuinely drove this recompute (same fixture as
+    # test_duty_override_applies_to_reserve_callout).
+    assert corrected.days[0].callout_trip_pch == D("5.01")
+
+    corrected_event = next(
+        e for e in events if e.kind is AppliedEventKind.RESERVE_CALLOUT
+    )
+    assert "pilot-corrected duty" in corrected_event.detail
+
+    # Without the override, the feed-only recompute must not claim a
+    # pilot correction that never happened.
+    plain_event = next(
+        e for e in no_events if e.kind is AppliedEventKind.RESERVE_CALLOUT
+    )
+    assert "pilot-corrected duty" not in plain_event.detail

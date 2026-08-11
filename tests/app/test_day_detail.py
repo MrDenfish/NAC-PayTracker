@@ -1079,14 +1079,19 @@ def test_history_badges_the_winner_even_when_effective_comes_from_elsewhere():
 
 
 def test_amend_form_prefers_the_scheduled_pair_over_a_reconstructed_window(monkeypatch):
-    """I2: day.html:864 mixed sources — duty_on fell back to sched_duty_on
-    but duty_off did NOT fall back to sched_duty_off (pre-C2-fix shape),
-    and even after that fix both fields independently preferred the
-    computed/actual window over the packet's scheduled pair. On a day
-    whose window was reconstructed by the manual-legs branch, a re-amend
-    then prefilled that reconstructed clock instead of the packet show,
-    changing the JS `front` anchor and drifting duty_hours on a row type
-    that DOES compete in max().
+    """I2, NO-CORRECTION case: day.html:864 mixed sources — duty_on fell
+    back to sched_duty_on but duty_off did NOT fall back to sched_duty_off
+    (pre-C2-fix shape), and even after that fix both fields independently
+    preferred the computed/actual window over the packet's scheduled pair.
+    On a day whose window was reconstructed by the manual-legs branch, a
+    re-amend then prefilled that reconstructed clock instead of the packet
+    show, changing the JS `front` anchor and drifting duty_hours on a row
+    type that DOES compete in max().
+
+    Scoped to the case with NO active DUTY_CORRECTION, where the packet
+    scheduled pair (tier 2) is still the right prefill — see
+    test_amend_form_shows_the_pilot_own_correction_clocks below for the
+    correction case (tier 1), which now outranks this one (NEW-1).
 
     The two prefills must come from ONE source: prefer the packet
     scheduled pair when BOTH halves exist, else the computed pair, else
@@ -1101,6 +1106,10 @@ def test_amend_form_prefers_the_scheduled_pair_over_a_reconstructed_window(monke
     real = load_day(2026, 6, 12)
     assert real.sched_duty_on == "05:30" and real.sched_duty_off == "12:35", (
         "fixture assumption broken: trip 768's packet show time changed"
+    )
+    assert real.correction_duty_on is None and real.correction_duty_off is None, (
+        "fixture assumption broken: this scenario must have NO active "
+        "DUTY_CORRECTION so tier 2 (not tier 1) is under test"
     )
     reconstructed = replace(real, duty_on="18:15", duty_off="14:15")
 
@@ -1128,4 +1137,65 @@ def test_amend_form_prefers_the_scheduled_pair_over_a_reconstructed_window(monke
     assert m_off.group(1) == "12:35", (
         "duty-off prefill picked the reconstructed window instead of the "
         "packet's scheduled show time"
+    )
+
+
+def test_amend_form_shows_the_pilot_own_correction_clocks():
+    """NEW-1: when an active DUTY_CORRECTION exists (and the day has feed
+    legs — tier 1a of _day_duty_window), the amend form must round-trip
+    the PILOT'S OWN corrected clocks, not fall through to the packet's
+    scheduled show time. The prior wave's I2 fix (see the test above)
+    correctly stopped the form from preferring a RECONSTRUCTED window over
+    the scheduled pair, but it went one step too far: it now also buries
+    a genuine, live correction behind the scheduled pair, because
+    data.sched_duty_on/off are checked first regardless of an active
+    correction.
+
+    Required precedence: (1) the active correction's own clocks — tier 1
+    — (2) else the packet scheduled pair, (3) else the computed window,
+    (4) else blank, and both halves must always come from the SAME tier.
+
+    Failure scenario without the fix: the pilot files a correction of
+    03:00-23:00, later re-opens the form with "Duty correction" selected
+    to adjust ONE clock, and submits. The untouched field posts the
+    PACKET's scheduled clock (05:30/12:35) instead of the pilot's own —
+    because corrections are never superseded, that newest row wins
+    _build_duty_overrides and the credited duty silently reverts to the
+    scheduled window. Same fixture (trip 768, 2026-06-12) as
+    test_load_day_shows_the_corrected_duty_window_not_the_feed_derived_one."""
+    from nac_pay.app.services import _pipeline
+
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="23:00",
+        duty_hours=Decimal("20.00"), pch_value=Decimal("4.17"),
+    )
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+    assert d.sched_duty_on == "05:30" and d.sched_duty_off == "12:35", (
+        "fixture assumption broken: trip 768's packet show time changed"
+    )
+
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+
+    m_on = re.search(
+        r'<input type="time" id="reassign-report" name="duty_on_local"\s+'
+        r'value="([^"]*)"',
+        r.text,
+    )
+    m_off = re.search(
+        r'<input type="time" id="reassign-duty-off" name="duty_off_local"\s+'
+        r'value="([^"]*)"',
+        r.text,
+    )
+    assert m_on and m_off
+    assert m_on.group(1) == "03:00", (
+        "report prefill fell back to the packet's scheduled show time "
+        "instead of the pilot's own live correction"
+    )
+    assert m_off.group(1) == "23:00", (
+        "duty-off prefill fell back to the packet's scheduled show time "
+        "instead of the pilot's own live correction"
     )

@@ -620,10 +620,13 @@ def day_reassign(
                 # server-side past a sane ceiling before it ever reaches
                 # store.save — the client-side JS already warns above 16h
                 # for the legs-derived duty preview (day.html: "if (duty >
-                # 16) warn(...)"); mirror that number here since it's the
-                # one figure already blessed as "clearly wrong" in this
-                # codebase, and this is the one branch with no client
-                # warning at all (the clocks-only DUTY_CORRECTION path).
+                # 16) warn(...)"), and applies the same wrap/warn to the
+                # clocks-only DUTY_CORRECTION path (day.html:1215/1219).
+                # Mirror that 16h number here anyway: a warning is not a
+                # block (the pilot can submit past it), and a hand-built
+                # POST skips the browser's JS entirely, so this gate is
+                # the only thing that actually stops a transposed-clock
+                # ~24h duty from reaching the store.
                 if derived > _DUTY_CORRECTION_CEILING_HOURS:
                     return _bail(
                         f"Duty on/off yields {derived:.2f}h, over the "
