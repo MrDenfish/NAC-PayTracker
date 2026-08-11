@@ -1524,24 +1524,46 @@ def _day_duty_window(
     first_out_utc: datetime_t,
     last_in_utc: datetime_t,
     sched_duty_on: str | None,
+    override: tuple[str, str] | None = None,
 ) -> _DutyWindow:
     """The day's duty window: scheduled report → last block-in + release.
 
-    Duty starts when the pilot reports, and the report time is published —
-    a late push lengthens the duty day rather than moving its start. So the
-    front anchor is the packet's scheduled show time ("L Day Show") when we
-    have one. Aug 8 2026: show 04:41, flight pushed to 06:00, and anchoring
-    on the actual block-out showed duty-on 05:00 — hiding the 19-minute
-    delay and understating duty by 0.32h (duty rig by 0.16).
+    Three tiers, in precedence order:
 
-    ``sched_duty_on`` is None for a day with no matched packet trip (a
-    reroute, an off-day pickup); there the actual-out − REPORT_PAD estimate
-    is all we have. The back anchor is always actual.
+    1. The pilot's own DUTY_CORRECTION clocks (``override``), when both
+       are present — the pilot's stored correction already drives the
+       CREDITED §3.E recompute (see ``_build_duty_overrides`` /
+       ``apply_actuals``), so the display must show the SAME window the
+       pilot was actually paid on, not a stale feed-derived one.
+    2. The packet's scheduled show time ("L Day Show") for the front +
+       last block-in + TRIP_END_PAD for the back. Duty starts when the
+       pilot reports, and the report time is published — a late push
+       lengthens the duty day rather than moving its start. Aug 8 2026:
+       show 04:41, flight pushed to 06:00, and anchoring on the actual
+       block-out showed duty-on 05:00 — hiding the 19-minute delay and
+       understating duty by 0.32h (duty rig by 0.16).
+    3. Actual first block-out − REPORT_PAD, when there's no matched
+       packet trip (a reroute, an off-day pickup) to source a show time.
+
+    The back anchor is always actual (last block-in + pad) except under
+    tier 1, where the pilot's own release clock wins outright.
     """
     from datetime import timedelta as _td
 
     from nac_pay.engine.constants import REPORT_PAD_HOURS, TRIP_END_PAD_HOURS
     from nac_pay.timeutil import scheduled_report_utc
+
+    # Tier 1 — the pilot's own clocks. Both or neither: a half-filled
+    # override is not a duty window, so fall through rather than guess.
+    if override and override[0] and override[1]:
+        hours = _duty_hours_between(override[0], override[1])
+        if hours is not None:
+            return _DutyWindow(
+                duty_on=override[0],
+                duty_off=override[1],
+                duty_hours=hours,
+                duty_rig_pch=hours / Decimal("2"),
+            )
 
     duty_end = last_in_utc + _td(hours=float(TRIP_END_PAD_HOURS))
     duty_start = (
@@ -1614,6 +1636,36 @@ def load_day(
                 packet_trip = rt.packet_trip
                 break
 
+    # Phase G: load all user-recorded versions for this date (active +
+    # superseded) — used below both to resolve the winning DUTY_CORRECTION
+    # for the duty window (tier 1) and, further down, for the full
+    # audit-trail display. Moved up from its old spot (after the duty
+    # window) so both call sites reuse this ONE read instead of a second,
+    # possibly-disagreeing store hit.
+    _av_store = UserAssignmentVersionStore(user_id=user_id)
+    user_versions = _av_store.list_for_date(target.isoformat())
+    active, superseded_seqs = active_versions(user_versions)
+
+    # Highest-(created_at, seq) active DUTY_CORRECTION for this date, if
+    # any — its clocks outrank the packet show time in the duty window
+    # below. seq is only a valid tiebreaker WITHIN one date (it's
+    # allocated per (user, date) — see UserAssignmentVersionStore.save);
+    # created_at is the real recency signal, matching the rule
+    # _build_duty_overrides uses for the engine's own recompute so the
+    # display and the credited PCH can never point at different
+    # corrections. (created_at, seq) as a compound key additionally
+    # breaks a same-second created_at tie toward the later save, which
+    # created_at alone cannot resolve.
+    duty_override: tuple[str, str] | None = None
+    _duty_corrections = [
+        v for v in active
+        if v.version_type is VersionType.DUTY_CORRECTION
+        and v.duty_on_local and v.duty_off_local
+    ]
+    if _duty_corrections:
+        _winner = max(_duty_corrections, key=lambda v: (v.created_at, v.seq))
+        duty_override = (_winner.duty_on_local, _winner.duty_off_local)
+
     # iCal legs on this date.
     legs: tuple[DayLeg, ...] = ()
     actual_block: Decimal | None = None
@@ -1683,6 +1735,7 @@ def load_day(
                 date_legs[0].dt_start_utc,
                 date_legs[-1].dt_end_utc,
                 packet_trip.sched_duty_on if packet_trip is not None else None,
+                duty_override,
             )
             duty_on = window.duty_on
             duty_off = window.duty_off
@@ -1705,12 +1758,10 @@ def load_day(
     # Check for an existing pilot override on this date.
     override = override_store(user_id).load_all().get(target.isoformat())
 
-    # Phase G: load all user-recorded versions for this date (active +
-    # superseded) so the history block can show the full audit trail.
-    _av_store = UserAssignmentVersionStore(user_id=user_id)
-    user_versions = _av_store.list_for_date(target.isoformat())
+    # user_versions / active / superseded_seqs were already loaded above
+    # (ahead of the duty window, which needs the DUTY_CORRECTION winner) —
+    # reuse them here rather than reading the store a second time.
     manual_legs_by_seq = _av_store.list_legs_for_date(target.isoformat())
-    active, superseded_seqs = active_versions(user_versions)
 
     # Build the "who supersedes whom" backref map for display.
     superseded_by: dict[int, int] = {}

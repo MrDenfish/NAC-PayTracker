@@ -327,3 +327,177 @@ def test_day_assignment_card_premium_green_keeps_flt_tag():
     body = client.get("/day/2026-06-02").text
     assert "duty-bg--premium" in body
     assert ">FLT<" in body
+
+
+# ── Duty-time override wiring (Task 6) ───────────────────────────────────
+#
+# The day page must show the SAME duty window the pilot was actually paid
+# on. Tasks 4/5 already made a stored DUTY_CORRECTION drive the CREDITED
+# §3.E recompute (Trip.effective_pch); these tests pin the display side —
+# _day_duty_window's own tier-1 precedence, and the two real bugs a
+# reviewer found on the live code path: (1) the duty card kept sourcing
+# "Duty-rig (actual)" from raw feed legs even with a correction saved, and
+# (2) because of that mismatch, no PCH candidate ever quantized equal to
+# the corrected effective_pch, so the components card marked NO winner.
+
+
+def test_day_duty_window_prefers_the_pilot_override():
+    """Tier 1 beats the packet show time (tier 2) and the actual-out
+    fallback (tier 3)."""
+    from datetime import datetime, timezone
+
+    from nac_pay.app.services import _day_duty_window
+
+    first_out = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+    last_in = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
+
+    w = _day_duty_window(first_out, last_in, "04:41", ("05:15", "17:45"))
+
+    assert w.duty_on == "05:15"
+    assert w.duty_off == "17:45"
+    assert abs(w.duty_hours - Decimal("12.50")) < Decimal("0.001")
+    assert w.duty_rig_pch == w.duty_hours / Decimal("2")
+
+
+def test_day_duty_window_ignores_a_half_filled_override():
+    """One clock without the other is not a window — fall back to tier 2."""
+    from datetime import datetime, timezone
+
+    from nac_pay.app.services import _day_duty_window
+
+    first_out = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+    last_in = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
+
+    w = _day_duty_window(first_out, last_in, "04:41", ("05:15", ""))
+
+    assert w.duty_on == "04:41"
+
+
+def _save_duty_correction(
+    date_iso: str,
+    *,
+    duty_on_local: str,
+    duty_off_local: str,
+    duty_hours: Decimal,
+    pch_value: Decimal,
+    assignment_id: str = "768",
+) -> None:
+    from nac_pay.storage import (
+        DEFAULT_USER_ID,
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionType,
+    )
+
+    UserAssignmentVersionStore(user_id=DEFAULT_USER_ID).save(
+        date_iso=date_iso,
+        version_type=VersionType.DUTY_CORRECTION,
+        assignment_id=assignment_id,
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=pch_value,
+        duty_hours=duty_hours,
+        duty_on_local=duty_on_local,
+        duty_off_local=duty_off_local,
+    )
+
+
+def test_load_day_shows_the_corrected_duty_window_not_the_feed_derived_one():
+    """End-to-end through load_day: a saved DUTY_CORRECTION on 2026-06-12
+    (the same fixture trip 768 used by test_duty_correction_flows_into_the_
+    pipeline_recompute in test_day_edit.py, where duty 20.00h → duty-rig
+    10.00 beats the published 4.17) must make the DAY PAGE's duty on/off/
+    hours/rig match what the pilot was actually paid on — not the raw feed
+    window (report ~04:41, ~3.5h duty) the card showed before this task."""
+    from nac_pay.app.services import _pipeline
+
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="23:00",
+        duty_hours=Decimal("20.00"), pch_value=Decimal("4.17"),
+    )
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+
+    assert d.duty_on == "03:00"
+    assert d.duty_off == "23:00"
+    assert d.duty_hours == Decimal("20.00")
+    assert d.duty_rig_pch == Decimal("10.00")
+    # Sanity: this is really the corrected/credited value, not a coincidence.
+    assert d.effective_pch == Decimal("10.00")
+
+
+def test_load_day_pch_candidates_mark_the_corrected_duty_rig_as_winner():
+    """Components-card regression: before this task, no candidate ever
+    quantized equal to the corrected effective_pch (the card kept showing
+    the stale feed-derived duty rig), so the winner-marking loop found
+    NOTHING to mark. With the wiring fixed, exactly one candidate wins and
+    it is the (corrected) Duty-rig (actual) candidate."""
+    from nac_pay.app.services import _pipeline
+
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="23:00",
+        duty_hours=Decimal("20.00"), pch_value=Decimal("4.17"),
+    )
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+
+    winners = [c for c in d.pch_candidates if c.is_winning]
+    assert len(winners) == 1
+    assert "Duty-rig" in winners[0].label
+    assert winners[0].pch == Decimal("10.00")
+    assert winners[0].pch == d.effective_pch
+
+
+def test_load_day_duty_override_tiebreak_uses_created_at_then_seq():
+    """Two active DUTY_CORRECTION rows CAN coexist on one date — re-editing
+    appends a fresh row rather than superseding the old one via
+    correction_of (only VersionType.CORRECTION does that); see
+    _build_duty_overrides' docstring for the same "latest active wins" rule
+    applied to the engine recompute. On a same-second created_at TIE, seq
+    is the only remaining signal and must resolve to the LATER save (the
+    higher seq) — the compound ``(created_at, seq)`` key load_day uses,
+    matching the corrections note that created_at-alone leaves this tie
+    unresolved.
+
+    Rows are inserted directly via the ORM (bypassing
+    UserAssignmentVersionStore.save, which stamps created_at itself and
+    can't be made to produce a real tie) so both rows carry the exact same
+    created_at string."""
+    from nac_pay.app.services import _pipeline
+    from nac_pay.storage import DEFAULT_USER_ID
+    from nac_pay.storage.db import session_scope
+    from nac_pay.storage.db_models import UserAssignmentVersionRow, UserRow
+
+    tie = "2026-06-10T12:00:00"
+    with session_scope() as sess:
+        if sess.get(UserRow, DEFAULT_USER_ID) is None:
+            sess.add(UserRow(user_id=DEFAULT_USER_ID))
+            sess.flush()
+        sess.add(UserAssignmentVersionRow(
+            user_id=DEFAULT_USER_ID, date_iso="2026-06-12", seq=1,
+            version_type="DUTY_CORRECTION", correction_of=None,
+            assignment_id="768", entry_mode="DETAILED",
+            pch_value=Decimal("4.17"),
+            duty_hours=Decimal("8.00"),
+            duty_on_local="01:00", duty_off_local="09:00",
+            reason_code="FLOWN", premium_category="NONE", notes="",
+            created_at=tie,
+        ))
+        sess.add(UserAssignmentVersionRow(
+            user_id=DEFAULT_USER_ID, date_iso="2026-06-12", seq=2,
+            version_type="DUTY_CORRECTION", correction_of=None,
+            assignment_id="768", entry_mode="DETAILED",
+            pch_value=Decimal("4.17"),
+            duty_hours=Decimal("20.00"),
+            duty_on_local="03:00", duty_off_local="23:00",
+            reason_code="FLOWN", premium_category="NONE", notes="",
+            created_at=tie,
+        ))
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+    assert d.duty_on == "03:00"
+    assert d.duty_off == "23:00"
