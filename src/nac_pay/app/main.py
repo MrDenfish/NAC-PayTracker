@@ -392,6 +392,12 @@ def day_save(
 
 # ── Phase G: reassignment / correction entry ───────────────────────
 
+# Server-side sanity ceiling for a clock-derived DUTY_CORRECTION duty span.
+# Matches the pre-existing client-side warning threshold (day.html's legs-
+# derived duty preview: "if (duty > 16) warn(...)") — see the comment at the
+# rejection call site for why this branch needs its own server-side gate.
+_DUTY_CORRECTION_CEILING_HOURS = Decimal("16")
+
 
 @app.post("/day/{date_iso}/reassign")
 def day_reassign(
@@ -480,6 +486,29 @@ def day_reassign(
         if day_kind != "reserve":
             return _bail("Reserve callout can only be recorded on a reserve (RSV) day.")
 
+    # A DUTY_CORRECTION on a date with neither a Trip nor a Day record has
+    # nothing for apply_user_versions to attach duty_overrides to — it can't
+    # synthesize a phantom paid day the way it does for a REASSIGNMENT pickup
+    # (see the DUTY_CORRECTION carve-out in apply_user_versions.py's
+    # sub-case (b)), so the row would be saved with no reconciled trip to
+    # affect, no Day for _build_day_detail to attach history to (versions
+    # stays () on a blank day), and therefore no way to see or delete it
+    # from the UI. Reject before it's ever written; kind == "off" is exactly
+    # "no Trip and no Day" (see the day/trip lookup above).
+    if vt is VersionType.DUTY_CORRECTION:
+        try:
+            day_kind = load_day(
+                target_date.year, target_date.month, target_date.day, user_id=uid,
+            ).kind
+        except ValueError:
+            day_kind = None
+        if day_kind == "off":
+            return _bail(
+                "No trip or scheduled day here to correct — a duty "
+                "correction needs an existing trip or reserve/other day "
+                "on this date."
+            )
+
     store = UserAssignmentVersionStore(user_id=uid)
 
     correction_of_int: int | None = None
@@ -499,6 +528,20 @@ def day_reassign(
             return _bail(f"No version seq={correction_of_int} on {date_iso}.")
         if target.version_type is VersionType.CORRECTION:
             return _bail("Can't correct a correction — submit a fresh one against the original.")
+        if target.version_type is VersionType.DUTY_CORRECTION:
+            # A DUTY_CORRECTION is an INPUT to the duty_overrides recompute,
+            # never a §3.E.1.b max() candidate (see apply_user_versions.
+            # _fold_candidates). Superseding it here would file an ordinary
+            # CORRECTION that DOES compete in the fold, dropping the pilot's
+            # duty clocks and re-admitting the row to max() — the exact
+            # bug this version_type exists to avoid. No template link
+            # renders this today (day.html's "Correct this" affordance is
+            # REASSIGNMENT-only), so this closes a URL-only path.
+            return _bail(
+                "Can't correct a duty correction — submit a fresh duty "
+                "correction instead; the most recent one drives the "
+                "duty-window recompute."
+            )
 
     # A DUTY_CORRECTION with no usable duty window is a silent no-op, not a
     # harmless save: it never competes in the §3.E.1.b max() (see
@@ -570,6 +613,24 @@ def day_reassign(
                 derived = duty_hours_between(on_clock, off_clock)
                 if derived is None:
                     return _bail("Enter duty on and duty off as HH:MM.")
+                # duty_hours_between maps off <= on to "+24h" (a duty that
+                # wraps past midnight), so a plain clock transposition
+                # (pilot means a SHORT day but types on/off backwards)
+                # silently derives a ~24h duty instead of erroring. Reject
+                # server-side past a sane ceiling before it ever reaches
+                # store.save — the client-side JS already warns above 16h
+                # for the legs-derived duty preview (day.html: "if (duty >
+                # 16) warn(...)"); mirror that number here since it's the
+                # one figure already blessed as "clearly wrong" in this
+                # codebase, and this is the one branch with no client
+                # warning at all (the clocks-only DUTY_CORRECTION path).
+                if derived > _DUTY_CORRECTION_CEILING_HOURS:
+                    return _bail(
+                        f"Duty on/off yields {derived:.2f}h, over the "
+                        f"{_DUTY_CORRECTION_CEILING_HOURS:.0f}h sanity "
+                        "ceiling — check for transposed clocks (duty on "
+                        "and duty off swapped)."
+                    )
                 duty_dec = derived
                 # Normalize to zero-padded HH:MM before it reaches the
                 # String(5) column — duty_hours_between/_parse_clock accept
@@ -648,8 +709,9 @@ def day_reassign(
             store.save_legs(date_iso, saved.seq, legs)
 
     invalidate_caches()
+    saved_kind = "duty_correction" if vt is VersionType.DUTY_CORRECTION else "reassign"
     return RedirectResponse(
-        f"/day/{date_iso}?saved=reassign", status_code=303,
+        f"/day/{date_iso}?saved={saved_kind}", status_code=303,
     )
 
 
@@ -1029,6 +1091,7 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
             user_id=_user_id(request),
             saved=(saved_q == "1"),
             saved_reassign=(saved_q == "reassign"),
+            saved_duty_correction=(saved_q == "duty_correction"),
             saved_drop=(saved_q == "drop"),
             saved_version_deleted=(saved_q == "version_deleted"),
             reassign_error=request.query_params.get("reassign_error", ""),

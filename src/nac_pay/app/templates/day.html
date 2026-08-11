@@ -599,8 +599,11 @@
   <div class="card">
     <h2 class="card-title">Assignment history (§3.E.1.b)</h2>
     <p class="subtle" style="margin-bottom: 12px;">
-      Effective PCH is the max across non-superseded versions.
-      Corrections preserve the audit trail without inflating pay.
+      Effective PCH is the max across non-superseded versions that compete
+      for pay. A Duty correction row does not compete — it's an input to
+      the duty-rig recompute, shown here as its corrected duty window, not
+      a PCH figure. Corrections preserve the audit trail without inflating
+      pay.
     </p>
     <ul class="version-list">
       {% for v in data.versions %}
@@ -608,7 +611,13 @@
                  {% if v.is_effective %}version--effective{% endif %}
                  {% if v.is_superseded %}version--superseded{% endif %}">
         <span class="version-seq">v{{ v.seq }}</span>
+        {% if v.user_version_type == 'DUTY_CORRECTION' %}
+        <span class="version-pch">
+          {% if v.duty_on_local and v.duty_off_local %}{{ v.duty_on_local }}–{{ v.duty_off_local }}{% else %}—{% endif %}
+        </span>
+        {% else %}
         <span class="version-pch">{{ "%.2f"|format(v.pch_value) }} PCH</span>
+        {% endif %}
         <span class="version-label">
           {{ v.label }}
           <span class="subtle version-source">· {{ v.source }}</span>
@@ -618,6 +627,7 @@
         </span>
         <span class="version-flags">
           {% if v.is_effective %}<span class="badge badge--ok">effective</span>{% endif %}
+          {% if v.is_live_duty_correction %}<span class="badge badge--ok" title="This is the duty correction currently driving the duty-rig recompute.">live</span>{% endif %}
           {% if v.is_superseded %}
             <span class="badge badge--muted">superseded
               {% if v.superseded_by_user_seq is not none %}by v{{ v.superseded_by_user_seq }}{% endif %}
@@ -705,6 +715,12 @@
     {% if data.saved_reassign %}
     <div class="banner banner--ok" style="margin-bottom: 12px;">
       <strong>Reassignment recorded.</strong>
+      <p>It now appears in the assignment history above.</p>
+    </div>
+    {% endif %}
+    {% if data.saved_duty_correction %}
+    <div class="banner banner--ok" style="margin-bottom: 12px;">
+      <strong>Duty correction recorded.</strong>
       <p>It now appears in the assignment history above.</p>
     </div>
     {% endif %}
@@ -858,10 +874,28 @@
             </table>
             <button type="button" id="reassign-add-leg" class="btn btn--secondary">+ Add leg</button>
             <p id="reassign-legs-warn" class="form-warn" style="display: none;"></p>
+            {# I2: the two prefills must come from ONE source, never mixed —
+               prefer the packet's scheduled pair when BOTH halves exist,
+               else the computed/actual window pair when BOTH halves exist,
+               else leave both blank. Mixing (e.g. computed duty_on with
+               scheduled sched_duty_off) anchors the JS `front`/`back`
+               preview to two different windows, drifting duty_hours on a
+               re-amend of a day whose window was reconstructed by the
+               manual-legs branch. #}
+            {% if data.sched_duty_on and data.sched_duty_off %}
+              {% set report_prefill = data.sched_duty_on %}
+              {% set duty_off_prefill = data.sched_duty_off %}
+            {% elif data.duty_on and data.duty_off %}
+              {% set report_prefill = data.duty_on %}
+              {% set duty_off_prefill = data.duty_off %}
+            {% else %}
+              {% set report_prefill = '' %}
+              {% set duty_off_prefill = '' %}
+            {% endif %}
             <label class="reassign-report">
               <span class="form-label">Duty on / report (local)</span>
               <input type="time" id="reassign-report" name="duty_on_local"
-                     value="{{ data.duty_on or data.sched_duty_on or '' }}">
+                     value="{{ report_prefill }}">
               <span class="form-hint">
                 When duty started — read for every type. Defaults to the
                 scheduled check-in (1:00 before scheduled departure); edit
@@ -874,7 +908,7 @@
             <label class="reassign-duty-off">
               <span class="form-label">Duty off (local)</span>
               <input type="time" id="reassign-duty-off" name="duty_off_local"
-                     value="{{ data.duty_off or data.sched_duty_off or '' }}">
+                     value="{{ duty_off_prefill }}">
               <span class="form-hint">
                 When duty ended. For Reassignment/Correction this field
                 isn't read — duty off tracks the legs above (last block-in
@@ -966,8 +1000,8 @@
           {% if is_correction %}
           <a href="/day/{{ data.date_iso }}" class="btn btn--secondary">Cancel correction</a>
           {% endif %}
-          <button type="submit" class="btn btn--primary">
-            {% if is_restore %}Restore assignment{% elif is_correction %}Save correction{% else %}Save reassignment{% endif %}
+          <button type="submit" id="reassign-submit-btn" class="btn btn--primary">
+            {% if is_restore %}Restore assignment{% elif is_correction %}Save correction{% elif defaults.version_type == 'DUTY_CORRECTION' %}Save duty correction{% else %}Save reassignment{% endif %}
           </button>
         </div>
       </form>
@@ -1218,6 +1252,21 @@
       function syncDutyCorrectionMode() {
         var dutyHoursEl = document.querySelector('[name="duty_hours"]');
         if (dutyHoursEl) dutyHoursEl.readOnly = isDutyCorrection();
+        // Minor: keep the submit label honest when the pilot toggles the
+        // radio client-side — it's server-rendered from defaults.version_type
+        // on load, but nothing updated it on change until now. Only touch it
+        // when the version_type RADIO group actually renders (fresh
+        // reassign/duty-correction choice) — the correction/restore flow
+        // posts version_type as a hidden field instead and must keep its
+        // own "Save correction" / "Restore assignment" label untouched.
+        var versionTypeRadio = document.querySelector(
+          'input[type="radio"][name="version_type"]'
+        );
+        var submitBtn = document.getElementById("reassign-submit-btn");
+        if (versionTypeRadio && submitBtn) {
+          submitBtn.textContent = isDutyCorrection()
+            ? "Save duty correction" : "Save reassignment";
+        }
         recompute();
       }
       document.querySelectorAll('input[name="version_type"]').forEach(function (r) {

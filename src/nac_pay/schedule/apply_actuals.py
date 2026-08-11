@@ -244,8 +244,16 @@ def apply_actuals_to_month(
             callout_published_by_date[first_date] = rt.published_pch
             callout_aid_by_date[first_date] = rt.trip_id
             excess = max(Decimal("0"), callout_pch - DPG)
+            # I3: same misattribution as the duty-extension note above — a
+            # callout's recompute can be driven by the pilot's own
+            # DUTY_CORRECTION, not "actuals" from the feed.
+            duty_corrected = bool(
+                duty_overrides and first_date.isoformat() in duty_overrides
+            )
+            correction_suffix = ", pilot-corrected duty" if duty_corrected else ""
             extended_note = (
-                f" (recomputed from actuals, published {rt.published_pch:.2f})"
+                f" (recomputed from actuals, published "
+                f"{rt.published_pch:.2f}{correction_suffix})"
                 if callout_pch != rt.published_pch else ""
             )
             events.append(
@@ -1054,13 +1062,23 @@ def _apply_duty_extension(
         return baseline_trip
 
     credited_duty = _actual_duty_hours(rt, duty_overrides)
+    # I3: when a DUTY_CORRECTION supplied credited_duty (_actual_duty_hours
+    # returns the override outright — see that function), "from iCal" /
+    # "from actuals" misattributes the pilot's own corrected duty to the
+    # feed. The amount is right; the provenance the audit trail records is
+    # not — flag it explicitly, in a record the pilot would show the company.
+    duty_corrected = bool(
+        duty_overrides
+        and _local_date(rt.first_dt_utc).isoformat() in duty_overrides
+    )
+    correction_note = " (pilot-corrected duty)" if duty_corrected else ""
     new_version = AssignmentVersion(
         seq=len(baseline_trip.versions) + 1,
         pch_value=recomputed_pch,
         label=(
             f"Duty extension from iCal: recomputed {recomputed_pch:.2f} "
             f"(block {rt.actual_block_hours:.2f}h, duty "
-            f"{credited_duty:.2f}h)"
+            f"{credited_duty:.2f}h){correction_note}"
         ),
     )
     events.append(
@@ -1072,7 +1090,7 @@ def _apply_duty_extension(
                 f"Actual block {rt.actual_block_hours:.2f}h / duty "
                 f"{credited_duty:.2f}h → recomputed PCH "
                 f"{recomputed_pch:.2f} (published "
-                f"{baseline_trip.published_pch:.2f})"
+                f"{baseline_trip.published_pch:.2f}){correction_note}"
             ),
             delta_pch=recomputed_pch - baseline_trip.published_pch,
         )

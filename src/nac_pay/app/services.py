@@ -651,7 +651,16 @@ def _pipeline(
         active, _superseded = active_versions(vs)
         if active:
             active_by_date[date_iso] = active
-            user_version_counts[date_iso] = len(active)
+            # A DUTY_CORRECTION isn't a reassignment — it never claims a new
+            # assignment or PCH value (see the module-level fold note), so
+            # counting it here mislabels the calendar badge ("N pilot-
+            # recorded reassignments") on a day whose only pilot version is
+            # a duty-window fix.
+            reassignment_like = [
+                v for v in active if v.version_type is not VersionType.DUTY_CORRECTION
+            ]
+            if reassignment_like:
+                user_version_counts[date_iso] = len(reassignment_like)
     if active_by_date:
         updated = apply_user_versions_to_month(updated, active_by_date)
 
@@ -1085,6 +1094,21 @@ class DayVersion:
     reason_code: str = ""
     premium_category: str = ""
 
+    # DUTY_CORRECTION only: the corrected duty window. Its pch_value is
+    # audit-only (see the module-level fold note) — the template renders
+    # THESE instead of pch_value for a DUTY_CORRECTION row, so the history
+    # never shows a PCH figure the pilot isn't actually paid.
+    duty_on_local: str | None = None
+    duty_off_local: str | None = None
+    # True on the ONE active DUTY_CORRECTION row (of possibly several —
+    # a DUTY_CORRECTION is never superseded, so re-editing appends a new
+    # active row rather than replacing the old one) whose duty window
+    # actually drives duty_overrides — the same (created_at, seq) recency
+    # rule _build_duty_overrides uses. Only set when more than one active
+    # DUTY_CORRECTION exists on the date; with a single one there's no
+    # ambiguity to flag.
+    is_live_duty_correction: bool = False
+
 
 @dataclass(frozen=True)
 class DayPayRow:
@@ -1239,6 +1263,7 @@ class DayDetailData:
     # Phase G — pilot reassignment form
     reassign_form_defaults: ReassignFormDefaults = ReassignFormDefaults()
     saved_reassign: bool = False
+    saved_duty_correction: bool = False
     saved_drop: bool = False
     saved_version_deleted: bool = False
     reassign_error: str = ""
@@ -1662,6 +1687,7 @@ def load_day(
     *,
     saved: bool = False,
     saved_reassign: bool = False,
+    saved_duty_correction: bool = False,
     saved_drop: bool = False,
     saved_version_deleted: bool = False,
     reassign_error: str = "",
@@ -1937,6 +1963,7 @@ def load_day(
         superseded_by_seq=superseded_by,
         reassign_defaults=reassign_defaults,
         saved_reassign=saved_reassign,
+        saved_duty_correction=saved_duty_correction,
         saved_drop=saved_drop,
         saved_version_deleted=saved_version_deleted,
         reassign_error=reassign_error,
@@ -2131,6 +2158,7 @@ def _build_day_detail(
     superseded_by_seq: dict | None = None,
     reassign_defaults: ReassignFormDefaults | None = None,
     saved_reassign: bool = False,
+    saved_duty_correction: bool = False,
     saved_drop: bool = False,
     saved_version_deleted: bool = False,
     reassign_error: str = "",
@@ -2561,6 +2589,7 @@ def _build_day_detail(
         saved=saved,
         reassign_form_defaults=reassign_defaults,
         saved_reassign=saved_reassign,
+        saved_duty_correction=saved_duty_correction,
         saved_drop=saved_drop,
         saved_version_deleted=saved_version_deleted,
         reassign_error=reassign_error,
@@ -2603,14 +2632,24 @@ def _build_history(
     exists, so the audit context is visible. Each user version appears
     once, with its supersede status. AT MOST one row gets is_effective=True
     — the highest non-superseded, non-DUTY_CORRECTION PCH, ties going to
-    the LATEST seq (a fresh re-entry of the same value becomes effective),
-    ONLY when that winner's own pch_value actually equals the true
-    credited `effective` param. A DUTY_CORRECTION never wins this (its
-    pch_value is audit-only — see the DUTY_CORRECTION-fold note at the
-    call site below), and on a day where one is what's actually driving
-    `effective` up, no row's pch_value matches it either — so NO row is
-    badged rather than badging a stale one (fix round 2, NEW-3). A DROP
-    is the one exception: it wins unconditionally regardless of PCH.
+    the LATEST seq (a fresh re-entry of the same value becomes effective).
+    A DUTY_CORRECTION never wins this (its pch_value is audit-only — see
+    the DUTY_CORRECTION-fold note at the call site below). A DROP is the
+    one exception: it wins unconditionally regardless of PCH.
+
+    On a day that carries an ACTIVE DUTY_CORRECTION, the winner is ALSO
+    required to match the true credited `effective` param before it gets
+    badged — that's the one case where `effective` can come from
+    duty_overrides rather than any row's own pch_value, and on such a day
+    no row's pch_value may match it, so NO row is badged rather than
+    badging a stale one (fix round 2, NEW-3). On every OTHER day (no
+    active DUTY_CORRECTION) this equality gate does NOT apply — the
+    highest non-superseded candidate is always badged, matching main
+    exactly, even when `effective` itself comes from something outside
+    the candidate list (the auto iCal duty extension, the DPG floor, a
+    callout's max(_DPG, callout_trip_pch)). Widening the gate to every
+    day silently un-badges those rows on live accounts with zero
+    corrections stored — the whole-branch review's I1 finding.
 
     Phase H: each row also carries any structural data we know about its
     underlying trip — DETAILED-mode inputs from the user version, plus a
@@ -2687,6 +2726,8 @@ def _build_history(
                 packet_match=_packet_lookup(uv.assignment_id),
                 reason_code=uv.reason_code,
                 premium_category=uv.premium_category,
+                duty_on_local=uv.duty_on_local,
+                duty_off_local=uv.duty_off_local,
             )
         )
 
@@ -2718,10 +2759,47 @@ def _build_history(
     # PCH — it forfeits the assignment by definition, and `effective` here
     # is the trip's raw (pre-drop-zeroing) effective_pch, not the 0 the day
     # actually pays, so this check must not apply to it.
+    # I5: a DUTY_CORRECTION is never superseded, so a re-edit appends a
+    # SECOND active row rather than replacing the first — neither gets
+    # is_effective (DUTY_CORRECTION never competes), so nothing in the
+    # history otherwise shows which one is actually live. Mark it here
+    # using the exact same (created_at, seq) recency rule
+    # _build_duty_overrides uses, so the label can never disagree with
+    # what's actually credited.
+    duty_correction_active = [
+        r for r in rows
+        if r.user_version_type == "DUTY_CORRECTION" and not r.is_superseded
+    ]
+    if len(duty_correction_active) > 1:
+        live_seq = max(
+            duty_correction_active, key=lambda r: (r.created_at, r.seq)
+        ).seq
+        rows = [
+            replace(r, is_live_duty_correction=(r.seq == live_seq))
+            for r in rows
+        ]
+
     candidates = [
         r for r in rows
         if not r.is_superseded and r.user_version_type != "DUTY_CORRECTION"
     ]
+    # The == effective equality gate only matters on a day that carries an
+    # ACTIVE DUTY_CORRECTION — that's the one case where the credited value
+    # can come from duty_overrides rather than any row's own pch_value (see
+    # the module docstring above). On every other day this branch must be
+    # byte-identical to main: the highest non-superseded candidate is always
+    # badged, full stop. Widening the gate to every day (fix round 2's
+    # original shape) silently un-badges existing REASSIGNMENT rows on live
+    # accounts with zero corrections stored, whenever the credited value
+    # comes from the auto iCal duty extension, the DPG floor, or a callout's
+    # max(_DPG, callout_trip_pch) — none of which are candidates here. The
+    # whole-branch review is right that this feature's core safety property
+    # ("no corrections stored => behaviour identical to main") must hold,
+    # and the badge is the one place it didn't.
+    has_active_duty_correction = any(
+        r.user_version_type == "DUTY_CORRECTION" and not r.is_superseded
+        for r in rows
+    )
     if candidates:
         drops = [r for r in candidates if r.user_version_type == "DROP"]
         if drops:
@@ -2729,7 +2807,7 @@ def _build_history(
             rows = [replace(r, is_effective=(r is winner)) for r in rows]
         else:
             winner = max(candidates, key=lambda r: (r.pch_value, r.seq))
-            badge = winner.pch_value == effective
+            badge = winner.pch_value == effective if has_active_duty_correction else True
             rows = [
                 replace(r, is_effective=(badge and r is winner)) for r in rows
             ]

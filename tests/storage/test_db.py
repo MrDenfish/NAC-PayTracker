@@ -128,3 +128,50 @@ def test_get_engine_is_idempotent_within_a_url():
     e1 = get_engine()
     e2 = get_engine()
     assert e1 is e2
+
+
+# ── C4: _ensure_added_columns against a simulated old-schema DB ───────
+#
+# create_all only creates missing TABLES — it never ALTERs an existing one
+# — so _ensure_added_columns is the ONLY mechanism that back-fills a new
+# nullable column onto an already-created table. Prod is SQLite and this
+# is the ONLY thing that will ever add duty_on_local/duty_off_local to the
+# live database, so it needs a real test, not a by-hand review.
+#
+# SQLite 3.35+ (this environment: 3.45.1) supports ALTER TABLE ... DROP
+# COLUMN, so we build the CURRENT schema via create_all (guaranteeing it
+# stays in sync with db_models.py) and then drop the two added columns
+# with raw DDL to simulate the pre-migration table shape, rather than
+# hand-maintaining a second, driftable schema definition.
+
+
+def test_ensure_added_columns_backfills_a_pre_migration_schema(monkeypatch, tmp_path):
+    from sqlalchemy import inspect as sa_inspect, text
+
+    from nac_pay.storage.db import _ensure_added_columns
+
+    monkeypatch.setenv("NAC_PAY_DATA_DIR", str(tmp_path))
+    dispose_engine()
+    engine = get_engine()  # create_all + _ensure_added_columns already ran once
+
+    table = "user_assignment_versions"
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE {table} DROP COLUMN duty_on_local"))
+        conn.execute(text(f"ALTER TABLE {table} DROP COLUMN duty_off_local"))
+
+    # Simulated old schema: genuinely absent, not just untouched.
+    cols = {c["name"] for c in sa_inspect(engine).get_columns(table)}
+    assert "duty_on_local" not in cols
+    assert "duty_off_local" not in cols
+
+    _ensure_added_columns(engine)
+    cols = {c["name"] for c in sa_inspect(engine).get_columns(table)}
+    assert "duty_on_local" in cols
+    assert "duty_off_local" in cols
+
+    # Idempotent: a second run against the now-current schema must not
+    # raise (e.g. a duplicate-column ADD COLUMN error) and must leave the
+    # columns exactly as they were.
+    _ensure_added_columns(engine)
+    cols_again = {c["name"] for c in sa_inspect(engine).get_columns(table)}
+    assert cols_again == cols

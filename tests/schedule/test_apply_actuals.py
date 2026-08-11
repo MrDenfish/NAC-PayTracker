@@ -1461,7 +1461,13 @@ def test_duty_override_can_lower_a_day_where_duty_rig_was_winning():
 
 
 def test_duty_override_never_takes_a_day_below_published():
-    """§3.E is structural — max(published, recomputed) still holds."""
+    """§3.E is structural — max(published, recomputed) still holds.
+
+    NOTE: this passes via _extension_recompute's tolerance short-circuit
+    (comp.duty_rig doesn't clear published_pch + duty_tolerance_hours, so
+    _apply_duty_extension returns the baseline trip unchanged) — not by
+    exercising the max() fold the docstring's headline implies. It does not
+    independently prove the max()-floor behavior."""
     baseline_trip = Trip(trip_id="766", published_pch=D("4.17"),
                          reason_code=ReasonCode.FLOWN, workdays=1)
     baseline = _empty_month(trips=(baseline_trip,))
@@ -1480,7 +1486,13 @@ def test_duty_override_never_takes_a_day_below_published():
 
 def test_duty_override_does_not_discard_block_credit():
     """The Aug 8 shape: block 7.13 wins. Shortening duty must NOT cost the
-    flight-op credit the pilot never disputed."""
+    flight-op credit the pilot never disputed.
+
+    NOTE: this test has no discriminating power against "the override is
+    silently ignored" — block (7.13) beats duty-rig regardless of whether
+    duty_overrides is threaded at all, so it passes identically either way.
+    It does not prove the override was actually applied; see the
+    duty-rig-driven tests above for that."""
     baseline_trip = Trip(trip_id="720", published_pch=D("6.08"),
                          reason_code=ReasonCode.FLOWN, workdays=1)
     baseline = _empty_month(trips=(baseline_trip,))
@@ -1548,3 +1560,51 @@ def test_duty_override_is_keyed_by_anchorage_local_date_not_utc():
     # Keyed by ANC-local date ("2026-08-08"), NOT the UTC date ("2026-08-09").
     got = _actual_duty_hours(rt, {"2026-08-08": D("9.00")})
     assert got == D("9.00")
+
+
+# ── I3: the audit trail must not credit the pilot's own duty to the feed ──
+
+
+def test_duty_extension_note_flags_pilot_corrected_duty():
+    """I3: the DUTY_EXTENSION AssignmentVersion label
+    ("Duty extension from iCal: recomputed ...") and the matching
+    AppliedEvent detail ("Actual block ... -> recomputed PCH ...") both
+    said the recompute came "from iCal"/"from actuals" even when
+    credited_duty was substituted outright by a DUTY_CORRECTION
+    (_actual_duty_hours). The amount was right; the provenance the pilot
+    would show the company in a pay dispute was not. Both must flag the
+    override; neither may without one."""
+    baseline_trip = Trip(trip_id="766", published_pch=D("4.17"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="9.77")
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    no_override, no_events, _ = apply_actuals_to_month(baseline, reconciliation)
+    corrected, events, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("10.02")},
+    )
+
+    # Sanity: the override genuinely drove this recompute (same fixture as
+    # test_duty_override_can_lower_a_day_where_duty_rig_was_winning).
+    assert corrected.trips[0].effective_pch == D("5.01")
+
+    corrected_event = next(
+        e for e in events if e.kind is AppliedEventKind.DUTY_EXTENSION
+    )
+    assert "(pilot-corrected duty)" in corrected_event.detail
+
+    corrected_version = corrected.trips[0].versions[-1]
+    assert "(pilot-corrected duty)" in corrected_version.label
+
+    # Without the override, the feed-only recompute must not claim a
+    # pilot correction that never happened.
+    plain_event = next(
+        e for e in no_events if e.kind is AppliedEventKind.DUTY_EXTENSION
+    )
+    assert "(pilot-corrected duty)" not in plain_event.detail
+    plain_version = no_override.trips[0].versions[-1]
+    assert "(pilot-corrected duty)" not in plain_version.label

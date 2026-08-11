@@ -955,3 +955,177 @@ def test_history_badges_nobody_when_duty_correction_drives_effective_up():
     original_row = next(v for v in d.versions if v.seq == 0)
     assert original_row.is_effective is False
     assert original_row.pch_value == Decimal("4.17")
+
+
+# ── C1: history must not render a PCH figure the pilot isn't paid ──────
+
+
+def test_history_renders_duty_window_not_pch_for_duty_correction_rows():
+    """C1: day.html rendered "{{ pch_value }} PCH" for every history row,
+    including DUTY_CORRECTION, whose pch_value is audit-only by
+    construction (see the _build_history docstring). Under the card's own
+    "max across non-superseded versions" heading, a 15.00-PCH-looking row
+    on a day credited 4.17 is an affirmatively misleading record. The row
+    must show its corrected duty window instead, and the intro sentence
+    must no longer imply every listed row competes for pay."""
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="09:00",
+        duty_hours=Decimal("6.00"), pch_value=Decimal("15.00"),
+    )
+    from nac_pay.app.services import _pipeline
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+    correction_row = next(
+        v for v in d.versions if v.user_version_type == "DUTY_CORRECTION"
+    )
+    assert correction_row.duty_on_local == "03:00"
+    assert correction_row.duty_off_local == "09:00"
+
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+    # The misleading figure must not render anywhere on the page — 15.00
+    # PCH is a number the pilot is never actually credited.
+    assert "15.00 PCH" not in r.text
+    # The corrected window renders in its place.
+    assert "03:00" in r.text and "09:00" in r.text
+    # The intro sentence must qualify that not every listed row competes.
+    assert "compete" in r.text
+
+
+def test_history_marks_the_live_duty_correction_when_more_than_one_exists():
+    """I5: a DUTY_CORRECTION is never superseded (the "Correct this"
+    affordance renders for REASSIGNMENT only), so re-editing appends a
+    SECOND active row rather than replacing the first — neither gets
+    is_effective (DUTY_CORRECTION never competes), so nothing previously
+    indicated which one's created_at actually drives duty_overrides. The
+    later one (by the same (created_at, seq) recency rule
+    _build_duty_overrides uses) must be marked; the earlier one must not."""
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="01:00", duty_off_local="09:00",
+        duty_hours=Decimal("8.00"), pch_value=Decimal("4.00"),
+    )
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="09:00",
+        duty_hours=Decimal("6.00"), pch_value=Decimal("3.00"),
+    )
+    from nac_pay.app.services import _pipeline
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+    corrections = sorted(
+        (v for v in d.versions if v.user_version_type == "DUTY_CORRECTION"),
+        key=lambda v: v.seq,
+    )
+    assert len(corrections) == 2
+    older, newer = corrections
+    assert older.is_live_duty_correction is False
+    assert newer.is_live_duty_correction is True
+
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+    assert ">live<" in r.text
+
+
+# ── I1: badge rule scoped to days with an active DUTY_CORRECTION ──────
+
+
+def test_history_badges_the_winner_even_when_effective_comes_from_elsewhere():
+    """I1: on a day with NO active DUTY_CORRECTION, the badge must be
+    byte-identical to main — the highest non-superseded candidate is
+    ALWAYS the effective row, even when `effective` itself is driven by
+    something outside the candidate list entirely (the auto iCal duty
+    extension, the DPG floor, a callout's max(_DPG, callout_trip_pch)).
+    Widening the == effective gate to every day (the pre-fix shape)
+    silently un-badges this REASSIGNMENT row on live accounts with zero
+    corrections stored — the whole-branch review's I1 finding.
+
+    Calls _build_history directly with a synthetic REASSIGNMENT whose own
+    pch_value (6.08) does NOT equal `effective` (6.625, standing in for a
+    DPG-floor/callout-driven credited value) — proving the badge does not
+    depend on that equality when no DUTY_CORRECTION is present."""
+    from nac_pay.app.services import _build_history
+    from nac_pay.storage import UserAssignmentVersion, VersionEntryMode, VersionType
+
+    uv = UserAssignmentVersion(
+        user_id="u", date_iso="2026-06-12", seq=1,
+        version_type=VersionType.REASSIGNMENT, correction_of=None,
+        assignment_id="722/754", entry_mode=VersionEntryMode.SIMPLE,
+        pch_value=Decimal("6.08"), block_hours=None, duty_hours=None,
+        tafb_hours=None, deadhead_pch=None, workdays=None,
+        duty_on_local=None, duty_off_local=None,
+        reason_code="REASSIGNMENT", premium_category="NONE", notes="",
+        created_at="2026-06-12T00:00:00",
+    )
+    versions = _build_history(
+        published=Decimal("4.17"),
+        effective=Decimal("6.625"),   # deliberately != uv.pch_value
+        user_versions=[uv],
+        superseded_seqs=set(),
+        superseded_by_seq={},
+    )
+    winner = next(v for v in versions if v.seq == 1)
+    assert winner.is_effective is True, (
+        "the highest non-superseded candidate must be badged when there is "
+        "no active DUTY_CORRECTION on the day, regardless of whether its "
+        "own pch_value equals `effective` — matches main's rule"
+    )
+
+
+# ── I2: amend-form clock prefill — one source, never mixed ─────────────
+
+
+def test_amend_form_prefers_the_scheduled_pair_over_a_reconstructed_window(monkeypatch):
+    """I2: day.html:864 mixed sources — duty_on fell back to sched_duty_on
+    but duty_off did NOT fall back to sched_duty_off (pre-C2-fix shape),
+    and even after that fix both fields independently preferred the
+    computed/actual window over the packet's scheduled pair. On a day
+    whose window was reconstructed by the manual-legs branch, a re-amend
+    then prefilled that reconstructed clock instead of the packet show,
+    changing the JS `front` anchor and drifting duty_hours on a row type
+    that DOES compete in max().
+
+    The two prefills must come from ONE source: prefer the packet
+    scheduled pair when BOTH halves exist, else the computed pair, else
+    blank. Builds the scenario via dataclasses.replace on a REAL
+    load_day() result — sched_duty_on/off stay at the packet's real show
+    time (05:30/12:35) while duty_on/off are forced to a clearly
+    DIFFERENT reconstructed-looking pair (18:15/14:15, mirroring the
+    manual-legs-anchor shape) so the two sources are unambiguously
+    distinguishable in the assertion."""
+    from dataclasses import replace
+
+    real = load_day(2026, 6, 12)
+    assert real.sched_duty_on == "05:30" and real.sched_duty_off == "12:35", (
+        "fixture assumption broken: trip 768's packet show time changed"
+    )
+    reconstructed = replace(real, duty_on="18:15", duty_off="14:15")
+
+    import nac_pay.app.main as main_module
+    monkeypatch.setattr(main_module, "load_day", lambda *a, **kw: reconstructed)
+
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+
+    m_on = re.search(
+        r'<input type="time" id="reassign-report" name="duty_on_local"\s+'
+        r'value="([^"]*)"',
+        r.text,
+    )
+    m_off = re.search(
+        r'<input type="time" id="reassign-duty-off" name="duty_off_local"\s+'
+        r'value="([^"]*)"',
+        r.text,
+    )
+    assert m_on and m_off
+    assert m_on.group(1) == "05:30", (
+        "report prefill picked the reconstructed window instead of the "
+        "packet's scheduled show time"
+    )
+    assert m_off.group(1) == "12:35", (
+        "duty-off prefill picked the reconstructed window instead of the "
+        "packet's scheduled show time"
+    )
