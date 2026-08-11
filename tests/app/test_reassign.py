@@ -976,3 +976,44 @@ def test_duty_clocks_are_normalized_to_zero_padded_hhmm(monkeypatch):
     v = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12")[-1]
     assert v.duty_on_local == "04:41"
     assert v.duty_off_local == "18:15"
+
+
+def test_duty_correction_in_simple_mode_is_rejected(monkeypatch):
+    """Fix round 2, NEW-2: SIMPLE mode has no duty field at all — a
+    DUTY_CORRECTION saved that way would change nothing (excluded from the
+    max() fold, and duty_overrides needs a duty_hours/clocks it never got).
+    Must be rejected, not silently saved as a no-op row."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "simplenoop@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "SIMPLE",
+        "pch_value": "10.00",
+    }, follow_redirects=False)
+
+    assert r.status_code in (302, 303)
+    assert "reassign_error=" in r.headers["location"]
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12") == []
+
+
+def test_duty_correction_in_detailed_mode_with_no_clocks_is_rejected(monkeypatch):
+    """Fix round 2, NEW-2: Detailed mode with both clocks left blank is the
+    same no-op reached a different way. Must be rejected too."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "detailednoop@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "9.99",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "",
+        "duty_off_local": "",
+    }, follow_redirects=False)
+
+    assert r.status_code in (302, 303)
+    assert "reassign_error=" in r.headers["location"]
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12") == []

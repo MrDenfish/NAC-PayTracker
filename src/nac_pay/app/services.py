@@ -2601,8 +2601,16 @@ def _build_history(
 
     Always shows the original (display_seq=0) when any user version
     exists, so the audit context is visible. Each user version appears
-    once, with its supersede status. Exactly one row gets is_effective=True
-    (the highest non-superseded PCH, with ties going to the earliest seq).
+    once, with its supersede status. AT MOST one row gets is_effective=True
+    — the highest non-superseded, non-DUTY_CORRECTION PCH, ties going to
+    the LATEST seq (a fresh re-entry of the same value becomes effective),
+    ONLY when that winner's own pch_value actually equals the true
+    credited `effective` param. A DUTY_CORRECTION never wins this (its
+    pch_value is audit-only — see the DUTY_CORRECTION-fold note at the
+    call site below), and on a day where one is what's actually driving
+    `effective` up, no row's pch_value matches it either — so NO row is
+    badged rather than badging a stale one (fix round 2, NEW-3). A DROP
+    is the one exception: it wins unconditionally regardless of PCH.
 
     Phase H: each row also carries any structural data we know about its
     underlying trip — DETAILED-mode inputs from the user version, plus a
@@ -2696,12 +2704,20 @@ def _build_history(
     # "effective" — worse, on a downward correction, a stale-looking
     # inflated pch_value (e.g. from leftover block/TAFB the pilot didn't
     # revisit) could badge itself effective while the true credited value
-    # dropped. This can leave NO row exactly matching the true `effective`
-    # param on a day where a DUTY_CORRECTION raises duty rig above every
-    # other candidate (the true credited value only exists via the
-    # duty_overrides recompute, not as any row's own pch_value) — flagged
-    # to the reviewer rather than silently patched over; out of this
-    # round's scope.
+    # dropped. Fix round 2 NEW-3: this can leave NO row exactly matching
+    # the true `effective` param on a day where a DUTY_CORRECTION raises
+    # duty rig above every other candidate (the true credited value only
+    # exists via the duty_overrides recompute, not as any row's own
+    # pch_value). Badging "Original published" as effective there was
+    # WRONG too (the pilot is actually credited more than that row shows)
+    # — badge nobody rather than badge a number the pilot isn't paid: the
+    # non-drop winner only gets is_effective=True when its OWN pch_value
+    # equals the true credited `effective` (the one case this can diverge
+    # is a DUTY_CORRECTION-driven day, which is exactly the case with no
+    # row worth badging). A DROP still wins unconditionally regardless of
+    # PCH — it forfeits the assignment by definition, and `effective` here
+    # is the trip's raw (pre-drop-zeroing) effective_pch, not the 0 the day
+    # actually pays, so this check must not apply to it.
     candidates = [
         r for r in rows
         if not r.is_superseded and r.user_version_type != "DUTY_CORRECTION"
@@ -2710,9 +2726,13 @@ def _build_history(
         drops = [r for r in candidates if r.user_version_type == "DROP"]
         if drops:
             winner = max(drops, key=lambda r: r.seq)
+            rows = [replace(r, is_effective=(r is winner)) for r in rows]
         else:
             winner = max(candidates, key=lambda r: (r.pch_value, r.seq))
-        rows = [replace(r, is_effective=(r is winner)) for r in rows]
+            badge = winner.pch_value == effective
+            rows = [
+                replace(r, is_effective=(badge and r is winner)) for r in rows
+            ]
     return tuple(rows)
 
 

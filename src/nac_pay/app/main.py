@@ -500,6 +500,20 @@ def day_reassign(
         if target.version_type is VersionType.CORRECTION:
             return _bail("Can't correct a correction — submit a fresh one against the original.")
 
+    # A DUTY_CORRECTION with no usable duty window is a silent no-op, not a
+    # harmless save: it never competes in the §3.E.1.b max() (see
+    # _fold_candidates in apply_user_versions.py) and its only pay effect
+    # is duty_overrides -> apply_actuals substituting the corrected duty —
+    # which needs SOMETHING to substitute. SIMPLE mode has no duty field at
+    # all. Reject here, before entry_mode branches, so the row is never
+    # even attempted — the pilot needs a clear "do this instead" message,
+    # not a row that quietly changes nothing.
+    if vt is VersionType.DUTY_CORRECTION and em is VersionEntryMode.SIMPLE:
+        return _bail(
+            "A duty correction needs Detailed mode with a duty on and duty "
+            "off time — Simple mode has no duty window to correct."
+        )
+
     if em is VersionEntryMode.SIMPLE:
         try:
             pch_dec = Decimal(pch_value)
@@ -568,6 +582,16 @@ def day_reassign(
                 off_clock = f"{off_h:02d}:{off_m:02d}"
             elif on_clock or off_clock:
                 return _bail("Enter both duty on and duty off, or neither.")
+            else:
+                # Detailed mode with BOTH clocks blank — same no-op as
+                # Simple mode above, just reached via the other entry
+                # mode. A row with no clocks and no fold participation
+                # would save silently and change nothing.
+                return _bail(
+                    "Enter a duty on and duty off time to file a duty "
+                    "correction — use Reassignment / amend instead if "
+                    "you're not correcting the duty window."
+                )
 
         from nac_pay.engine import recompute_pch_from_times
         pch_dec = recompute_pch_from_times(

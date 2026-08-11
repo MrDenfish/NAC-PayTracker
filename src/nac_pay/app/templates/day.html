@@ -880,7 +880,9 @@
             <p class="form-hint">
               Pre-filled from the iCal feed — edit any, add the missing legs;
               order doesn't matter (sorted by departure). Block = Σ(In−Out);
-              Duty = Report → (last In + 0:15); TAFB = Report → last In.
+              TAFB = Report → last In. For Reassignment/Correction, Duty =
+              Report → (last In + 0:15); for a Duty correction, Duty = your
+              duty on/off clocks above, exactly.
             </p>
           </div>
 
@@ -894,9 +896,11 @@
               <span class="form-label">Duty hours</span>
               <input type="text" name="duty_hours" inputmode="decimal"
                      value="{{ defaults.duty_hours }}" placeholder="10.25"
-                     readonly aria-describedby="duty-hours-hint">
+                     aria-describedby="duty-hours-hint">
               <span class="form-hint" id="duty-hours-hint">
-                Computed from duty on and duty off.
+                Computed from the legs above (Reassignment/Correction) or
+                from duty on/off (Duty correction) — JS-managed;
+                read-only only while Duty correction is selected.
               </span>
             </label>
             <label>
@@ -1048,6 +1052,20 @@
       if (!body || !addBtn) return;
       var REPORT_PAD = 60, TRIP_END_PAD = 15; // minutes (1:00 / 0:15)
 
+      // Fix round 2, NEW-1: the duty on/off clocks are the truth ONLY for a
+      // DUTY_CORRECTION, mirroring main.py's server-side gate exactly. For
+      // every other version_type (Reassignment, Correction) duty must track
+      // the legs the same way it did before this feature existed — those
+      // rows DO compete in the §3.E.1.b max(), so pinning them to a
+      // possibly-stale prefilled clock (now that duty-off always prefills,
+      // see the C2 fix) can silently undercredit a real duty extension.
+      function isDutyCorrection() {
+        var r = document.querySelector(
+          'input[name="version_type"][value="DUTY_CORRECTION"]'
+        );
+        return !!(r && r.checked);
+      }
+
       function toMin(v) {           // "HH:MM" -> minutes of day, or null
         if (!v) return null;
         var p = v.split(":");
@@ -1084,14 +1102,20 @@
           // and TAFB have no leg data to compute from and are left for the
           // pilot to enter directly. Server-side validation is
           // authoritative regardless — this is a convenience, not a gate.
-          var reportOnlyEl = document.getElementById("reassign-report");
-          var dutyOffOnlyEl = document.getElementById("reassign-duty-off");
-          var reportOnlyMin = reportOnlyEl ? toMin(reportOnlyEl.value) : null;
-          var dutyOffOnlyMin = dutyOffOnlyEl ? toMin(dutyOffOnlyEl.value) : null;
-          if (reportOnlyMin !== null && dutyOffOnlyMin !== null) {
-            var clockOnlyDuty = (dutyOffOnlyMin - reportOnlyMin) / 60;
-            if (clockOnlyDuty <= 0) { clockOnlyDuty += 24; }
-            setOut("duty_hours", clockOnlyDuty);
+          // Only meaningful for a DUTY_CORRECTION (see isDutyCorrection) —
+          // with no legs and no clock-derived duty, there's nothing this
+          // preview can compute for any other version_type; leave
+          // duty_hours whatever it already is (typed directly, or blank).
+          if (isDutyCorrection()) {
+            var reportOnlyEl = document.getElementById("reassign-report");
+            var dutyOffOnlyEl = document.getElementById("reassign-duty-off");
+            var reportOnlyMin = reportOnlyEl ? toMin(reportOnlyEl.value) : null;
+            var dutyOffOnlyMin = dutyOffOnlyEl ? toMin(dutyOffOnlyEl.value) : null;
+            if (reportOnlyMin !== null && dutyOffOnlyMin !== null) {
+              var clockOnlyDuty = (dutyOffOnlyMin - reportOnlyMin) / 60;
+              if (clockOnlyDuty <= 0) { clockOnlyDuty += 24; }
+              setOut("duty_hours", clockOnlyDuty);
+            }
           }
           return;
         }
@@ -1121,17 +1145,23 @@
           lastIn = inAbs;
           prevIn = inAbs;
         }
-        // Duty STARTS at the report/check-in time (default = scheduled, 1:00
-        // before scheduled departure), NOT at actual block-out — the pilot
-        // reports on the schedule even if the flight pushes late. The report
-        // field overrides; fall back to first-out − 1:00 when it's blank.
-        // Duty ENDS at the duty-off clock (default = last block-in + 0:15)
-        // when the pilot has set one — editing either clock is how a duty
-        // correction is entered; duty hours (read-only) and duty rig follow.
+        // Duty STARTS at the report/check-in time and ENDS at the duty-off
+        // clock ONLY for a DUTY_CORRECTION (isDutyCorrection) — editing
+        // either clock is how a duty correction is entered; duty hours and
+        // duty rig follow. For every other version_type these two clocks
+        // are ignored entirely: duty falls back to first-out − 1:00 (or the
+        // scheduled report, which the packet's L Day Show already primed
+        // the field with — but that prefill is display-only, not read,
+        // here) through last-in + 0:15, exactly as it did before this
+        // feature existed. Fix round 2, NEW-1: the duty-off field is now
+        // ALWAYS prefilled (see C2), so without this gate `back` would
+        // pin to that stale clock for a Reassignment too and silently
+        // undercredit a real duty extension.
+        var duty_corr = isDutyCorrection();
         var reportEl = document.getElementById("reassign-report");
         var dutyOffEl = document.getElementById("reassign-duty-off");
-        var reportMin = reportEl ? toMin(reportEl.value) : null;
-        var dutyOffMin = dutyOffEl ? toMin(dutyOffEl.value) : null;
+        var reportMin = (duty_corr && reportEl) ? toMin(reportEl.value) : null;
+        var dutyOffMin = (duty_corr && dutyOffEl) ? toMin(dutyOffEl.value) : null;
         var front = (reportMin !== null) ? reportMin : (firstOut - REPORT_PAD);
         var back = (dutyOffMin !== null) ? dutyOffMin : (lastIn + TRIP_END_PAD);
         var duty = (back - front) / 60;
@@ -1164,7 +1194,24 @@
         }
         recompute();
       });
-      recompute();   // compute from any pre-filled (iCal) legs on load
+
+      // duty_hours is read-only ONLY while Duty correction is selected —
+      // the clocks are the source of truth there. For every other
+      // version_type it's a normal editable field (computed from the legs
+      // above as a starting point, same as before this feature existed).
+      // Re-synced on every version_type change, and recompute() re-run so
+      // the previewed duty switches source immediately rather than only on
+      // the next leg/clock edit.
+      function syncDutyCorrectionMode() {
+        var dutyHoursEl = document.querySelector('[name="duty_hours"]');
+        if (dutyHoursEl) dutyHoursEl.readOnly = isDutyCorrection();
+        recompute();
+      }
+      document.querySelectorAll('input[name="version_type"]').forEach(function (r) {
+        r.addEventListener("change", syncDutyCorrectionMode);
+      });
+      syncDutyCorrectionMode();   // sets initial readonly state + recomputes
+                                  // from any pre-filled (iCal) legs on load
     })();
 
     // A duty correction is meaningless in Simple mode (there's no PCH field

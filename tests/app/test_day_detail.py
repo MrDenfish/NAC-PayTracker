@@ -925,3 +925,33 @@ def test_duty_correction_no_effect_surfaced_when_no_reconciled_trip():
     _pipeline.cache_clear()
     covered = load_day(2026, 6, 12)
     assert covered.duty_correction_no_effect is False
+
+
+def test_history_badges_nobody_when_duty_correction_drives_effective_up():
+    """Fix round 2, NEW-3: the residual disclosed after the I2 fix. On an
+    UPWARD correction (duty 20h -> rig 10.00, beating published 4.17 — the
+    same fixture as test_duty_correction_flows_into_the_pipeline_recompute
+    in test_day_edit.py), the pilot is credited 10.00, but no row's OWN
+    pch_value equals 10.00 (the DUTY_CORRECTION's is excluded from
+    candidates; "Original published" is 4.17). Before this fix, "Original
+    published" (4.17) was wrongly badged effective. After: nobody is —
+    specifically NOT "Original published", since 4.17 != the true 10.00
+    credited value."""
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="23:00",
+        duty_hours=Decimal("20.00"), pch_value=Decimal("4.17"),
+    )
+    from nac_pay.app.services import _pipeline
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+    assert d.effective_pch == Decimal("10.00")
+
+    assert not any(v.is_effective for v in d.versions), (
+        "some row was badged effective even though none matches the "
+        "true credited value"
+    )
+    original_row = next(v for v in d.versions if v.seq == 0)
+    assert original_row.is_effective is False
+    assert original_row.pch_value == Decimal("4.17")
