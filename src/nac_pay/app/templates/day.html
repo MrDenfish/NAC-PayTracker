@@ -396,7 +396,7 @@
   {% endif %}
 
   {# ── Times: scheduled vs actual ──────────────────────────────── #}
-  {% if data.sch_block_hours is not none or data.actual_block_hours is not none or data.reserve_window_start %}
+  {% if data.sch_block_hours is not none or data.actual_block_hours is not none or data.reserve_window_start or data.duty_correction_no_effect %}
   <div class="card">
     <h2 class="card-title">Times</h2>
     {% if data.sch_block_hours is not none or data.actual_block_hours is not none %}
@@ -485,6 +485,15 @@
       day has no matched packet trip. Times in Anchorage local.
     </p>
     {% endif %}
+    {% endif %}
+
+    {% if data.duty_correction_no_effect %}
+    <p class="banner banner--warn" style="margin-top: 10px; font-size: 12.5px;">
+      A duty correction is filed here, but this date has no matching flight
+      to apply it to (the feed legs have aged out, or there's nothing
+      scheduled) — it isn't changing what's credited. To change the
+      credited value on this date, use Reassign / amend below instead.
+    </p>
     {% endif %}
 
     {% if data.reserve_window_start %}
@@ -721,15 +730,39 @@
       </summary>
 
       <form action="/day/{{ data.date_iso }}/reassign" method="post" class="reassign-form">
-        <input type="hidden" name="version_type"
-               value="{% if is_correction %}CORRECTION{% else %}REASSIGNMENT{% endif %}">
         {% if is_correction %}
+        <input type="hidden" name="version_type" value="CORRECTION">
         <input type="hidden" name="correction_of" value="{{ defaults.correction_of }}">
         <p class="subtle reassign-correction-note">
           This will be saved as a new row that supersedes
           {{ defaults.correcting_seq_label }}. The original entry stays in the
           history (struck through) for audit.
         </p>
+        {% else %}
+        {# Explicit choice — never inferred from which fields the pilot
+           touched. A DUTY_CORRECTION does not compete in the §3.E.1.b
+           max() (see apply_user_versions._fold_candidates); it only feeds
+           the duty-rig recompute via duty_overrides, so it can lower
+           credited pay, not just raise or floor it. #}
+        <fieldset class="reassign-type-group">
+          <legend class="form-label">What are you recording?</legend>
+          <label class="radio-inline">
+            <input type="radio" name="version_type" value="REASSIGNMENT"
+                   {% if defaults.version_type != 'DUTY_CORRECTION' %}checked{% endif %}>
+            Reassignment / amend — a different trip or PCH value
+          </label>
+          <label class="radio-inline">
+            <input type="radio" name="version_type" value="DUTY_CORRECTION"
+                   {% if defaults.version_type == 'DUTY_CORRECTION' %}checked{% endif %}>
+            Duty correction — fix duty on/off only
+          </label>
+          <span class="form-hint">
+            A duty correction doesn't claim a new assignment or PCH value —
+            it fixes the duty clocks (report / release) and lets the §3.E
+            duty-rig recompute follow. Use Reassignment for a different trip
+            or a PCH figure you're entering directly.
+          </span>
+        </fieldset>
         {% endif %}
 
         <fieldset class="reassign-mode-group">
@@ -838,7 +871,7 @@
             <label class="reassign-duty-off">
               <span class="form-label">Duty off (local)</span>
               <input type="time" id="reassign-duty-off" name="duty_off_local"
-                     value="{{ data.duty_off or '' }}">
+                     value="{{ data.duty_off or data.sched_duty_off or '' }}">
               <span class="form-hint">
                 When duty ended — last block-in plus 0:15. Edit either clock
                 to correct the duty day; duty hours and duty rig follow.
@@ -1132,6 +1165,26 @@
         recompute();
       });
       recompute();   // compute from any pre-filled (iCal) legs on load
+    })();
+
+    // A duty correction is meaningless in Simple mode (there's no PCH field
+    // to type a clock into) — selecting it switches to Detailed as a
+    // convenience. This does NOT infer the version_type from anything; the
+    // pilot already made that choice explicitly by clicking the radio.
+    (function () {
+      var dutyCorrectionRadio = document.querySelector(
+        'input[name="version_type"][value="DUTY_CORRECTION"]'
+      );
+      var detailedRadio = document.querySelector(
+        'input[name="entry_mode"][value="DETAILED"]'
+      );
+      if (!dutyCorrectionRadio || !detailedRadio) return;
+      dutyCorrectionRadio.addEventListener("change", function () {
+        if (dutyCorrectionRadio.checked && !detailedRadio.checked) {
+          detailedRadio.checked = true;
+          detailedRadio.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      });
     })();
 
     // "Amend / add legs" entry point (?amend=1): open the form, select

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,74 @@ from nac_pay.storage.db_models import UserRow
 
 def _docs_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "docs"
+
+
+class _FormInputParser(HTMLParser):
+    """Collects every ``<input>`` element's attrs, in document order, from
+    a fragment of rendered HTML. Used to build a POST body FROM the
+    rendered template rather than a hand-written dict, so a template
+    regression (a renamed/removed field, a radio option that stops being
+    emitted) fails the test that depends on it instead of going unnoticed
+    (Fix round 1, CRITICAL 1)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.inputs: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "input":
+            self.inputs.append(dict(attrs))
+
+
+def _parse_reassign_form(html: str, date_iso: str) -> tuple[dict[str, list[str]], dict[str, set[str]]]:
+    """Extract the ``/day/<date_iso>/reassign`` form's fields from RENDERED
+    page HTML.
+
+    Returns ``(fields, radio_options)``:
+    - ``fields``: {name: [values...]} in document order — a list even for
+      single-valued fields, so repeated names (leg_flight/leg_out/leg_in)
+      round-trip correctly; a checked radio's value is included, an
+      unchecked one is not.
+    - ``radio_options``: {name: {every value offered}} — lets a test assert
+      an option EXISTS in the rendered form (e.g. "DUTY_CORRECTION" is one
+      of the version_type radios) independent of which one starts checked.
+    """
+    m = re.search(
+        r'<form action="/day/' + re.escape(date_iso) + r'/reassign"[^>]*>(.*?)</form>',
+        html, re.S,
+    )
+    assert m, f"no /day/{date_iso}/reassign form found in the rendered page"
+    parser = _FormInputParser()
+    parser.feed(m.group(1))
+
+    fields: dict[str, list[str]] = {}
+    radio_options: dict[str, set[str]] = {}
+    for attrs in parser.inputs:
+        name = attrs.get("name")
+        if not name:
+            continue
+        value = attrs.get("value") or ""
+        itype = attrs.get("type", "text")
+        if itype == "radio":
+            radio_options.setdefault(name, set()).add(value)
+            if "checked" in attrs:
+                fields.setdefault(name, []).append(value)
+        elif itype == "checkbox":
+            if "checked" in attrs:
+                fields.setdefault(name, []).append(value)
+        else:
+            fields.setdefault(name, []).append(value)
+    return fields, radio_options
+
+
+def _payload_from_fields(fields: dict[str, list[str]]) -> dict[str, str | list[str]]:
+    """Collapse the parsed {name: [values]} map into the shape TestClient's
+    ``data=`` wants: a single value for a single-valued field, a list for a
+    repeated one (leg_flight/leg_out/leg_in)."""
+    return {
+        name: (values[0] if len(values) == 1 else values)
+        for name, values in fields.items()
+    }
 
 
 def _verify_token(body: str) -> str:
@@ -777,3 +846,133 @@ def test_duty_correction_downward_lowers_the_credited_pch(monkeypatch):
         f"downward correction did not lower credited PCH: {before} -> {after}"
     )
     assert after == Decimal("4.17")
+
+
+# ── Fix round 1: the feature must be reachable from the rendered form ──
+
+
+def test_duty_correction_type_posted_from_the_rendered_form_moves_credited_pch(monkeypatch):
+    """CRITICAL 1: before this fix, day.html hard-coded version_type to
+    REASSIGNMENT/CORRECTION — nothing in the template ever emitted
+    DUTY_CORRECTION, so the feature was unreachable from a browser (a
+    pilot's clocks landed on a REASSIGNMENT row, which competes in the
+    max() fold and which _build_duty_overrides ignores — exactly the bug
+    the feature exists to fix).
+
+    This posts a body built by PARSING the rendered /day/<date> page's
+    actual form fields (not a hand-written dict), overriding only what a
+    pilot would actually touch through the UI: the version_type radio
+    (asserting DUTY_CORRECTION is genuinely offered), the entry_mode
+    radio, and the two duty clocks. Everything else — assignment_id, the
+    real iCal-prefilled legs, deadhead/workdays — comes straight off the
+    page. block_hours/tafb_hours/duty_hours are also set here because
+    TestClient doesn't run the page's JS auto-compute (recompute()); a real
+    browser would have filled them in before submit.
+    """
+    client, uid = _bootstrap_user_with_june(monkeypatch, "renderedform@x.test")
+
+    before_pr = _pipeline(2026, 6, uid)
+    before_trip = next(t for t in before_pr.updated_month.trips if "768" in t.trip_id)
+    before = before_trip.effective_pch
+
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+    fields, radios = _parse_reassign_form(r.text, "2026-06-12")
+
+    assert "DUTY_CORRECTION" in radios.get("version_type", set()), (
+        "the rendered amend form no longer offers a Duty correction option"
+    )
+    assert "DETAILED" in radios.get("entry_mode", set())
+    assert "duty_on_local" in fields, "the rendered form has no duty_on_local field"
+    assert "duty_off_local" in fields, "the rendered form has no duty_off_local field"
+
+    fields["version_type"] = ["DUTY_CORRECTION"]
+    fields["entry_mode"] = ["DETAILED"]
+    fields["duty_on_local"] = ["03:00"]
+    fields["duty_off_local"] = ["23:00"]
+    # JS-computed on a real page load/submit; TestClient never runs JS.
+    fields["block_hours"] = ["4.17"]
+    fields["duty_hours"] = ["0"]
+    fields["tafb_hours"] = ["4.17"]
+
+    payload = _payload_from_fields(fields)
+    resp = client.post("/day/2026-06-12/reassign", data=payload, follow_redirects=False)
+    assert resp.status_code in (302, 303), resp.headers.get("location")
+
+    saved = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12")[-1]
+    assert saved.version_type is VersionType.DUTY_CORRECTION
+    assert saved.duty_on_local == "03:00"
+    assert saved.duty_off_local == "23:00"
+
+    invalidate_caches()
+    after_pr = _pipeline(2026, 6, uid)
+    after_trip = next(t for t in after_pr.updated_month.trips if "768" in t.trip_id)
+    after = after_trip.effective_pch
+
+    assert after != before, "posting via the rendered form had no pay effect"
+    assert after == Decimal("10.00")
+
+
+def test_reassignment_with_clocks_present_does_not_derive_duty_from_them(monkeypatch):
+    """IMPORTANT 1: duty-clock derivation must be confined to
+    DUTY_CORRECTION. A REASSIGNMENT DOES compete in the max() fold, so if
+    clocks (which the form always prefills, regardless of which
+    version_type radio is checked) silently overrode duty_hours here too,
+    amending to a longer trip would undercredit (duty computed from the
+    OLD short window) and amending to a shorter trip would overcredit (duty
+    still computed from the OLD long window, inflating duty rig).
+
+    Posts REASSIGNMENT/DETAILED with duty_on_local/duty_off_local present
+    but describing a MUCH longer window (03:00-23:00, 20h) than the posted
+    duty_hours (4.00) — asserts the clocks are ignored: duty_hours stored
+    is the posted 4.00, not the clock-derived 20.00, and the clocks
+    themselves are not persisted."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "reassignclocks@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "REASSIGNMENT",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "4.00",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "03:00",
+        "duty_off_local": "23:00",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+    v = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12")[-1]
+    assert v.version_type is VersionType.REASSIGNMENT
+    assert v.duty_on_local is None
+    assert v.duty_off_local is None
+    assert abs(v.duty_hours - Decimal("4.00")) < Decimal("0.001")
+    # duty/2 (4.00/2=2.00) must NOT have won pch_value over the posted
+    # block/tafb — confirms recompute_pch_from_times ran on the POSTED
+    # duty_hours (4.00), not a clock-derived 20.00 (which would give 10.00).
+    assert v.pch_value == Decimal("4.17")
+
+
+def test_duty_clocks_are_normalized_to_zero_padded_hhmm(monkeypatch):
+    """Cheap fix: _parse_clock/duty_hours_between accept loose input
+    ("4:41", "004:41") — the STORED clock must be canonical HH:MM so every
+    reader (display, _build_duty_overrides) sees the same shape, not
+    whatever the pilot happened to type."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "clocknorm@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "0",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "4:41",
+        "duty_off_local": "018:15",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+    v = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12")[-1]
+    assert v.duty_on_local == "04:41"
+    assert v.duty_off_local == "18:15"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
@@ -778,3 +779,149 @@ def test_load_day_duty_correction_anchors_duty_off_on_manual_legs_when_present()
     # ``% 1440`` convention, per the coordinator's D6 ruling).
     assert d.duty_off == "14:15"
     assert d.duty_on == "18:15"
+
+
+# ── Fix round 1 ─────────────────────────────────────────────────────────
+
+
+def test_amend_form_prefills_duty_off_from_scheduled_when_no_feed_legs(monkeypatch):
+    """CRITICAL 2: the report field fell back to sched_duty_on when the
+    feed had no legs, but duty-off had no such fallback — so on exactly
+    the day this feature exists for (feed aged out, packet trip still
+    known), the untouched form posted one clock and an empty one, and the
+    route's own "Enter both duty on and duty off, or neither" validation
+    then rejected it. Both-or-neither must be true by construction.
+
+    Builds the scenario via dataclasses.replace on a REAL load_day() result
+    (rather than hand-constructing the large DayDetailData) — keeps every
+    other field (packet match, pilot, nav, etc.) genuinely valid, only
+    nulling the feed-derived duty_on/duty_off while sched_duty_on/off (from
+    the packet, independent of the feed) stay populated."""
+    from dataclasses import replace
+
+    import nac_pay.app.main as main_module
+
+    real = load_day(2026, 6, 12)
+    assert real.sched_duty_on and real.sched_duty_off, (
+        "fixture assumption broken: trip 768 has no packet show time"
+    )
+    assert real.duty_on and real.duty_off, (
+        "fixture assumption broken: trip 768 has no feed legs to null out"
+    )
+    no_legs = replace(
+        real,
+        duty_on=None, duty_off=None, duty_hours=None, duty_rig_pch=None,
+        legs=(), actual_block_hours=None,
+    )
+
+    monkeypatch.setattr(main_module, "load_day", lambda *a, **kw: no_legs)
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+
+    m = re.search(
+        r'<input type="time" id="reassign-duty-off" name="duty_off_local"\s+'
+        r'value="([^"]*)"',
+        r.text,
+    )
+    assert m, "duty_off_local input not found in the rendered form"
+    assert m.group(1) == real.sched_duty_off, (
+        f"duty-off did not fall back to the scheduled show time: "
+        f"got {m.group(1)!r}, expected {real.sched_duty_off!r}"
+    )
+
+    m2 = re.search(
+        r'<input type="time" id="reassign-report" name="duty_on_local"\s+'
+        r'value="([^"]*)"',
+        r.text,
+    )
+    assert m2 and m2.group(1) == real.sched_duty_on, (
+        "duty-on fallback regressed alongside the duty-off fix"
+    )
+    # Both non-empty together — the exact "both or neither" property the
+    # route's own validation depends on.
+    assert m.group(1) and m2.group(1)
+
+
+def test_history_never_badges_a_duty_correction_as_effective():
+    """IMPORTANT 2: a DUTY_CORRECTION's pch_value is audit-only (it never
+    competes in Trip.effective_pch — apply_user_versions._fold_candidates).
+    Reproduces the exact review scenario: an inflated audit-only pch_value
+    (15.00, as if stale block/TAFB fields were left over from a previous
+    edit) on a day where the TRUE credited value is 4.17 (a short,
+    corrected duty that doesn't beat published). The history list must not
+    badge the 15.00 row "effective" — that's a wrong number next to a
+    checkmark in the one place this app calls an audit trail."""
+    from nac_pay.app.services import _pipeline
+
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="09:00",     # 6h -> rig 3.00
+        duty_hours=Decimal("6.00"), pch_value=Decimal("15.00"),
+    )
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+    assert d.effective_pch == Decimal("4.17")   # published wins; sanity
+
+    correction_row = next(
+        v for v in d.versions if v.user_version_type == "DUTY_CORRECTION"
+    )
+    assert correction_row.source == "Duty correction"
+    assert correction_row.is_effective is False
+
+    original_row = next(v for v in d.versions if v.seq == 0)
+    assert original_row.is_effective is True
+    assert original_row.pch_value == Decimal("4.17")
+
+
+def test_duty_correction_no_effect_surfaced_when_no_reconciled_trip():
+    """Reviewer's ruling on the disclosed item-A edge case: don't re-admit
+    DUTY_CORRECTION to the max() fold to compensate (unsafe — the row's
+    pch_value is pilot-submitted, not packet-derived); instead surface the
+    limit. 2026-06-08 is a plain OFF day for this fixture (no trip, no Day,
+    no reconciled trip at all — see test_offday_pickup_renders_confirmable_
+    card in test_reassign.py) — a DUTY_CORRECTION filed there has nowhere
+    for duty_overrides to land."""
+    from nac_pay.app.services import _pipeline
+    from nac_pay.storage import (
+        DEFAULT_USER_ID,
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionType,
+    )
+
+    baseline = load_day(2026, 6, 8)
+    assert baseline.kind == "off"
+    assert baseline.duty_correction_no_effect is False   # nothing filed yet
+
+    UserAssignmentVersionStore(user_id=DEFAULT_USER_ID).save(
+        date_iso="2026-06-08",
+        version_type=VersionType.DUTY_CORRECTION,
+        assignment_id="",
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("5.00"),
+        duty_hours=Decimal("10.00"),
+        duty_on_local="08:00",
+        duty_off_local="18:00",
+    )
+    _pipeline.cache_clear()
+
+    no_trip = load_day(2026, 6, 8)
+    assert no_trip.duty_correction_no_effect is True
+
+    r = client.get("/day/2026-06-08")
+    assert r.status_code == 200
+    assert "isn't changing what's credited" in r.text
+    assert "Reassign / amend" in r.text
+
+    # Regression guard: a correction on a date that DOES have a reconciled
+    # trip (768/2026-06-12, used throughout this module) must NOT trip the
+    # same note — false positives here would train pilots to ignore it.
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="03:00", duty_off_local="23:00",
+        duty_hours=Decimal("20.00"), pch_value=Decimal("4.17"),
+    )
+    _pipeline.cache_clear()
+    covered = load_day(2026, 6, 12)
+    assert covered.duty_correction_no_effect is False

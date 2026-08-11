@@ -522,22 +522,52 @@ def day_reassign(
         if min(block_dec, duty_dec, tafb_dec) < 0 or workdays_int < 1:
             return _bail("Detailed-mode inputs must be non-negative; workdays ≥ 1.")
 
-        # Duty clocks, if present, are the truth — the client's duty_hours
-        # is a display convenience only and is never trusted once both
-        # clocks are filled in. Reject a half-filled pair rather than
-        # guessing which clock the pilot meant. This runs BEFORE
-        # recompute_pch_from_times so the (audit-only, for DUTY_CORRECTION)
-        # pch_value reflects the corrected duty, never the stale posted one.
-        on_clock = duty_on_local.strip()
-        off_clock = duty_off_local.strip()
-        if on_clock and off_clock:
-            from nac_pay.timeutil import duty_hours_between
-            derived = duty_hours_between(on_clock, off_clock)
-            if derived is None:
-                return _bail("Enter duty on and duty off as HH:MM.")
-            duty_dec = derived
-        elif on_clock or off_clock:
-            return _bail("Enter both duty on and duty off, or neither.")
+        # Duty clocks are the truth ONLY for a DUTY_CORRECTION — that's the
+        # one version_type whose entire purpose is fixing the duty window,
+        # and the one _build_duty_overrides / apply_actuals actually reads
+        # duty_on_local/duty_off_local from (see _fold_candidates in
+        # apply_user_versions.py: DUTY_CORRECTION never competes in the
+        # §3.E.1.b max(), so it's the only type where a shortened window
+        # is meant to change what's credited). For every OTHER version_type
+        # (REASSIGNMENT, CORRECTION, RESERVE_CALLOUT) the clock fields are
+        # form artifacts only — the amend form's duty-on/duty-off inputs are
+        # always populated (prefilled from the feed or the packet's
+        # scheduled show time) regardless of which version_type radio is
+        # selected, and those rows DO compete in the max(). Deriving duty
+        # from them unconditionally would silently redefine duty for a
+        # plain reassignment: amending to a longer trip would keep computing
+        # duty from the OLD window's clocks (undercrediting a real duty
+        # extension), and amending to a shorter trip would keep the old
+        # LONG window (an inflated duty rig that overpays). Duty for those
+        # types keeps tracking the legs exactly as it did before this task
+        # — on_clock/off_clock stay empty and unstored, and duty_dec is
+        # whatever the DETAILED form posted (computed by the legs-based JS
+        # preview, or typed directly).
+        on_clock = off_clock = ""
+        if vt is VersionType.DUTY_CORRECTION:
+            # Reject a half-filled pair rather than guessing which clock
+            # the pilot meant. This runs BEFORE recompute_pch_from_times so
+            # the (audit-only — see _fold_candidates) pch_value reflects
+            # the corrected duty, never the stale posted one.
+            on_clock = duty_on_local.strip()
+            off_clock = duty_off_local.strip()
+            if on_clock and off_clock:
+                from nac_pay.timeutil import duty_hours_between
+                derived = duty_hours_between(on_clock, off_clock)
+                if derived is None:
+                    return _bail("Enter duty on and duty off as HH:MM.")
+                duty_dec = derived
+                # Normalize to zero-padded HH:MM before it reaches the
+                # String(5) column — duty_hours_between/_parse_clock accept
+                # loose input ("4:41", "004:41"); the stored clock should
+                # be canonical so every reader (display, _build_duty_
+                # overrides) sees the same shape.
+                on_h, on_m = (int(p) for p in on_clock.split(":"))
+                off_h, off_m = (int(p) for p in off_clock.split(":"))
+                on_clock = f"{on_h:02d}:{on_m:02d}"
+                off_clock = f"{off_h:02d}:{off_m:02d}"
+            elif on_clock or off_clock:
+                return _bail("Enter both duty on and duty off, or neither.")
 
         from nac_pay.engine import recompute_pch_from_times
         pch_dec = recompute_pch_from_times(
