@@ -351,16 +351,18 @@ def test_day_duty_window_prefers_the_pilot_override():
     first_out = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
     last_in = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
 
-    w = _day_duty_window(first_out, last_in, "04:41", ("05:15", "17:45"))
+    w = _day_duty_window(first_out, last_in, "04:41", ("05:15", "17:45", None))
 
     assert w.duty_on == "05:15"
     assert w.duty_off == "17:45"
     assert abs(w.duty_hours - Decimal("12.50")) < Decimal("0.001")
     assert w.duty_rig_pch == w.duty_hours / Decimal("2")
+    assert w.is_override is True
 
 
 def test_day_duty_window_ignores_a_half_filled_override():
-    """One clock without the other is not a window — fall back to tier 2."""
+    """One clock without the other (and no stored duty_hours fallback) is
+    not a window — fall back to tier 2."""
     from datetime import datetime, timezone
 
     from nac_pay.app.services import _day_duty_window
@@ -368,9 +370,46 @@ def test_day_duty_window_ignores_a_half_filled_override():
     first_out = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
     last_in = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
 
-    w = _day_duty_window(first_out, last_in, "04:41", ("05:15", ""))
+    w = _day_duty_window(first_out, last_in, "04:41", ("05:15", "", None))
 
     assert w.duty_on == "04:41"
+    assert w.is_override is False
+
+
+def test_day_duty_window_falls_back_to_stored_hours_when_the_override_has_no_clocks():
+    """Fix-round-1 IMPORTANT 1, tier 1b: a stored DUTY_CORRECTION can carry
+    duty_hours with NO clocks — UserAssignmentVersionStore.save accepts
+    duty_on_local=None, and the engine's _actual_duty_hours already credits
+    such a correction outright (it only needs duty_hours). The display must
+    show the SAME duty_hours the pilot is credited on rather than silently
+    falling through to the packet show time and disagreeing with the pay.
+    Back-anchors to the actual last block-in + TRIP_END_PAD (mirroring
+    tiers 2/3's own back anchor, and the manual-legs branch's duty_off −
+    duty_hours reconstruction) since there's no clock pair to render
+    exactly.
+
+    Mutation-verified: deleting the ``if ov_hours is not None:`` branch in
+    ``_day_duty_window`` makes this FAIL (falls through to tier 2:
+    duty_hours becomes ~12h from the packet show time instead of 20.00)."""
+    from datetime import datetime, timedelta, timezone
+
+    from nac_pay.app.services import _day_duty_window
+    from nac_pay.timeutil import DOMICILE_TZ
+
+    first_out = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+    last_in = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
+
+    w = _day_duty_window(
+        first_out, last_in, "04:41", (None, None, Decimal("20.00")),
+    )
+
+    assert w.duty_hours == Decimal("20.00")
+    assert w.duty_rig_pch == Decimal("10.00")
+    assert w.is_override is True
+    expected_off = (last_in + timedelta(minutes=15)).astimezone(DOMICILE_TZ)
+    expected_on = expected_off - timedelta(hours=20)
+    assert w.duty_off == expected_off.strftime("%H:%M")
+    assert w.duty_on == expected_on.strftime("%H:%M")
 
 
 def _save_duty_correction(
@@ -407,7 +446,9 @@ def test_load_day_shows_the_corrected_duty_window_not_the_feed_derived_one():
     pipeline_recompute in test_day_edit.py, where duty 20.00h → duty-rig
     10.00 beats the published 4.17) must make the DAY PAGE's duty on/off/
     hours/rig match what the pilot was actually paid on — not the raw feed
-    window (report ~04:41, ~3.5h duty) the card showed before this task."""
+    window the card showed before this task (05:30 report, ~3h duty per
+    this fixture's actual iCal legs — see the pre-fix failure output in
+    task-6-report.md)."""
     from nac_pay.app.services import _pipeline
 
     _save_duty_correction(
@@ -462,6 +503,16 @@ def test_load_day_duty_override_tiebreak_uses_created_at_then_seq():
     matching the corrections note that created_at-alone leaves this tie
     unresolved.
 
+    Fix-round-1 IMPORTANT 2: before the fix, ``_build_duty_overrides``
+    (the ENGINE's own resolver) broke this exact tie with ``created_at``
+    alone. Since ``list_for_month``/``list_for_date`` both ``ORDER BY
+    seq`` ascending, Python's ``max()`` on a tie keeps the FIRST maximal
+    element it sees — the LOWER seq (seq=1, 8.00h) — while the display
+    (already keyed on ``(created_at, seq)``) picked seq=2 (20.00h). So the
+    page showed 20.00h/10.00 duty-rig while the pay was actually only
+    4.00 (which doesn't even beat published 4.17) — asserting on
+    ``effective_pch`` here as well as the clocks pins BOTH sides together.
+
     Rows are inserted directly via the ORM (bypassing
     UserAssignmentVersionStore.save, which stamps created_at itself and
     can't be made to produce a real tie) so both rows carry the exact same
@@ -501,3 +552,117 @@ def test_load_day_duty_override_tiebreak_uses_created_at_then_seq():
     d = load_day(2026, 6, 12)
     assert d.duty_on == "03:00"
     assert d.duty_off == "23:00"
+    assert d.effective_pch == Decimal("10.00")
+
+
+def test_load_day_prefers_the_latest_correction_even_when_it_is_clockless():
+    """Fix-round-1 IMPORTANT 1: the OLD resolver filtered clockless
+    corrections out BEFORE taking the max, so an older correction WITH
+    clocks could win the page even though the engine — which takes the
+    max FIRST, then derives hours from clocks-or-stored-duty_hours — pays
+    on a NEWER, clockless one. Save an older, clocked correction, then a
+    newer SIMPLE-mode one that carries only duty_hours; the newer one must
+    win on the page, matching what it pays.
+
+    Mutation-verified: re-adding the ``and v.duty_on_local and
+    v.duty_off_local`` filter to load_day's ``_duty_corrections`` list
+    comprehension (services.py) makes this FAIL — it picks the older
+    01:00-09:00/8.00h row instead."""
+    from nac_pay.app.services import _pipeline
+    from nac_pay.storage import (
+        DEFAULT_USER_ID,
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionType,
+    )
+
+    _save_duty_correction(
+        "2026-06-12",
+        duty_on_local="01:00", duty_off_local="09:00",
+        duty_hours=Decimal("8.00"), pch_value=Decimal("4.17"),
+    )
+    # Newer correction, clockless — only stored duty_hours (a SIMPLE-mode
+    # entry, or any row UserAssignmentVersionStore.save allows to carry
+    # duty_hours with duty_on_local=None).
+    UserAssignmentVersionStore(user_id=DEFAULT_USER_ID).save(
+        date_iso="2026-06-12",
+        version_type=VersionType.DUTY_CORRECTION,
+        assignment_id="768",
+        entry_mode=VersionEntryMode.SIMPLE,
+        pch_value=Decimal("10.00"),
+        duty_hours=Decimal("20.00"),
+    )
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+
+    assert d.duty_hours == Decimal("20.00")
+    assert d.duty_rig_pch == Decimal("10.00")
+    assert d.effective_pch == Decimal("10.00")
+
+
+def test_load_day_duty_correction_wins_over_a_manual_legs_reassignment():
+    """Fix-round-1 IMPORTANT 3: a day can carry BOTH a DUTY_CORRECTION
+    (which already drives the credited pay) AND a separate REASSIGNMENT
+    version with pilot-entered legs (DETAILED mode) that happens to have
+    the higher (pch_value, seq) and so "wins" the header/legs card. Before
+    the fix, _build_day_detail's manual-legs branch unconditionally
+    overwrote duty_on/off/hours/rig from those legs, reverting the page to
+    a DIFFERENT window than the one the DUTY_CORRECTION is actually paid
+    on. Legs may still drive the BLOCK figure; the duty window must stay
+    the correction's.
+
+    Mutation-verified: removing the ``if not duty_window_locked:`` guard
+    in _build_day_detail (services.py) makes this FAIL — duty_hours reverts
+    to the manual-legs-derived value instead of staying at 20.00."""
+    from nac_pay.app.services import _pipeline
+    from nac_pay.storage import (
+        DEFAULT_USER_ID,
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionType,
+    )
+
+    store = UserAssignmentVersionStore(user_id=DEFAULT_USER_ID)
+
+    # The DUTY_CORRECTION — seq 1, lower pch_value.
+    store.save(
+        date_iso="2026-06-12",
+        version_type=VersionType.DUTY_CORRECTION,
+        assignment_id="768",
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("10.00"),
+        duty_hours=Decimal("20.00"),
+        duty_on_local="03:00",
+        duty_off_local="23:00",
+    )
+    # A separate REASSIGNMENT with pilot-entered legs — seq 2, HIGHER
+    # pch_value, so _build_day_detail's (pch_value, seq) winner picks
+    # THIS version for the header/legs card.
+    reassign = store.save(
+        date_iso="2026-06-12",
+        version_type=VersionType.REASSIGNMENT,
+        assignment_id="900",
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("15.00"),
+        block_hours=Decimal("6.00"),
+        duty_hours=Decimal("9.00"),
+    )
+    from nac_pay.storage.db import session_scope
+    from nac_pay.storage.db_models import UserVersionLegRow
+    with session_scope() as sess:
+        sess.add(UserVersionLegRow(
+            user_id=DEFAULT_USER_ID, date_iso="2026-06-12", seq=reassign.seq,
+            idx=0, flight="900", out_local="06:00", in_local="12:00",
+        ))
+    _pipeline.cache_clear()
+
+    d = load_day(2026, 6, 12)
+
+    # The header/legs follow the higher-pch reassignment...
+    assert d.assignment_id == "900"
+    # ...but the duty WINDOW stays the correction's, not the legs'.
+    assert d.duty_on == "03:00"
+    assert d.duty_off == "23:00"
+    assert d.duty_hours == Decimal("20.00")
+    assert d.duty_rig_pch == Decimal("10.00")

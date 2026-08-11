@@ -513,23 +513,27 @@ def _build_duty_overrides(
     rule below — is exercised directly by a unit test, not only indirectly
     through the full document-parsing pipeline.
 
-    Two "latest wins" rules, BOTH keyed on ``created_at`` — never ``seq``.
-    ``seq`` is allocated per ``(user, date)`` (see
-    ``UserAssignmentVersionStore.save``), so comparing seq across two
-    DIFFERENT dates of the same multi-day pairing is meaningless: a day-1
-    correction edited twice (seq=3) is not "later" than a fresh day-3
-    correction (seq=1) filed afterward — ``created_at`` is. Within a
-    single date, seq order and created_at order always agree, so using
-    created_at there is a pure fix, not a behavior change.
+    Two "latest wins" rules:
 
     - Per date: the latest ACTIVE ``DUTY_CORRECTION`` on that date wins
       (an inactive/superseded one is already excluded by
-      ``active_versions`` before this function sees it).
+      ``active_versions`` before this function sees it), keyed on
+      ``(created_at, seq)``. ``seq`` IS a valid tiebreaker WITHIN one
+      date — it's allocated per ``(user, date)`` (see
+      ``UserAssignmentVersionStore.save``) as ``max(existing)+1``, so
+      within a single date seq order and created_at order always agree,
+      and seq additionally breaks a same-second ``created_at`` tie
+      (fix-round-1 IMPORTANT 2 — ``load_day``'s display resolver
+      (services.py) uses this exact same compound key so the page and the
+      credited pay can never pick different rows on a tie).
     - Per trip: each date is mapped onto its covering reconciled trip's
       first local date via ``_resolve_duty_override_key``. If two
-      different dates resolve to the SAME trip (the pilot corrected the
+      DIFFERENT dates resolve to the SAME trip (the pilot corrected the
       same pairing from more than one of its days), the version with the
-      later ``created_at`` wins.
+      later ``created_at`` wins — ``seq`` is NOT comparable here (it's
+      per-date, not per-trip): a day-1 correction edited twice (seq=3) is
+      not "later" than a fresh day-3 correction (seq=1) filed afterward —
+      ``created_at`` is.
     """
     best: dict[str, tuple[str, Decimal]] = {}  # key -> (created_at, hours)
     for date_iso, vlist in user_versions.items():
@@ -539,7 +543,7 @@ def _build_duty_overrides(
         ]
         if not corrections:
             continue
-        v = max(corrections, key=lambda x: x.created_at)
+        v = max(corrections, key=lambda x: (x.created_at, x.seq))
         hours = None
         if v.duty_on_local and v.duty_off_local:
             hours = _duty_hours_between(v.duty_on_local, v.duty_off_local)
@@ -1518,23 +1522,47 @@ class _DutyWindow:
     duty_off: str
     duty_hours: Decimal
     duty_rig_pch: Decimal
+    # True when tier 1 (the pilot's own DUTY_CORRECTION) supplied this
+    # window — callers that might otherwise re-derive the window from a
+    # different source (e.g. _build_day_detail's manual-legs branch) must
+    # not clobber it once this is set, or the page and the credited pay
+    # can diverge. Fix-round-1 IMPORTANT 3.
+    is_override: bool = False
 
 
 def _day_duty_window(
     first_out_utc: datetime_t,
     last_in_utc: datetime_t,
     sched_duty_on: str | None,
-    override: tuple[str, str] | None = None,
+    override: tuple[str | None, str | None, Decimal | None] | None = None,
 ) -> _DutyWindow:
     """The day's duty window: scheduled report → last block-in + release.
 
     Three tiers, in precedence order:
 
-    1. The pilot's own DUTY_CORRECTION clocks (``override``), when both
-       are present — the pilot's stored correction already drives the
-       CREDITED §3.E recompute (see ``_build_duty_overrides`` /
-       ``apply_actuals``), so the display must show the SAME window the
-       pilot was actually paid on, not a stale feed-derived one.
+    1. The pilot's own DUTY_CORRECTION (``override`` = ``(duty_on_local,
+       duty_off_local, duty_hours)``, the winning version's raw fields) —
+       the pilot's stored correction already drives the CREDITED §3.E
+       recompute (see ``_build_duty_overrides`` / ``apply_actuals``), so
+       the display must show the SAME window the pilot was actually paid
+       on, not a stale feed-derived one. Two shapes, tried in order:
+         1a. Both clocks present → the exact reported/released window.
+         1b. Clocks absent but ``duty_hours`` present (a SIMPLE-mode
+             correction, or any row the store allows to carry hours with
+             no clocks) → back-anchor to the actual last block-in +
+             TRIP_END_PAD (same anchor tier 2/3 use) and derive duty-on by
+             subtracting the corrected hours — mirrors how
+             ``_build_day_detail``'s manual-legs branch reconstructs
+             duty-on from duty-off − duty_hours. This keeps the DISPLAYED
+             duty_hours identical to the CREDITED duty_hours even when
+             there's no clock pair to render exactly; only the on/off
+             clock split is an approximation.
+       Fix-round-1 IMPORTANT 1: the caller must select tier 1's WINNING
+       version the same way the engine does (latest by ``(created_at,
+       seq)``) BEFORE deciding which of 1a/1b applies — not filter out
+       clockless corrections before picking a winner, which could let an
+       older, clocked correction win display over a newer, clockless one
+       the engine actually credits.
     2. The packet's scheduled show time ("L Day Show") for the front +
        last block-in + TRIP_END_PAD for the back. Duty starts when the
        pilot reports, and the report time is published — a late push
@@ -1546,23 +1574,37 @@ def _day_duty_window(
        packet trip (a reroute, an off-day pickup) to source a show time.
 
     The back anchor is always actual (last block-in + pad) except under
-    tier 1, where the pilot's own release clock wins outright.
+    tier 1a, where the pilot's own release clock wins outright.
     """
     from datetime import timedelta as _td
 
     from nac_pay.engine.constants import REPORT_PAD_HOURS, TRIP_END_PAD_HOURS
     from nac_pay.timeutil import scheduled_report_utc
 
-    # Tier 1 — the pilot's own clocks. Both or neither: a half-filled
-    # override is not a duty window, so fall through rather than guess.
-    if override and override[0] and override[1]:
-        hours = _duty_hours_between(override[0], override[1])
-        if hours is not None:
+    # Tier 1 — the pilot's own correction. Both clocks or neither: a
+    # half-filled clock pair is not a duty window, so fall through to 1b
+    # (hours only) or, failing that, tier 2 — never guess a clock.
+    if override:
+        ov_on, ov_off, ov_hours = override
+        if ov_on and ov_off:
+            hours = _duty_hours_between(ov_on, ov_off)
+            if hours is not None:
+                return _DutyWindow(
+                    duty_on=ov_on,
+                    duty_off=ov_off,
+                    duty_hours=hours,
+                    duty_rig_pch=hours / Decimal("2"),
+                    is_override=True,
+                )
+        if ov_hours is not None:
+            _ov_end = last_in_utc + _td(hours=float(TRIP_END_PAD_HOURS))
+            _ov_start = _ov_end - _td(hours=float(ov_hours))
             return _DutyWindow(
-                duty_on=override[0],
-                duty_off=override[1],
-                duty_hours=hours,
-                duty_rig_pch=hours / Decimal("2"),
+                duty_on=_ov_start.astimezone(_DOMICILE_TZ).strftime("%H:%M"),
+                duty_off=_ov_end.astimezone(_DOMICILE_TZ).strftime("%H:%M"),
+                duty_hours=ov_hours,
+                duty_rig_pch=ov_hours / Decimal("2"),
+                is_override=True,
             )
 
     duty_end = last_in_utc + _td(hours=float(TRIP_END_PAD_HOURS))
@@ -1647,24 +1689,33 @@ def load_day(
     active, superseded_seqs = active_versions(user_versions)
 
     # Highest-(created_at, seq) active DUTY_CORRECTION for this date, if
-    # any — its clocks outrank the packet show time in the duty window
-    # below. seq is only a valid tiebreaker WITHIN one date (it's
-    # allocated per (user, date) — see UserAssignmentVersionStore.save);
-    # created_at is the real recency signal, matching the rule
-    # _build_duty_overrides uses for the engine's own recompute so the
-    # display and the credited PCH can never point at different
-    # corrections. (created_at, seq) as a compound key additionally
-    # breaks a same-second created_at tie toward the later save, which
-    # created_at alone cannot resolve.
-    duty_override: tuple[str, str] | None = None
+    # any — its window outranks the packet show time below. This MUST
+    # select the winner the exact same way _build_duty_overrides does
+    # (services.py, the engine's own recompute), or the page and the
+    # credited pay can point at two different corrections:
+    #   - seq is only a valid tiebreaker WITHIN one date (it's allocated
+    #     per (user, date) — see UserAssignmentVersionStore.save); across
+    #     dates created_at is the real recency signal. Within one date,
+    #     (created_at, seq) additionally breaks a same-second created_at
+    #     tie toward the later save, which created_at alone cannot
+    #     resolve (fix-round-1 IMPORTANT 2 — this was already a known
+    #     Task 5 minor for the engine side; both sides now share it).
+    #   - fix-round-1 IMPORTANT 1: take the max FIRST, over every active
+    #     DUTY_CORRECTION regardless of whether it carries clocks, THEN
+    #     derive the window from whatever the winner carries (clocks, or
+    #     failing that, its stored duty_hours — see _day_duty_window's
+    #     tier 1b). Filtering clockless corrections out before taking the
+    #     max (the old code here) could pick an OLDER, clocked correction
+    #     for display while the engine credits a NEWER, clockless one.
+    duty_override: tuple[str | None, str | None, Decimal | None] | None = None
     _duty_corrections = [
-        v for v in active
-        if v.version_type is VersionType.DUTY_CORRECTION
-        and v.duty_on_local and v.duty_off_local
+        v for v in active if v.version_type is VersionType.DUTY_CORRECTION
     ]
     if _duty_corrections:
         _winner = max(_duty_corrections, key=lambda v: (v.created_at, v.seq))
-        duty_override = (_winner.duty_on_local, _winner.duty_off_local)
+        duty_override = (
+            _winner.duty_on_local, _winner.duty_off_local, _winner.duty_hours,
+        )
 
     # iCal legs on this date.
     legs: tuple[DayLeg, ...] = ()
@@ -1673,6 +1724,12 @@ def load_day(
     duty_off: str | None = None
     duty_hours: Decimal | None = None
     duty_rig_pch: Decimal | None = None
+    # True once the duty window above came from tier 1 (an active
+    # DUTY_CORRECTION) — _build_day_detail's manual-legs branch must not
+    # then re-derive duty_on/off/hours/rig from a different winning
+    # version's legs, or the page would show one window while the
+    # credited pay reflects the correction (fix-round-1 IMPORTANT 3).
+    duty_window_locked = False
     reserve_window_start: str | None = None
     reserve_window_end: str | None = None
     reserve_base: str | None = None
@@ -1741,6 +1798,7 @@ def load_day(
             duty_off = window.duty_off
             duty_hours = window.duty_hours
             duty_rig_pch = window.duty_rig_pch
+            duty_window_locked = window.is_override
 
     # Applied events on this date.
     events_today = tuple(e for e in pr.applied_events if e.date == target)
@@ -1829,6 +1887,7 @@ def load_day(
         duty_off=duty_off,
         duty_hours=duty_hours,
         duty_rig_pch=duty_rig_pch,
+        duty_window_locked=duty_window_locked,
         manual_legs_by_seq=manual_legs_by_seq,
         reserve_window_start=reserve_window_start,
         reserve_window_end=reserve_window_end,
@@ -2020,6 +2079,7 @@ def _build_day_detail(
     duty_off: str | None = None,
     duty_hours: Decimal | None = None,
     duty_rig_pch: Decimal | None = None,
+    duty_window_locked: bool = False,
     manual_legs_by_seq: dict | None = None,
     reserve_window_start: str | None = None,
     reserve_window_end: str | None = None,
@@ -2230,24 +2290,33 @@ def _build_day_detail(
                 legs = _manual_day_legs(mlegs)
                 dw = _duty_from_clock_legs(mlegs)
                 if dw is not None:
-                    duty_off = dw["duty_off"]
                     actual_block = (
                         winner.block_hours
                         if winner.block_hours is not None else dw["block"]
                     )
-                    if winner.duty_hours is not None:
-                        # Duty start = report (baked into the stored duty_hours
-                        # via the form's editable check-in field), not
-                        # first-out − pad. duty_on = duty_off − duty_hours.
-                        duty_hours = winner.duty_hours
-                        duty_rig_pch = winner.duty_hours / Decimal("2")
-                        on_min = dw["off_min"] - int(winner.duty_hours * 60)
-                        on_min %= 1440
-                        duty_on = f"{on_min // 60:02d}:{on_min % 60:02d}"
-                    else:
-                        duty_on = dw["duty_on"]
-                        duty_hours = dw["duty_hours"]
-                        duty_rig_pch = dw["duty_rig"]
+                    # An active DUTY_CORRECTION already supplied the
+                    # CREDITED duty window (tier 1 in _day_duty_window,
+                    # flagged via duty_window_locked) — legs still drive
+                    # BLOCK above, but the duty window itself must not be
+                    # clobbered back to a leg-derived value, or the page
+                    # would show one window while the engine pays on
+                    # another (fix-round-1 IMPORTANT 3).
+                    if not duty_window_locked:
+                        duty_off = dw["duty_off"]
+                        if winner.duty_hours is not None:
+                            # Duty start = report (baked into the stored
+                            # duty_hours via the form's editable check-in
+                            # field), not first-out − pad.
+                            # duty_on = duty_off − duty_hours.
+                            duty_hours = winner.duty_hours
+                            duty_rig_pch = winner.duty_hours / Decimal("2")
+                            on_min = dw["off_min"] - int(winner.duty_hours * 60)
+                            on_min %= 1440
+                            duty_on = f"{on_min // 60:02d}:{on_min % 60:02d}"
+                        else:
+                            duty_on = dw["duty_on"]
+                            duty_hours = dw["duty_hours"]
+                            duty_rig_pch = dw["duty_rig"]
         # A feed-detected company reassignment (applied, not rejected) makes the
         # new routing the active assignment — surface its signature, the same as
         # the calendar cell, unless a pilot user-version above already replaced
