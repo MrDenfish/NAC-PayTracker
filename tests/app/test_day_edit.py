@@ -135,3 +135,97 @@ def test_override_reason_sick_moves_pch_to_sick_category():
     # KEEP_PROTECTED effect: trip's published value carries through at 1.0×.
     assert sick.pch == D("4.17")
     assert sick.amount == D("519.54")
+
+
+# ── Duty-time override wiring (Task 5) ──────────────────────────────────
+
+
+def test_duty_correction_flows_into_the_pipeline_recompute():
+    """A stored DUTY_CORRECTION changes the day's credited duty rig."""
+    from nac_pay.app.services import _pipeline
+    from nac_pay.storage import DEFAULT_USER_ID
+    from nac_pay.storage.assignment_versions import (
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionType,
+    )
+
+    before = load_day(2026, 6, 12)
+    assert before.duty_hours is not None
+
+    UserAssignmentVersionStore(user_id=DEFAULT_USER_ID).save(
+        date_iso="2026-06-12",
+        version_type=VersionType.DUTY_CORRECTION,
+        assignment_id="768",
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("4.17"),
+        duty_hours=Decimal("20.00"),
+        duty_on_local="03:00",
+        duty_off_local="23:00",
+    )
+    _pipeline.cache_clear()
+
+    after = load_day(2026, 6, 12)
+    assert after.duty_hours == Decimal("20.00")
+    assert after.duty_rig_pch == Decimal("10.00")
+
+
+def test_duty_correction_filed_on_a_later_leg_day_still_reaches_the_trip():
+    """The bundled June 2026 packet has no real multi-day pairing (every
+    trip in it is 1 workday — verified against the live parse), so this
+    exercises the ACTUAL mapping helper in ``services.py`` (not a mock)
+    against a synthetic 3-day ``ReconciledTrip`` built from real
+    ``FlightLegEvent``/``ReconciledTrip`` dataclasses. It proves a
+    correction filed on day 2 of a pairing resolves to the trip's FIRST
+    local date — the key ``apply_actuals_to_month`` actually looks up —
+    rather than being silently dropped."""
+    from datetime import datetime, timezone
+    from decimal import Decimal as D2
+
+    from nac_pay.app.services import _resolve_duty_override_key
+    from nac_pay.parsers import FlightLegEvent, MatchStatus, ReconciledTrip
+
+    def leg(uid, start, end, flight="768"):
+        return FlightLegEvent(
+            uid=uid,
+            dt_start_utc=datetime(*start, tzinfo=timezone.utc),
+            dt_end_utc=datetime(*end, tzinfo=timezone.utc),
+            flight_no_raw=f"NC{flight}",
+            flight_no_short=flight,
+            origin="ANC",
+            destination="BRW",
+            tail="N409YK",
+            customer="Northern Air Cargo",
+            captain="",
+            first_officer="Dennis FISHER",
+        )
+
+    # A 3-day pairing: legs on 2026-06-01 (first local date), 06-02, 06-03
+    # (all UTC — ANC is UTC-8 in June, so these UTC dates equal local dates
+    # comfortably mid-day, no boundary ambiguity).
+    legs = (
+        leg("l1", (2026, 6, 1, 14, 0), (2026, 6, 1, 16, 0)),
+        leg("l2", (2026, 6, 2, 14, 0), (2026, 6, 2, 16, 0)),
+        leg("l3", (2026, 6, 3, 14, 0), (2026, 6, 3, 16, 0)),
+    )
+    trip = ReconciledTrip(
+        flight_sequence="768/768/768",
+        legs=legs,
+        packet_trip=None,
+        match_status=MatchStatus.UNMATCHED_NO_PACKET,
+        first_dt_utc=legs[0].dt_start_utc,
+        last_dt_utc=legs[-1].dt_end_utc,
+        actual_block_hours=D2("6.00"),
+    )
+
+    # Filed on day 2 of the pairing — not the trip's first local date.
+    key = _resolve_duty_override_key((trip,), "2026-06-02")
+    assert key == "2026-06-01"
+
+    # Filed on day 3 — same trip, same key.
+    key3 = _resolve_duty_override_key((trip,), "2026-06-03")
+    assert key3 == "2026-06-01"
+
+    # A date that matches no trip at all falls back to itself.
+    orphan = _resolve_duty_override_key((trip,), "2026-06-09")
+    assert orphan == "2026-06-09"
