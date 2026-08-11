@@ -856,8 +856,9 @@ def test_feed_reassignment_borrows_tafb_from_original_packet():
 
 def test_feed_reassignment_pch_override_pays_company_value():
     """A pilot-entered company PCH (the company sometimes assigns a value the
-    feed can't express) replaces the recomputed value — paid as max(published,
-    override). Here 5.17 beats published 4.50 and the recomputed 3.82."""
+    feed can't express) is one more §3.E.1.b candidate — paid as
+    max(published, override, recomputed). Here 5.17 beats published 4.50
+    and the recomputed 3.82, so the company value still wins."""
     on = date(2026, 7, 6)
     baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
     rt = _unmatched_trip("732/732/733", on_date=on, actual_block="2.5")
@@ -1651,3 +1652,196 @@ def test_reserve_callout_note_flags_pilot_corrected_duty():
         e for e in no_events if e.kind is AppliedEventKind.RESERVE_CALLOUT
     )
     assert "pilot-corrected duty" not in plain_event.detail
+
+
+# ── Company-assigned PCH folds as a §3.E.1.b candidate (2026-08-11) ──────
+#
+# Fixture arithmetic (hand-verified, both tests below): reroute signature
+# "730/730/731" is unmatched (no packet trip), single leg, actual_block =
+# 5.05h, starting 2026-06-12 14:30 UTC.
+#   duty_start = first_dt_utc - REPORT_PAD_HOURS(1.00)   = 13:30 UTC
+#   duty_end   = last_dt_utc  + TRIP_END_PAD_HOURS(0.25) = 19:48 UTC
+#     (last_dt_utc = 14:30 + 5.05h = 19:33 UTC)
+#   duty = 19:48 - 13:30 = 6.30h
+#   components: flight_op=5.05, duty_rig=6.30/2=3.15,
+#               trip_rig=6.30/4.90=1.2857..., cumulative_dpg=1*3.82=3.82
+#   trip_pch = max(5.05, 3.15, 1.2857, 3.82) + 0 = 5.05  <- block wins
+
+
+def test_company_pch_below_the_recompute_credits_the_recompute():
+    """The company's reassignment-notice value is one more §3.E.1.b
+    candidate, not a replacement: company assigns 4.80, actual times
+    recompute to 5.05 -> credited 5.05. (Old behaviour: 4.80 — the
+    recompute was silently discarded.) Owner contract 2026-08-11:
+    pay MAX(original, company-assigned, recompute)."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {(on.isoformat(), "730/730/731"): "CONFIRMED"}
+    overrides = {(on.isoformat(), "730/730/731"): D("4.80")}
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+        feed_reassignment_pch_overrides=overrides,
+    )
+
+    fr = reassigns[0]
+    assert fr.new_pch == D("5.05")
+    assert fr.override_pch == D("4.80")
+    assert fr.effective_pch == D("5.05")
+    assert updated.trips[0].effective_pch == D("5.05")
+    # The credited number is the max even though the label may still
+    # mention the company PCH — not 4.80.
+    assert updated.trips[0].versions[-1].pch_value == D("5.05")
+
+
+def test_company_pch_above_the_recompute_still_credits_the_company_value():
+    """Today's behaviour, still correct: company 5.17 > recompute 5.05
+    -> credited 5.17. Pins that the max() did not overshoot."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {(on.isoformat(), "730/730/731"): "CONFIRMED"}
+    overrides = {(on.isoformat(), "730/730/731"): D("5.17")}
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+        feed_reassignment_pch_overrides=overrides,
+    )
+
+    fr = reassigns[0]
+    assert fr.new_pch == D("5.05")
+    assert fr.override_pch == D("5.17")
+    assert fr.effective_pch == D("5.17")
+    assert updated.trips[0].effective_pch == D("5.17")
+    assert updated.trips[0].versions[-1].pch_value == D("5.17")
+
+
+def test_no_company_value_is_byte_identical():
+    """No override entered -> credited is exactly the recompute, as today."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {(on.isoformat(), "730/730/731"): "CONFIRMED"}
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+    )
+
+    fr = reassigns[0]
+    assert fr.override_pch is None
+    assert fr.new_pch == D("5.05")
+    assert fr.effective_pch == D("5.05")
+    assert updated.trips[0].effective_pch == D("5.05")
+
+
+def test_offday_pickup_company_pch_below_recompute_credits_the_recompute():
+    """The off-day-pickup site (:377) reads ``pch_overrides`` through the
+    identical ``(date_iso, signature)`` key as the reroute site — same
+    ``FeedReassignmentDecisionRow`` table, same
+    ``/day/{date}/reassignment/confirm`` route, no ``kind`` restriction
+    (see ``storage/feed_reassignments.py::pch_overrides_for_month`` and
+    ``day.html``'s OFF_DAY_PICKUP branch of the same confirm form). So a
+    pickup can carry a company-entered PCH too, and the same §3.E.1.b fold
+    applies: company 4.80 vs recompute 5.05 -> credited 5.05."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month()
+    rt = _unmatched_trip("2720/2721", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, _events, reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions={(on.isoformat(), "2720/2721"): "CONFIRMED"},
+        feed_reassignment_pch_overrides={(on.isoformat(), "2720/2721"): D("4.80")},
+    )
+
+    fr = reassigns[0]
+    assert fr.kind == "OFF_DAY_PICKUP"
+    assert fr.new_pch == D("5.05")
+    assert fr.override_pch == D("4.80")
+    assert fr.effective_pch == D("5.05")
+    assert updated.trips[-1].published_pch == D("5.05")
+
+
+# ── Event-log detail names every candidate the pilot could be paid on ────
+#
+# Review round 1 (Important 2): with an override present, the old detail
+# string named only "company PCH X vs published Y; paying Z" — when Z was
+# actually the recompute (Z != X), nothing in the sentence explained where
+# Z came from. Fixed to always name company/recomputed/published together.
+
+
+def test_reassignment_event_names_the_recompute_when_it_wins():
+    """Company 4.80 loses to recompute 5.05 -> the AppliedEvent detail must
+    name the recompute, not just the (losing) company figure and the
+    (also losing) published figure — otherwise the paid number explains
+    from neither printed candidate."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {(on.isoformat(), "730/730/731"): "CONFIRMED"}
+    overrides = {(on.isoformat(), "730/730/731"): D("4.80")}
+
+    _updated, events, _reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+        feed_reassignment_pch_overrides=overrides,
+    )
+
+    ev = next(e for e in events if e.kind is AppliedEventKind.FEED_REASSIGNMENT)
+    assert "company PCH 4.80" in ev.detail
+    assert "recomputed 5.05" in ev.detail
+    assert "published 4.50" in ev.detail
+    assert "paying 5.05" in ev.detail
+
+
+def test_reassignment_event_still_names_company_value_when_it_wins():
+    """Pin: company 5.17 still beats recompute 5.05 and published 4.50 —
+    the detail keeps naming all three candidates and pays the company
+    value, unchanged in substance from before this round's string fix."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {(on.isoformat(), "730/730/731"): "CONFIRMED"}
+    overrides = {(on.isoformat(), "730/730/731"): D("5.17")}
+
+    _updated, events, _reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+        feed_reassignment_pch_overrides=overrides,
+    )
+
+    ev = next(e for e in events if e.kind is AppliedEventKind.FEED_REASSIGNMENT)
+    assert "company PCH 5.17" in ev.detail
+    assert "recomputed 5.05" in ev.detail
+    assert "published 4.50" in ev.detail
+    assert "paying 5.17" in ev.detail
+
+
+def test_offday_pickup_event_names_the_recompute_when_it_wins():
+    """Same fix, off-day-pickup site: company 4.80 loses to recompute 5.05
+    -> the detail must name the recompute, not just the losing company
+    figure."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month()
+    rt = _unmatched_trip("2720/2721", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    _updated, events, _reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions={(on.isoformat(), "2720/2721"): "CONFIRMED"},
+        feed_reassignment_pch_overrides={(on.isoformat(), "2720/2721"): D("4.80")},
+    )
+
+    ev = next(e for e in events if e.kind is AppliedEventKind.OFF_DAY_PICKUP)
+    assert "company PCH 4.80" in ev.detail
+    assert "recomputed 5.05" in ev.detail
+    assert "crediting 5.05" in ev.detail

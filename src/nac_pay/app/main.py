@@ -853,9 +853,15 @@ def _feed_reassignment_decision(
 
     pch_value = None
     if pch.strip():
-        from decimal import Decimal, InvalidOperation
         try:
-            pch_value = Decimal(pch.strip())
+            # Quantize at the route, before the value is ever stored — the
+            # credited-candidates card compares via Decimal.quantize while
+            # the reassignment card's template renders via "%.2f"|format
+            # (which coerces through float first); an unquantized 3-decimal
+            # entry like 5.015 can round DOWN under the float path (5.01)
+            # but UP under Decimal.quantize's round-half-even (5.02),
+            # marking a different row winning on each card.
+            pch_value = Decimal(pch.strip()).quantize(Decimal("0.01"))
         except (InvalidOperation, ValueError):
             return _bail(f"Invalid PCH value {pch!r}.")
         if pch_value <= 0:

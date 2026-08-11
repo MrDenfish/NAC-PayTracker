@@ -1378,11 +1378,19 @@ a.day-cell:hover {
   gap: 6px;
   flex-wrap: wrap;
 }
-.reassign-pch-form .form-label { margin: 0; white-space: nowrap; }
+.reassign-pch-form .form-label { margin: 0; white-space: normal; }
 .reassign-pch-input {
   width: 86px;
   padding: 4px 6px;
 }
+/* The Task 3 label grew to ~61 chars ("Company-assigned PCH (from the
+   reassignment notice)") — too wide to stay on one unbreakable line at
+   phone width (this is a phone-first PWA). Let it wrap instead of
+   overflowing, and force the form-hint onto its own full-width flex row
+   (rather than an accidental mid-sentence wrap) so the line break reads as
+   intentional; that also keeps the submit button from landing on a
+   half-occupied row. */
+.reassign-pch-form .form-hint { flex-basis: 100%; }
 
 /* ── Documents ──────────────────────────────────────────────── */
 

@@ -100,22 +100,66 @@
     <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post"
           class="reassign-pch-form">
       <input type="hidden" name="signature" value="{{ fr.signature }}">
-      <label class="form-label" for="reassign-pch-r">Company PCH (optional)</label>
+      <label class="form-label" for="reassign-pch-r">
+        {% if fr.kind == "OFF_DAY_PICKUP" %}Company-assigned PCH (for this pickup){% else %}Company-assigned PCH (from the reassignment notice){% endif %}
+        (optional)
+      </label>
       <input type="text" name="pch" id="reassign-pch-r" inputmode="decimal"
              class="reassign-pch-input" placeholder="e.g. 5.17">
+      <span class="form-hint">
+        {% if fr.kind == "OFF_DAY_PICKUP" %}
+        The value the company assigned this pickup. If you apply
+        {{ fr.signature }}, it's credited as the greater of this and the
+        recompute from actual times.
+        {% else %}
+        The value the company's notice assigns this trip. If you apply
+        {{ fr.signature }}, §3.E.1.b pays the greatest of this, the
+        original {{ fr.original_aid }}, and the recompute from actual times.
+        {% endif %}
+      </span>
       <button type="submit" class="btn btn--primary">Apply {{ fr.signature }} instead</button>
     </form>
     {% else %}
     {% if fr.kind == "OFF_DAY_PICKUP" %}
     <p>
       The schedule feed shows the company added
-      <strong>{{ fr.signature }}</strong> on this day off. Crediting
-      {% if fr.override_pch is not none %}
-      company-assigned {{ "%.2f"|format(fr.override_pch) }}
-      {% else %}
-      recomputed {{ "%.2f"|format(fr.new_pch) }}
-      {% endif %}
-      → <strong>{{ "%.2f"|format(fr.effective_pch) }} PCH</strong> at 1.0×.
+      <strong>{{ fr.signature }}</strong> on this day off. Pay is the
+      greater of the company-assigned value (when the notice gave one) and
+      the recompute from actual times — a pickup has no original to
+      protect:
+    </p>
+    {# Winner-marking rule mirrors the reroute table below, minus the
+       Original row (a pickup has no published original): rows are listed
+       Company-assigned (only when fr.override_pch is not none), then
+       Recomputed from actual times, and the FIRST row (in that order)
+       whose 2dp-formatted value equals fr.effective_pch's is marked
+       "winning" — a tie marks Company, matching the reroute table. #}
+    {% set ns = namespace(marked=false) %}
+    <table class="option-table">
+      <thead><tr><th>Source</th><th>PCH</th></tr></thead>
+      <tbody>
+        {% if fr.override_pch is not none %}
+        {% set co_win = (not ns.marked) and ("%.2f"|format(fr.override_pch)) == ("%.2f"|format(fr.effective_pch)) %}
+        {% if co_win %}{% set ns.marked = true %}{% endif %}
+        <tr class="{% if co_win %}winning{% endif %}">
+          <td>Company-assigned (reassignment notice){% if co_win %} ← credited{% endif %}</td>
+          <td class="num">{{ "%.2f"|format(fr.override_pch) }}</td>
+        </tr>
+        {% endif %}
+        {% set rec_win = (not ns.marked) and ("%.2f"|format(fr.new_pch)) == ("%.2f"|format(fr.effective_pch)) %}
+        <tr class="{% if rec_win %}winning{% endif %}">
+          <td>Recomputed from actual times (max of the §3.E components){% if rec_win %} ← credited{% endif %}</td>
+          <td class="num">{{ "%.2f"|format(fr.new_pch) }}</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>Effective PCH = greater of the above, 1.0× unless a premium is set</td>
+          <td class="num strong">{{ "%.2f"|format(fr.effective_pch) }}</td>
+        </tr>
+      </tfoot>
+    </table>
+    <p>
       If this pickup qualified for a premium (e.g. 150% open time), set it
       in Reason &amp; premium below.
     </p>
@@ -123,15 +167,57 @@
     <p>
       The schedule feed shows this day was reassigned from
       <strong>{{ fr.original_aid }}</strong> to
-      <strong>{{ fr.signature }}</strong>. Paying the greater (§3.E.1.b):
-      original {{ "%.2f"|format(fr.original_pch) }} vs.
-      {% if fr.override_pch is not none %}
-      company-assigned {{ "%.2f"|format(fr.override_pch) }}
-      {% else %}
-      recomputed {{ "%.2f"|format(fr.new_pch) }}
-      {% endif %}
-      → <strong>{{ "%.2f"|format(fr.effective_pch) }} PCH</strong>.
+      <strong>{{ fr.signature }}</strong>. §3.E.1.b pays the greatest of the
+      original, the company-assigned value (when the notice gave one), and
+      the recompute from actual times:
     </p>
+    {# Winner-marking rule: rows are listed in this fixed order — Original
+       published, Company-assigned (only when fr.override_pch is not none),
+       Recomputed from actual times — and the FIRST row (in that order)
+       whose 2dp-formatted value equals fr.effective_pch's is marked
+       "winning". Listing Company ahead of Recomputed means a tie between
+       them marks Company, matching Task 2's tie precedence in the credited-
+       candidates card. Listing Original first means that when both other
+       candidates lose to the published value (effective == original),
+       Original correctly takes the mark instead of a later row that
+       happens to share the same value. #}
+    {% set ns = namespace(marked=false) %}
+    <table class="option-table">
+      <thead><tr><th>Source</th><th>PCH</th></tr></thead>
+      <tbody>
+        {% set orig_win = (not ns.marked) and ("%.2f"|format(fr.original_pch)) == ("%.2f"|format(fr.effective_pch)) %}
+        {% if orig_win %}{% set ns.marked = true %}{% endif %}
+        <tr class="{% if orig_win %}winning{% endif %}">
+          <td>Original published{% if orig_win %} ← credited{% endif %}</td>
+          <td class="num">{{ "%.2f"|format(fr.original_pch) }}</td>
+        </tr>
+        {% if fr.override_pch is not none %}
+        {% set co_win = (not ns.marked) and ("%.2f"|format(fr.override_pch)) == ("%.2f"|format(fr.effective_pch)) %}
+        {% if co_win %}{% set ns.marked = true %}{% endif %}
+        <tr class="{% if co_win %}winning{% endif %}">
+          <td>Company-assigned (reassignment notice){% if co_win %} ← credited{% endif %}</td>
+          <td class="num">{{ "%.2f"|format(fr.override_pch) }}</td>
+        </tr>
+        {% endif %}
+        {% set rec_win = (not ns.marked) and ("%.2f"|format(fr.new_pch)) == ("%.2f"|format(fr.effective_pch)) %}
+        <tr class="{% if rec_win %}winning{% endif %}">
+          <td>Recomputed from actual times (max of the §3.E components){% if rec_win %} ← credited{% endif %}</td>
+          <td class="num">{{ "%.2f"|format(fr.new_pch) }}</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>Effective PCH = greatest (§3.E.1.b)</td>
+          <td class="num strong">{{ "%.2f"|format(fr.effective_pch) }}</td>
+        </tr>
+      </tfoot>
+    </table>
+    {% if data.editable %}
+    <p style="margin-top: 8px;">
+      <a class="correct-link" href="/day/{{ data.date_iso }}?duty=1#reassign-form">⏱ Correct duty times</a>
+      <a class="correct-link" href="/day/{{ data.date_iso }}?amend=1#reassign-form">Amend this trip</a>
+    </p>
+    {% endif %}
     {% endif %}
     {% if fr.status == "CONFIRMED" %}
     <p class="subtle">
@@ -144,10 +230,23 @@
       <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post"
             class="reassign-pch-form">
         <input type="hidden" name="signature" value="{{ fr.signature }}">
-        <label class="form-label" for="reassign-pch-c">Company PCH</label>
+        <label class="form-label" for="reassign-pch-c">
+          {% if fr.kind == "OFF_DAY_PICKUP" %}Company-assigned PCH (for this pickup){% else %}Company-assigned PCH (from the reassignment notice){% endif %}
+        </label>
         <input type="text" name="pch" id="reassign-pch-c" inputmode="decimal"
                class="reassign-pch-input" placeholder="e.g. 5.17"
                value="{% if fr.override_pch is not none %}{{ '%.2f'|format(fr.override_pch) }}{% endif %}">
+        <span class="form-hint">
+          {% if fr.kind == "OFF_DAY_PICKUP" %}
+          The value the company assigned this pickup. Credited as the
+          greater of this and the recompute from actual times.
+          {% else %}
+          The value the company's notice assigns this trip. Counts as the
+          reassigned trip's published value — §3.E.1.b pays the greatest of
+          this, the original {{ fr.original_aid }}, and the recompute from
+          actual times.
+          {% endif %}
+        </span>
         <button type="submit" class="btn btn--secondary">Update PCH</button>
       </form>
       <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">
@@ -161,16 +260,31 @@
     <p class="subtle">
       Auto-applied and awaiting your confirmation. If the company assigned a PCH
       the feed can’t show, enter it below{% if fr.kind == "OFF_DAY_PICKUP" %} —
-      it replaces the recomputed value{% else %} — it’s paid as the greater of
-      it and the published value{% endif %}.
+      it's credited as the greater of it and the recompute from actual times
+      {% else %} — §3.E.1.b pays the greatest of it, the original, and the
+      recompute from actual times{% endif %}.
     </p>
     <div class="confirm-actions">
       <form action="/day/{{ data.date_iso }}/reassignment/confirm" method="post"
             class="reassign-pch-form">
         <input type="hidden" name="signature" value="{{ fr.signature }}">
-        <label class="form-label" for="reassign-pch-p">Company PCH (optional)</label>
+        <label class="form-label" for="reassign-pch-p">
+          {% if fr.kind == "OFF_DAY_PICKUP" %}Company-assigned PCH (for this pickup){% else %}Company-assigned PCH (from the reassignment notice){% endif %}
+          (optional)
+        </label>
         <input type="text" name="pch" id="reassign-pch-p" inputmode="decimal"
                class="reassign-pch-input" placeholder="e.g. 5.17">
+        <span class="form-hint">
+          {% if fr.kind == "OFF_DAY_PICKUP" %}
+          The value the company assigned this pickup. Credited as the
+          greater of this and the recompute from actual times.
+          {% else %}
+          The value the company's notice assigns this trip. Counts as the
+          reassigned trip's published value — §3.E.1.b pays the greatest of
+          this, the original {{ fr.original_aid }}, and the recompute from
+          actual times.
+          {% endif %}
+        </span>
         <button type="submit" class="btn btn--primary">Confirm {{ fr.signature }}</button>
       </form>
       <form action="/day/{{ data.date_iso }}/reassignment/reject" method="post">

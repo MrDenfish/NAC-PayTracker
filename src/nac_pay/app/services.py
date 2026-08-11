@@ -68,6 +68,10 @@ from nac_pay.schedule import (
     lower_month,
     month_from_master_schedule,
 )
+from nac_pay.schedule.apply_actuals import (
+    REASSIGN_KIND_OFF_DAY_PICKUP,
+    REASSIGN_REJECTED,
+)
 from nac_pay.storage import (
     DEFAULT_USER_ID,
     DayOverride,
@@ -1916,6 +1920,20 @@ def load_day(
         (fr for fr in pr.feed_reassignments if fr.date == target), None,
     )
 
+    # apply_actuals folds PROPOSED into effective_pch identically to
+    # CONFIRMED (status only gates the confirm/reject badge, not the fold —
+    # see the REROUTE/OFF_DAY_PICKUP branches). Only REJECTED pins the day
+    # back to the published original and never applies. So any non-
+    # REJECTED reassignment's company-entered PCH / recompute is a
+    # candidate the "how it's credited" card can show.
+    fr_for_day = next(
+        (
+            fr for fr in pr.feed_reassignments
+            if fr.date == target and fr.status != REASSIGN_REJECTED
+        ),
+        None,
+    )
+
     # Feed-detected company drop on this date (confirm/reject card).
     feed_drop = next(
         (fd for fd in pr.feed_drops if fd.date == target), None,
@@ -1979,6 +1997,7 @@ def load_day(
         events_today=events_today,
         feed_reassignment=feed_reassignment,
         feed_drop=feed_drop,
+        fr_for_day=fr_for_day,
         has_override=override is not None,
         saved=saved,
         user_versions=user_versions,
@@ -2190,6 +2209,7 @@ def _build_day_detail(
     events_today: tuple[AppliedEvent, ...],
     feed_reassignment: FeedReassignment | None = None,
     feed_drop: FeedDrop | None = None,
+    fr_for_day: FeedReassignment | None = None,
     has_override: bool = False,
     saved: bool = False,
     user_versions: list | None = None,
@@ -2549,7 +2569,40 @@ def _build_day_detail(
             # by the assignment id, not the reserve base (day.pch_value).
             raw.append(("Assigned trip (published)", sched_packet.trip_pch_value))
         elif published is not None:
-            raw.append(("Published", published))
+            # On an off-day pickup, Trip.published_pch IS the already-
+            # credited value (apply_actuals sets it to
+            # max(override, new_pch) — there's no separate published
+            # original to protect). Label it accordingly so the mark
+            # doesn't land on a misleading "Published" row ahead of the
+            # Company-assigned / Recomputed rows below (deferred cosmetic
+            # from Task 2, closed 2026-08-11).
+            pub_label = (
+                "Pickup (credited)"
+                if fr_for_day is not None
+                and fr_for_day.kind == REASSIGN_KIND_OFF_DAY_PICKUP
+                else "Published"
+            )
+            raw.append((pub_label, published))
+        if fr_for_day is not None and fr_for_day.override_pch is not None:
+            # Pilot-entered company PCH on a CONFIRMED feed reassignment
+            # (§3.E.1.b) — one more candidate the effective value is the
+            # greatest of, not a silent replacement (2026-08-10 defect: the
+            # card asserted this number without ever listing it).
+            raw.append((
+                "Company-assigned (reassignment notice)",
+                fr_for_day.override_pch,
+            ))
+        if fr_for_day is not None:
+            # The recompute is always one of the §3.E.1.b candidates the fold
+            # considered (Task 1: credited = max(override, new_pch)) — list it
+            # even when no company value was entered, and even when it's
+            # trip-rig/DPG/deadhead-driven and so doesn't match any other row
+            # above. Without this, a recompute-wins day marks zero winners
+            # (the 2026-08-10 defect, one branch over from the company row).
+            raw.append((
+                "Recomputed from actual times (max of the §3.E components)",
+                fr_for_day.new_pch,
+            ))
         if actual_block is not None and actual_block > 0:
             raw.append(("Flight-op (actual block)", actual_block))
         if duty_rig_pch is not None:
