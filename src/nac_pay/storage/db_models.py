@@ -275,10 +275,13 @@ class FeedReassignmentDecisionRow(Base):
     """Optional pilot-entered PCH for the reassignment, as a decimal string.
 
     The company sometimes assigns a value the iCal feed can't express (e.g.
-    July 6: 5.17), so the pilot can override the recomputed PCH at confirm
-    time. Applied as ``max(published, this)`` — never reduces pay. NULL =
-    use the recomputed value. Added after the table shipped, so ``db.py``
-    back-fills the column on existing databases (create_all won't ALTER)."""
+    July 6: 5.17), so the pilot can enter it at confirm time. It is one more
+    §3.E.1.b candidate, not a replacement: applied as
+    ``max(published, this, recomputed)`` — never reduces pay, and the pilot
+    still keeps the recompute when actual times beat the entered value
+    (owner contract 2026-08-11). NULL = use the recomputed value. Added
+    after the table shipped, so ``db.py`` back-fills the column on existing
+    databases (create_all won't ALTER)."""
 
     decided_at: Mapped[str] = mapped_column(String(40), nullable=False)
 

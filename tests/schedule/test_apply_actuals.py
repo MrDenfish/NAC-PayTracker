@@ -856,8 +856,9 @@ def test_feed_reassignment_borrows_tafb_from_original_packet():
 
 def test_feed_reassignment_pch_override_pays_company_value():
     """A pilot-entered company PCH (the company sometimes assigns a value the
-    feed can't express) replaces the recomputed value — paid as max(published,
-    override). Here 5.17 beats published 4.50 and the recomputed 3.82."""
+    feed can't express) is one more §3.E.1.b candidate — paid as
+    max(published, override, recomputed). Here 5.17 beats published 4.50
+    and the recomputed 3.82, so the company value still wins."""
     on = date(2026, 7, 6)
     baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
     rt = _unmatched_trip("732/732/733", on_date=on, actual_block="2.5")
@@ -1761,7 +1762,86 @@ def test_offday_pickup_company_pch_below_recompute_credits_the_recompute():
     )
 
     fr = reassigns[0]
+    assert fr.kind == "OFF_DAY_PICKUP"
     assert fr.new_pch == D("5.05")
     assert fr.override_pch == D("4.80")
     assert fr.effective_pch == D("5.05")
     assert updated.trips[-1].published_pch == D("5.05")
+
+
+# ── Event-log detail names every candidate the pilot could be paid on ────
+#
+# Review round 1 (Important 2): with an override present, the old detail
+# string named only "company PCH X vs published Y; paying Z" — when Z was
+# actually the recompute (Z != X), nothing in the sentence explained where
+# Z came from. Fixed to always name company/recomputed/published together.
+
+
+def test_reassignment_event_names_the_recompute_when_it_wins():
+    """Company 4.80 loses to recompute 5.05 -> the AppliedEvent detail must
+    name the recompute, not just the (losing) company figure and the
+    (also losing) published figure — otherwise the paid number explains
+    from neither printed candidate."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {(on.isoformat(), "730/730/731"): "CONFIRMED"}
+    overrides = {(on.isoformat(), "730/730/731"): D("4.80")}
+
+    _updated, events, _reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+        feed_reassignment_pch_overrides=overrides,
+    )
+
+    ev = next(e for e in events if e.kind is AppliedEventKind.FEED_REASSIGNMENT)
+    assert "company PCH 4.80" in ev.detail
+    assert "recomputed 5.05" in ev.detail
+    assert "published 4.50" in ev.detail
+    assert "paying 5.05" in ev.detail
+
+
+def test_reassignment_event_still_names_company_value_when_it_wins():
+    """Pin: company 5.17 still beats recompute 5.05 and published 4.50 —
+    the detail keeps naming all three candidates and pays the company
+    value, unchanged in substance from before this round's string fix."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month(trips=(_scheduled_trip("730/732", "4.50", on),))
+    rt = _unmatched_trip("730/730/731", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+    decisions = {(on.isoformat(), "730/730/731"): "CONFIRMED"}
+    overrides = {(on.isoformat(), "730/730/731"): D("5.17")}
+
+    _updated, events, _reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions=decisions,
+        feed_reassignment_pch_overrides=overrides,
+    )
+
+    ev = next(e for e in events if e.kind is AppliedEventKind.FEED_REASSIGNMENT)
+    assert "company PCH 5.17" in ev.detail
+    assert "recomputed 5.05" in ev.detail
+    assert "published 4.50" in ev.detail
+    assert "paying 5.17" in ev.detail
+
+
+def test_offday_pickup_event_names_the_recompute_when_it_wins():
+    """Same fix, off-day-pickup site: company 4.80 loses to recompute 5.05
+    -> the detail must name the recompute, not just the losing company
+    figure."""
+    on = date(2026, 6, 12)
+    baseline = _empty_month()
+    rt = _unmatched_trip("2720/2721", on_date=on, actual_block="5.05")
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    _updated, events, _reassigns = apply_actuals_to_month(
+        baseline, reconciliation,
+        feed_reassignment_decisions={(on.isoformat(), "2720/2721"): "CONFIRMED"},
+        feed_reassignment_pch_overrides={(on.isoformat(), "2720/2721"): D("4.80")},
+    )
+
+    ev = next(e for e in events if e.kind is AppliedEventKind.OFF_DAY_PICKUP)
+    assert "company PCH 4.80" in ev.detail
+    assert "recomputed 5.05" in ev.detail
+    assert "crediting 5.05" in ev.detail

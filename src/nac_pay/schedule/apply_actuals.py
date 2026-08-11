@@ -409,7 +409,8 @@ def apply_actuals_to_month(
                     detail=(
                         f"Company-added trip {signature} on a day off "
                         + (
-                            f"(company PCH {override:.2f}"
+                            f"(company PCH {override:.2f}, "
+                            f"recomputed {new_pch:.2f}"
                             if override is not None
                             else f"(recomputed {new_pch:.2f}"
                         )
@@ -469,7 +470,8 @@ def apply_actuals_to_month(
             pch_value=credited,
             label=(
                 f"Company reassignment (feed): {signature}"
-                + (" · company PCH" if override is not None else "")
+                + (f" · company PCH {override:.2f} entered"
+                   if override is not None else "")
             ),
         )
         feed_reassignments.append(
@@ -489,9 +491,10 @@ def apply_actuals_to_month(
                 detail=(
                     f"Company reassignment to {signature} "
                     + (
-                        f"(company PCH {override:.2f} vs published "
+                        f"(company PCH {override:.2f}, "
+                        f"recomputed {new_pch:.2f}, published "
                         if override is not None
-                        else f"(recomputed {new_pch:.2f} vs published "
+                        else f"(recomputed {new_pch:.2f}, published "
                     )
                     + f"{baseline_trip.published_pch:.2f}); paying {effective:.2f}"
                     + (" — confirmed" if status == REASSIGN_CONFIRMED
