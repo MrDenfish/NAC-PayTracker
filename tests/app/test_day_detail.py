@@ -14,7 +14,11 @@ from nac_pay.app.main import app
 from nac_pay.app.services import _pipeline, load_day
 from nac_pay.engine import compute_pay
 from nac_pay.schedule import AssignmentVersion, lower_month
-from nac_pay.schedule.apply_actuals import REASSIGN_CONFIRMED, FeedReassignment
+from nac_pay.schedule.apply_actuals import (
+    REASSIGN_CONFIRMED,
+    REASSIGN_PROPOSED,
+    FeedReassignment,
+)
 
 
 client = TestClient(app)
@@ -300,12 +304,39 @@ def test_load_day_pch_candidates_hierarchy():
     assert winners[0].pch == d.effective_pch
 
 
-def _poked_pipeline_with_company_pch(override_pch: Decimal):
-    """June 12 / trip 768, with a CONFIRMED feed reassignment carrying a
-    pilot-entered company PCH — the same shape ``load_day`` sees once Task
-    1's ``apply_actuals_to_month`` folds a real reroute's override, but
-    poked onto the real June fixture's pipeline result (no unmatched feed
-    trip exists in the bundled corpus to trigger one for real)."""
+def _fr(
+    date_,
+    *,
+    status: str = REASSIGN_CONFIRMED,
+    override_pch: Decimal | None = None,
+    new_pch: Decimal = Decimal("4.17"),
+    signature: str = "768/769",
+) -> FeedReassignment:
+    """Build a ``FeedReassignment`` the way ``apply_actuals_to_month``
+    would (Task 1's fold: credited = max(override, new_pch) when an
+    override is present, else new_pch)."""
+    credited = new_pch if override_pch is None else max(override_pch, new_pch)
+    return FeedReassignment(
+        date=date_,
+        signature=signature,
+        original_aid="768",
+        original_pch=Decimal("4.17"),
+        new_pch=new_pch,
+        effective_pch=credited if status == REASSIGN_CONFIRMED else new_pch,
+        status=status,
+        applied=(status == REASSIGN_CONFIRMED),
+        override_pch=override_pch,
+    )
+
+
+def _poked_pipeline(feed_reassignments: tuple, credited_pch: Decimal):
+    """June 12 / trip 768, folded with ``credited_pch`` as its winning
+    ``AssignmentVersion`` (mirroring ``apply_actuals_to_month``'s real
+    max() fold from Task 1), plus the given ``feed_reassignments`` tuple —
+    poked onto the real June pipeline result because no unmatched feed
+    trip exists in the bundled corpus to trigger a real CONFIRMED reroute
+    (same "poke the cached pipeline" precedent as
+    ``test_calendar.py::test_calendar_surfaces_reassigned_flag_via_pipeline_cache``)."""
     _pipeline.cache_clear()
     real = _pipeline(2026, 6)
     new_trips = []
@@ -316,7 +347,7 @@ def _poked_pipeline_with_company_pch(override_pch: Decimal):
                 versions=trip.versions + (
                     AssignmentVersion(
                         seq=len(trip.versions) + 1,
-                        pch_value=override_pch,
+                        pch_value=credited_pch,
                         label="company-assigned (test)",
                     ),
                 ),
@@ -324,22 +355,11 @@ def _poked_pipeline_with_company_pch(override_pch: Decimal):
         else:
             new_trips.append(trip)
     poked_month = replace(real.updated_month, trips=tuple(new_trips))
-    fr = FeedReassignment(
-        date=date(2026, 6, 12),
-        signature="768/769",
-        original_aid="768",
-        original_pch=Decimal("4.17"),
-        new_pch=Decimal("4.17"),
-        effective_pch=override_pch,
-        status=REASSIGN_CONFIRMED,
-        applied=True,
-        override_pch=override_pch,
-    )
     return replace(
         real,
         updated_month=poked_month,
         engine_result=compute_pay(lower_month(poked_month)),
-        feed_reassignments=(fr,),
+        feed_reassignments=feed_reassignments,
     )
 
 
@@ -347,10 +367,29 @@ def test_candidates_card_includes_the_company_assigned_row():
     """Aug 10 class of defect: with a company PCH entered the card listed
     three candidates, marked NO winner, and asserted a fourth number that
     appeared nowhere. The company value must be a row, and exactly one
-    row must be marked winning."""
-    poked = _poked_pipeline_with_company_pch(Decimal("5.17"))
+    row must be marked winning.
+
+    Also I1's mutation coverage: two distractors — a CONFIRMED reassignment
+    on a DIFFERENT date (2026-06-13) and a PROPOSED one on the SAME date —
+    are ordered BEFORE the real one so that dropping either the
+    ``fr.date == target`` or the ``fr.status == REASSIGN_CONFIRMED`` clause
+    in ``load_day``'s resolution picks up the wrong entry first (see the
+    mutation transcript in the report)."""
+    winner_fr = _fr(date(2026, 6, 12), override_pch=Decimal("5.17"))
+    wrong_date = _fr(
+        date(2026, 6, 13), override_pch=Decimal("8.88"), signature="769/770",
+    )
+    wrong_status = _fr(
+        date(2026, 6, 12), status=REASSIGN_PROPOSED,
+        override_pch=Decimal("9.99"), signature="768/771",
+    )
+    poked = _poked_pipeline(
+        (wrong_date, wrong_status, winner_fr), credited_pch=Decimal("5.17"),
+    )
+
     with patch("nac_pay.app.services._pipeline", return_value=poked):
         d = load_day(2026, 6, 12)
+        r = client.get("/day/2026-06-12")
 
     labels = [c.label for c in d.pch_candidates]
     assert "Company-assigned (reassignment notice)" in labels
@@ -358,15 +397,51 @@ def test_candidates_card_includes_the_company_assigned_row():
     assert len(winners) == 1
     assert winners[0].pch == d.effective_pch
     assert winners[0].label == "Company-assigned (reassignment notice)"
+    # Neither distractor's value leaked onto the June 12 card.
+    values = {str(c.pch.quantize(Decimal("0.01"))) for c in d.pch_candidates}
+    assert "9.99" not in values
+    assert "8.88" not in values
+
+    # Minor 4: assert on the rendered HTML too, not just the loader record —
+    # pins the template loop (day.html's generic `for c in
+    # data.pch_candidates`) as well as the loader.
+    assert r.status_code == 200
+    assert "Company-assigned (reassignment notice)" in r.text
+
+
+def test_candidates_card_recompute_row_wins_when_it_beats_the_company_value():
+    """I2: Task 1 made recompute-beats-company reachable — when the
+    recompute wins (trip-rig/DPG/deadhead-driven, not necessarily equal to
+    any other row already on the card), the card must still mark exactly
+    one winner instead of the zero-winner defect one branch over from the
+    company row. Company 4.80 loses to recompute 5.05."""
+    fr = _fr(date(2026, 6, 12), override_pch=Decimal("4.80"), new_pch=Decimal("5.05"))
+    assert fr.effective_pch == Decimal("5.05")   # max(4.80, 5.05) — sanity
+    poked = _poked_pipeline((fr,), credited_pch=Decimal("5.05"))
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        d = load_day(2026, 6, 12)
+
+    labels = [c.label for c in d.pch_candidates]
+    assert "Company-assigned (reassignment notice)" in labels
+    assert "Recomputed from actual times" in labels
+    winners = [c for c in d.pch_candidates if c.is_winning]
+    assert len(winners) == 1
+    assert winners[0].label == "Recomputed from actual times"
+    assert winners[0].pch == d.effective_pch == Decimal("5.05")
 
 
 def test_candidates_card_without_a_company_value_is_unchanged():
-    """No-override safety: the row is absent and rendering is as before."""
+    """No-override safety: with no CONFIRMED feed reassignment for the
+    viewed date, ``fr_for_day`` resolves to ``None`` and both new
+    ``raw.append`` calls are fully guarded by ``fr_for_day is not None`` —
+    structurally, nothing about the card's construction changes. Neither
+    new row is present."""
     _pipeline.cache_clear()
     d = load_day(2026, 6, 12)
-    assert "Company-assigned (reassignment notice)" not in [
-        c.label for c in d.pch_candidates
-    ]
+    labels = [c.label for c in d.pch_candidates]
+    assert "Company-assigned (reassignment notice)" not in labels
+    assert "Recomputed from actual times" not in labels
 
 
 def test_load_day_exposes_scheduled_duty_window_from_packet():

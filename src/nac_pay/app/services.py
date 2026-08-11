@@ -2573,6 +2573,17 @@ def _build_day_detail(
                 "Company-assigned (reassignment notice)",
                 fr_for_day.override_pch,
             ))
+        if fr_for_day is not None:
+            # The recompute is always one of the §3.E.1.b candidates the fold
+            # considered (Task 1: credited = max(override, new_pch)) — list it
+            # even when no company value was entered, and even when it's
+            # trip-rig/DPG/deadhead-driven and so doesn't match any other row
+            # above. Without this, a recompute-wins day marks zero winners
+            # (the 2026-08-10 defect, one branch over from the company row).
+            raw.append((
+                "Recomputed from actual times",
+                fr_for_day.new_pch,
+            ))
         if actual_block is not None and actual_block > 0:
             raw.append(("Flight-op (actual block)", actual_block))
         if duty_rig_pch is not None:
