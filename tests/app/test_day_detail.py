@@ -444,6 +444,62 @@ def test_candidates_card_without_a_company_value_is_unchanged():
     assert "Recomputed from actual times" not in labels
 
 
+# ── Reassignment card: comparison table + amend-form links (Task 3) ────
+
+
+def _reassignment_card_html(html: str) -> str:
+    """Slice out just the feed_reassignment card's rendered HTML. The Times
+    and Legs cards further down the same page already contain their own
+    "?duty=1#reassign-form" / "?amend=1#reassign-form" links for any flown,
+    editable day — without scoping to this card, link assertions could pass
+    against those unrelated cards even if the reassignment card itself never
+    grew the new links."""
+    start = html.index("Company reassignment detected")
+    end = html.index('<h2 class="card-title">', start + 1)
+    return html[start:end]
+
+
+def _comparison_table_html(card: str) -> str:
+    """Slice out just the option-table itself. Scoping to the table (not
+    just the card) matters because the CONFIRMED banner and the pch input's
+    ``value=`` attribute elsewhere in the same card also echo the
+    company-assigned figure — a mutation that deletes the table's company
+    row wouldn't otherwise be caught, since "5.17" would still be found in
+    the card from those other spots."""
+    start = card.index('<table class="option-table">')
+    end = card.index("</table>", start) + len("</table>")
+    return card[start:end]
+
+
+def test_reassignment_card_shows_the_comparison_rows():
+    """The comparison table lists all three §3.E.1.b candidates with their
+    values, replacing the old prose paragraph."""
+    fr = _fr(date(2026, 6, 12), override_pch=Decimal("5.17"), new_pch=Decimal("5.05"))
+    poked = _poked_pipeline((fr,), credited_pch=Decimal("5.17"))
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        r = client.get("/day/2026-06-12")
+
+    table = _comparison_table_html(_reassignment_card_html(r.text))
+    assert "Original" in table and "4.17" in table
+    assert "Company-assigned" in table and "5.17" in table
+    assert "Recomputed from actual times" in table and "5.05" in table
+
+
+def test_reassignment_card_links_into_the_amend_form():
+    """Two navigation links point into the one existing amend form — no new
+    input/write path on this card."""
+    fr = _fr(date(2026, 6, 12), override_pch=Decimal("5.17"), new_pch=Decimal("5.05"))
+    poked = _poked_pipeline((fr,), credited_pch=Decimal("5.17"))
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        r = client.get("/day/2026-06-12")
+
+    card = _reassignment_card_html(r.text)
+    assert "?duty=1#reassign-form" in card
+    assert "?amend=1#reassign-form" in card
+
+
 def test_load_day_exposes_scheduled_duty_window_from_packet():
     """Reconstruct-from-packet: a day with a matched packet trip carries the
     scheduled duty window (local HH:MM) + scheduled duty rig, independent of
