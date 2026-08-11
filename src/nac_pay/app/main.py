@@ -1099,6 +1099,7 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
             saved_version_deleted=(saved_q == "version_deleted"),
             reassign_error=request.query_params.get("reassign_error", ""),
             correct_seq=correct_seq,
+            duty_correction=(request.query_params.get("duty", "") == "1"),
         )
     except MonthDataError as exc:
         return _render_month_missing(request, exc, "calendar", "/calendar")

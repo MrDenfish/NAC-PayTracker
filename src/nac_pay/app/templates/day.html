@@ -471,6 +471,10 @@
         <tr><th>Duty rig (duty ÷ 2)</th><td class="num">{{ "%.2f"|format(data.duty_rig_pch) }} PCH</td></tr>
       </tbody>
     </table>
+    {% if data.editable %}
+    <a class="correct-link" href="/day/{{ data.date_iso }}?duty=1#reassign-form"
+       style="display: inline-block; margin-top: 6px;">Correct duty times</a>
+    {% endif %}
     {% if data.duty_window_is_correction %}
     <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
       This window is the pilot's own filed duty correction, not the feed —
@@ -482,7 +486,8 @@
       Duty on = scheduled report (1:00 before the scheduled departure), so a
       late push lengthens the duty day rather than moving its start; duty off
       = last arrival + 0:15. Falls back to actual departure − 1:00 when the
-      day has no matched packet trip. Times in Anchorage local.
+      day has no matched packet trip — correctable above if that's not the
+      real report time. Times in Anchorage local.
     </p>
     {% endif %}
     {% endif %}
@@ -733,13 +738,16 @@
     {% set defaults = data.reassign_form_defaults %}
     {% set is_correction = defaults.correction_of is not none %}
     {% set is_restore = defaults.is_restore %}
+    {% set is_duty_default = not is_correction and defaults.version_type == 'DUTY_CORRECTION' %}
 
-    <details class="reassign-details" {% if is_correction or data.reassign_error %}open{% endif %}>
+    <details class="reassign-details" {% if is_correction or data.reassign_error or is_duty_default %}open{% endif %}>
       <summary class="reassign-summary">
         {% if is_restore %}
           ↩ Restore dropped assignment ({{ defaults.correcting_seq_label }})
         {% elif is_correction %}
           ✎ Correcting {{ defaults.correcting_seq_label }}
+        {% elif is_duty_default %}
+          ⏱ Correct duty times
         {% else %}
           + Reassign / amend
         {% endif %}
@@ -1316,6 +1324,20 @@
       if (details) details.open = true;
       var detailed = document.querySelector('input[name="entry_mode"][value="DETAILED"]');
       if (detailed) { detailed.checked = true; detailed.dispatchEvent(new Event("change", {bubbles: true})); }
+      var form = document.getElementById("reassign-form");
+      if (form) form.scrollIntoView();
+    })();
+
+    // "Correct duty times" entry point (?duty=1): open the form, select
+    // the Duty correction radio (server already preselects it — this just
+    // fires the change event so syncDutyCorrectionMode() runs and makes
+    // the clock inputs live), and scroll to it.
+    (function () {
+      if (!/[?&]duty=1\b/.test(window.location.search)) return;
+      var details = document.querySelector(".reassign-details");
+      if (details) details.open = true;
+      var dutyRadio = document.querySelector('input[name="version_type"][value="DUTY_CORRECTION"]');
+      if (dutyRadio) { dutyRadio.checked = true; dutyRadio.dispatchEvent(new Event("change", {bubbles: true})); }
       var form = document.getElementById("reassign-form");
       if (form) form.scrollIntoView();
     })();
