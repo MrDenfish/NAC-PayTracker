@@ -1413,3 +1413,84 @@ def test_lea_non_sick_labels_do_not_seed():
     )
     assert updated.trips[0].reason_code is ReasonCode.FLOWN
     assert events == ()
+
+
+# ── Duty override (Task 4): replaces feed-derived duty in §3.E recompute ─
+
+
+def test_duty_override_replaces_the_feed_derived_duty():
+    from nac_pay.schedule.apply_actuals import _actual_duty_hours
+
+    packet = _trip_pairing("720/721/1780/1781", "6.08")
+    packet = replace(packet, sched_duty_on="04:41")
+    start = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
+    rt = ReconciledTrip(
+        flight_sequence="720/721/1780/1781", legs=(_leg("720", start, end),),
+        packet_trip=packet, match_status=MatchStatus.MATCHED,
+        first_dt_utc=start, last_dt_utc=end, actual_block_hours=D("7.13"),
+    )
+
+    # No override → the packet-anchored window (PR #76): 04:41 → 18:15.
+    assert abs(_actual_duty_hours(rt) - D("13.5667")) < D("0.001")
+    # Override → exactly what the pilot said, in this case SHORTER.
+    got = _actual_duty_hours(rt, {"2026-08-08": D("11.00")})
+    assert got == D("11.00")
+
+
+def test_duty_override_can_lower_a_day_where_duty_rig_was_winning():
+    """The silent no-op this feature exists to fix: with max()-only
+    semantics a shorter duty was ignored. Published 4.17, feed duty rig
+    5.51 wins; pilot corrects duty down to 10.02h → rig 5.01 → credited."""
+    baseline_trip = Trip(trip_id="766", published_pch=D("4.17"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="9.77")
+
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+    no_override, _, _ = apply_actuals_to_month(baseline, reconciliation)
+    lowered, _, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("10.02")},
+    )
+
+    assert no_override.trips[0].effective_pch > lowered.trips[0].effective_pch
+    assert lowered.trips[0].effective_pch == D("5.01")
+
+
+def test_duty_override_never_takes_a_day_below_published():
+    """§3.E is structural — max(published, recomputed) still holds."""
+    baseline_trip = Trip(trip_id="766", published_pch=D("4.17"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="9.77")
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    updated, _, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("0.50")},
+    )
+
+    assert updated.trips[0].effective_pch == D("4.17")
+
+
+def test_duty_override_does_not_discard_block_credit():
+    """The Aug 8 shape: block 7.13 wins. Shortening duty must NOT cost the
+    flight-op credit the pilot never disputed."""
+    baseline_trip = Trip(trip_id="720", published_pch=D("6.08"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _matched_trip("720", actual_block="7.13", packet_pch="6.08",
+                       packet_block="6.08", packet_duty="10.73")
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    updated, _, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("8.00")},
+    )
+
+    assert updated.trips[0].effective_pch == D("7.13")

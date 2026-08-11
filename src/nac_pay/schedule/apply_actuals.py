@@ -160,6 +160,7 @@ def apply_actuals_to_month(
     packet: dict | None = None,
     feed_reassignment_decisions: dict[tuple[str, str], str] | None = None,
     feed_reassignment_pch_overrides: dict[tuple[str, str], Decimal] | None = None,
+    duty_overrides: dict[str, Decimal] | None = None,
 ) -> tuple[Month, tuple[AppliedEvent, ...], tuple[FeedReassignment, ...]]:
     """Apply mid-month events from a reconciliation onto a baseline Month.
 
@@ -174,6 +175,11 @@ def apply_actuals_to_month(
     ``feed_reassignment_pch_overrides`` maps ``(date_iso, signature)`` → a
     pilot-entered company PCH that replaces the recomputed value (still
     protected: the day pays ``max(published, override)``).
+    ``duty_overrides`` maps a trip's first local date (ISO) to the duty
+    hours the pilot recorded in a DUTY_CORRECTION. Where present it
+    REPLACES the feed-derived duty in the §3.E recompute, so a correction
+    lowers as well as raises. It can never take a day below published —
+    Trip.effective_pch is still max(published, recomputed).
     """
     decisions = feed_reassignment_decisions or {}
     pch_overrides = feed_reassignment_pch_overrides or {}
@@ -216,7 +222,7 @@ def apply_actuals_to_month(
             baseline_trip = baseline.trips[idx]
             extended = _apply_duty_extension(
                 baseline_trip, rt, duty_extension_tolerance_hours, events,
-                block_extension_tolerance_hours,
+                block_extension_tolerance_hours, duty_overrides,
             )
             if extended is not baseline_trip:
                 duty_extension_by_index[idx] = extended
@@ -331,7 +337,7 @@ def apply_actuals_to_month(
             # never preassigned — the pilot picks the category on the day
             # page).
             signature = rt.flight_sequence
-            new_pch = _recomputed_reroute_pch(rt, None)
+            new_pch = _recomputed_reroute_pch(rt, None, duty_overrides)
             decision = decisions.get((first_date.isoformat(), signature))
 
             if decision == REASSIGN_REJECTED:
@@ -412,7 +418,7 @@ def apply_actuals_to_month(
             packet_trip_for_aid(baseline_trip.trip_id, packet)
             if packet else None
         )
-        new_pch = _recomputed_reroute_pch(rt, original_packet)
+        new_pch = _recomputed_reroute_pch(rt, original_packet, duty_overrides)
         decision = decisions.get((first_date.isoformat(), signature))
 
         if decision == REASSIGN_REJECTED:
@@ -763,6 +769,7 @@ def _baseline_trip_index_for_date(
 def _recomputed_reroute_pch(
     rt: ReconciledTrip,
     original_packet: "TripPairing | None",
+    duty_overrides: dict[str, Decimal] | None = None,
 ) -> Decimal:
     """§3.E PCH for a company reroute, recomputed from ACTUAL iCal times.
 
@@ -772,7 +779,7 @@ def _recomputed_reroute_pch(
     available; otherwise TAFB falls back to the actual duty and workdays to
     the calendar days the legs touch."""
     block = rt.actual_block_hours
-    duty = _actual_duty_hours(rt)
+    duty = _actual_duty_hours(rt, duty_overrides)
     if original_packet is not None:
         tafb = original_packet.tafb_hours
         workdays = original_packet.workdays
@@ -943,18 +950,32 @@ def _duty_start_utc(rt: ReconciledTrip) -> datetime_t:
     return rt.first_dt_utc - timedelta(hours=float(REPORT_PAD_HOURS))
 
 
-def _actual_duty_hours(rt: ReconciledTrip) -> Decimal:
-    """The ACTUAL duty period from iCal, run report→release so it's
-    comparable to the packet's already-padded scheduled duty: scheduled
-    report (see ``_duty_start_utc``) to TRIP_END_PAD after the last leg in
-    (§3.E; same window the day-detail duty display uses)."""
+def _actual_duty_hours(
+    rt: ReconciledTrip,
+    duty_overrides: dict[str, Decimal] | None = None,
+) -> Decimal:
+    """The duty period used for §3.E, report→release.
+
+    A pilot ``DUTY_CORRECTION`` for this trip's first local date replaces
+    the computed window outright — it is an INPUT, not a competing max()
+    candidate, so a correction works DOWNWARD as well as up. Otherwise:
+    scheduled report (see ``_duty_start_utc``) → TRIP_END_PAD after the
+    last leg in.
+    """
+    if duty_overrides:
+        override = duty_overrides.get(_local_date(rt.first_dt_utc).isoformat())
+        if override is not None:
+            return override
     duty_start = _duty_start_utc(rt)
     duty_end = rt.last_dt_utc + timedelta(hours=float(TRIP_END_PAD_HOURS))
     seconds = int((duty_end - duty_start).total_seconds())
     return Decimal(seconds) / Decimal("3600")
 
 
-def _recomputed_actual_components(rt: ReconciledTrip):
+def _recomputed_actual_components(
+    rt: ReconciledTrip,
+    duty_overrides: dict[str, Decimal] | None = None,
+):
     """§3.E components recomputed from ACTUAL iCal times — actual flight-op
     (block) and actual duty rig (padded duty ÷ 2), plus trip rig / cumulative
     DPG / deadhead from the packet (the feed doesn't publish TAFB or DH
@@ -965,7 +986,7 @@ def _recomputed_actual_components(rt: ReconciledTrip):
         return None
     return components_from_times(
         block_hours=rt.actual_block_hours,
-        duty_hours=_actual_duty_hours(rt),
+        duty_hours=_actual_duty_hours(rt, duty_overrides),
         tafb_hours=packet.tafb_hours,
         workdays=packet.workdays,
         deadhead=packet.deadhead_pch,
@@ -977,6 +998,7 @@ def _extension_recompute(
     published_pch: Decimal,
     block_tolerance_hours: Decimal,
     duty_tolerance_hours: Decimal,
+    duty_overrides: dict[str, Decimal] | None = None,
 ) -> Decimal | None:
     """Return the §3.E recompute-from-actuals value when it beats
     ``published_pch`` past the appropriate tolerance, else None.
@@ -988,7 +1010,7 @@ def _extension_recompute(
     packet and are already ≤ published (published = the packet's trip PCH), so
     they never independently trigger. When either drive clears its tolerance the
     credited value is the full greatest-of recompute (``trip_pch``)."""
-    comp = _recomputed_actual_components(rt)
+    comp = _recomputed_actual_components(rt, duty_overrides)
     if comp is None:
         return None
     block_beats = comp.flight_op > published_pch + block_tolerance_hours
@@ -1004,6 +1026,7 @@ def _apply_duty_extension(
     tolerance_hours: Decimal,
     events: list[AppliedEvent],
     block_tolerance_hours: Decimal = _BLOCK_EXTENSION_TOLERANCE_HOURS,
+    duty_overrides: dict[str, Decimal] | None = None,
 ) -> Trip:
     """Auto-credit a duty extension: recompute §3.E PCH from the ACTUAL iCal
     times (padded duty rig + block) and, if it beats the published value past
@@ -1014,24 +1037,29 @@ def _apply_duty_extension(
     Triggered by either a longer actual block OR a longer actual duty (the
     rig over the report→release window). Block (directly measured) credits past
     a tight ``block_tolerance``; duty-rig (estimated padding) keeps the wider
-    ``tolerance_hours`` — see :func:`_extension_recompute`.
+    ``tolerance_hours`` — see :func:`_extension_recompute`. A ``duty_overrides``
+    entry for this trip's first local date REPLACES the feed-derived duty
+    outright (see :func:`_actual_duty_hours`), so a pilot correction can lower
+    the recompute as well as raise it.
     """
     packet = rt.packet_trip
     assert packet is not None  # MatchStatus.MATCHED implies packet_trip set
 
     recomputed_pch = _extension_recompute(
         rt, baseline_trip.published_pch, block_tolerance_hours, tolerance_hours,
+        duty_overrides,
     )
     if recomputed_pch is None:
         return baseline_trip
 
+    credited_duty = _actual_duty_hours(rt, duty_overrides)
     new_version = AssignmentVersion(
         seq=len(baseline_trip.versions) + 1,
         pch_value=recomputed_pch,
         label=(
             f"Duty extension from iCal: recomputed {recomputed_pch:.2f} "
             f"(block {rt.actual_block_hours:.2f}h, duty "
-            f"{_actual_duty_hours(rt):.2f}h)"
+            f"{credited_duty:.2f}h)"
         ),
     )
     events.append(
@@ -1041,7 +1069,7 @@ def _apply_duty_extension(
             trip_id=rt.trip_id,
             detail=(
                 f"Actual block {rt.actual_block_hours:.2f}h / duty "
-                f"{_actual_duty_hours(rt):.2f}h → recomputed PCH "
+                f"{credited_duty:.2f}h → recomputed PCH "
                 f"{recomputed_pch:.2f} (published "
                 f"{baseline_trip.published_pch:.2f})"
             ),
