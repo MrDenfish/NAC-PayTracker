@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,74 @@ from nac_pay.storage.db_models import UserRow
 
 def _docs_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "docs"
+
+
+class _FormInputParser(HTMLParser):
+    """Collects every ``<input>`` element's attrs, in document order, from
+    a fragment of rendered HTML. Used to build a POST body FROM the
+    rendered template rather than a hand-written dict, so a template
+    regression (a renamed/removed field, a radio option that stops being
+    emitted) fails the test that depends on it instead of going unnoticed
+    (Fix round 1, CRITICAL 1)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.inputs: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "input":
+            self.inputs.append(dict(attrs))
+
+
+def _parse_reassign_form(html: str, date_iso: str) -> tuple[dict[str, list[str]], dict[str, set[str]]]:
+    """Extract the ``/day/<date_iso>/reassign`` form's fields from RENDERED
+    page HTML.
+
+    Returns ``(fields, radio_options)``:
+    - ``fields``: {name: [values...]} in document order — a list even for
+      single-valued fields, so repeated names (leg_flight/leg_out/leg_in)
+      round-trip correctly; a checked radio's value is included, an
+      unchecked one is not.
+    - ``radio_options``: {name: {every value offered}} — lets a test assert
+      an option EXISTS in the rendered form (e.g. "DUTY_CORRECTION" is one
+      of the version_type radios) independent of which one starts checked.
+    """
+    m = re.search(
+        r'<form action="/day/' + re.escape(date_iso) + r'/reassign"[^>]*>(.*?)</form>',
+        html, re.S,
+    )
+    assert m, f"no /day/{date_iso}/reassign form found in the rendered page"
+    parser = _FormInputParser()
+    parser.feed(m.group(1))
+
+    fields: dict[str, list[str]] = {}
+    radio_options: dict[str, set[str]] = {}
+    for attrs in parser.inputs:
+        name = attrs.get("name")
+        if not name:
+            continue
+        value = attrs.get("value") or ""
+        itype = attrs.get("type", "text")
+        if itype == "radio":
+            radio_options.setdefault(name, set()).add(value)
+            if "checked" in attrs:
+                fields.setdefault(name, []).append(value)
+        elif itype == "checkbox":
+            if "checked" in attrs:
+                fields.setdefault(name, []).append(value)
+        else:
+            fields.setdefault(name, []).append(value)
+    return fields, radio_options
+
+
+def _payload_from_fields(fields: dict[str, list[str]]) -> dict[str, str | list[str]]:
+    """Collapse the parsed {name: [values]} map into the shape TestClient's
+    ``data=`` wants: a single value for a single-valued field, a list for a
+    repeated one (leg_flight/leg_out/leg_in)."""
+    return {
+        name: (values[0] if len(values) == 1 else values)
+        for name, values in fields.items()
+    }
 
 
 def _verify_token(body: str) -> str:
@@ -611,3 +680,509 @@ def test_offday_pickup_reject_reverts_to_off(monkeypatch):
     body = r.text
     assert "this day remains OFF" in body
     assert "New trip on your day off" in body   # rejected card still shown
+
+
+# ── Task 7: duty-correction clocks on the amend form ─────────────────
+
+
+def test_posting_duty_clocks_persists_them_and_derives_duty_hours(monkeypatch):
+    """The clocks are the truth; duty_hours is derived from them, so the
+    stored duration can never disagree with the displayed window."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "clocks@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "9.99",          # stale client value — must be ignored
+        "tafb_hours": "7.08",
+        "workdays": "1",
+        "duty_on_local": "04:41",
+        "duty_off_local": "18:15",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+    v = UserAssignmentVersionStore(user_id=uid).list_for_month(2026, 6)["2026-06-12"][-1]
+    assert v.version_type is VersionType.DUTY_CORRECTION
+    assert v.duty_on_local == "04:41"
+    assert v.duty_off_local == "18:15"
+    assert abs(v.duty_hours - Decimal("13.5667")) < Decimal("0.001")
+
+
+def test_posting_without_clocks_keeps_the_submitted_duty_hours(monkeypatch):
+    """Back-compat: the existing DETAILED flow (no clocks touched) is
+    unchanged — older versions and pilots who never open the clock fields
+    keep working byte-identically."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "noclocks@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "REASSIGNMENT",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "9.99",
+        "tafb_hours": "7.08",
+        "workdays": "1",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+    v = UserAssignmentVersionStore(user_id=uid).list_for_month(2026, 6)["2026-06-12"][-1]
+    assert v.duty_on_local is None
+    assert abs(v.duty_hours - Decimal("9.99")) < Decimal("0.001")
+
+
+def test_posting_a_half_filled_clock_pair_is_rejected(monkeypatch):
+    """Both clocks or neither — a half-filled pair must not silently fall
+    back to the stale duty_hours field; it's a clear validation error."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "halfclock@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "9.99",
+        "tafb_hours": "7.08",
+        "workdays": "1",
+        "duty_on_local": "04:41",
+        "duty_off_local": "",
+    }, follow_redirects=False)
+    assert "Enter%20both%20duty%20on%20and%20duty%20off" in r.headers["location"]
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12") == []
+
+
+def test_posting_an_unparsable_clock_pair_is_rejected(monkeypatch):
+    client, uid = _bootstrap_user_with_june(monkeypatch, "badclock@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "9.99",
+        "tafb_hours": "7.08",
+        "workdays": "1",
+        "duty_on_local": "not-a-time",
+        "duty_off_local": "18:15",
+    }, follow_redirects=False)
+    assert "Enter%20duty%20on%20and%20duty%20off%20as%20HH%3AMM" in r.headers["location"]
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12") == []
+
+
+def test_duty_correction_downward_lowers_the_credited_pch(monkeypatch):
+    """THE acceptance test for this feature: a DUTY_CORRECTION that
+    shortens duty on a day where duty rig is the winning candidate must
+    make the credited PCH go DOWN — not merely fail to raise it further.
+
+    Setup uses the real bundled June 2026 trip 768 / 2026-06-12 fixture
+    (published 4.17; the raw feed does not make duty rig win on its own —
+    see test_day_edit.py's test_duty_correction_flows_into_the_pipeline_
+    recompute, ``before_trip.effective_pch == 4.17``). Step 1 files a
+    correction that lengthens duty (03:00-14:00, 11h -> duty rig 5.50, kept
+    under the C2 16h server-side sanity ceiling), establishing duty rig as
+    the winning candidate over published. Step 2 files a SECOND correction
+    (re-editing, as DUTY_CORRECTION rows do not supersede via
+    correction_of — "latest active wins") that shortens duty to 03:00-09:00
+    (6h -> duty rig 3.00), and — deliberately, to prove item A closes the
+    max()-fold gap rather than merely coinciding with a lower number —
+    resubmits stale-looking DETAILED block/tafb values (15.00 each) that
+    would recompute an audit-only pch_value of 15.00 if that row were ever
+    allowed to compete in the §3.E.1.b max(). If DUTY_CORRECTION were still
+    folded as an ordinary candidate (the pre-item-A bug), effective_pch
+    would go UP to 15.00 here, not down. With the row excluded from the
+    fold, pay is driven solely by duty_overrides -> the real §3.E recompute,
+    which floors back to published (4.17): duty rig (3.00) and every other
+    real component for this trip are below published, so effective_pch ==
+    4.17, strictly below the 5.50 step-1 value.
+
+    Mutation-verified — see task-7-report.md for the revert/FAIL and
+    reapply/PASS transcript of ``_fold_candidates`` in
+    ``apply_user_versions.py``.
+    """
+    client, uid = _bootstrap_user_with_june(monkeypatch, "downward@x.test")
+
+    # Step 1: lengthen duty so duty rig becomes the winning candidate.
+    r1 = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "0",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "03:00",
+        "duty_off_local": "14:00",
+    }, follow_redirects=False)
+    assert r1.status_code in (302, 303)
+
+    invalidate_caches()
+    pr = _pipeline(2026, 6, uid)
+    trip = next(t for t in pr.updated_month.trips if "768" in t.trip_id)
+    before = trip.effective_pch
+    assert before == Decimal("5.50"), f"expected duty rig 5.50 to win, got {before}"
+
+    # Step 2: shorten duty — the correction under test.
+    r2 = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "15.00",
+        "duty_hours": "0",
+        "tafb_hours": "6.00",
+        "workdays": "1",
+        "duty_on_local": "03:00",
+        "duty_off_local": "09:00",
+    }, follow_redirects=False)
+    assert r2.status_code in (302, 303)
+
+    invalidate_caches()
+    pr2 = _pipeline(2026, 6, uid)
+    trip2 = next(t for t in pr2.updated_month.trips if "768" in t.trip_id)
+    after = trip2.effective_pch
+
+    assert after < before, (
+        f"downward correction did not lower credited PCH: {before} -> {after}"
+    )
+    assert after == Decimal("4.17")
+
+
+# ── Fix round 1: the feature must be reachable from the rendered form ──
+
+
+def test_duty_correction_type_posted_from_the_rendered_form_moves_credited_pch(monkeypatch):
+    """CRITICAL 1: before this fix, day.html hard-coded version_type to
+    REASSIGNMENT/CORRECTION — nothing in the template ever emitted
+    DUTY_CORRECTION, so the feature was unreachable from a browser (a
+    pilot's clocks landed on a REASSIGNMENT row, which competes in the
+    max() fold and which _build_duty_overrides ignores — exactly the bug
+    the feature exists to fix).
+
+    This posts a body built by PARSING the rendered /day/<date> page's
+    actual form fields (not a hand-written dict), overriding only what a
+    pilot would actually touch through the UI: the version_type radio
+    (asserting DUTY_CORRECTION is genuinely offered), the entry_mode
+    radio, and the two duty clocks. Everything else — assignment_id, the
+    real iCal-prefilled legs, deadhead/workdays — comes straight off the
+    page. block_hours/tafb_hours/duty_hours are also set here because
+    TestClient doesn't run the page's JS auto-compute (recompute()); a real
+    browser would have filled them in before submit.
+    """
+    client, uid = _bootstrap_user_with_june(monkeypatch, "renderedform@x.test")
+
+    before_pr = _pipeline(2026, 6, uid)
+    before_trip = next(t for t in before_pr.updated_month.trips if "768" in t.trip_id)
+    before = before_trip.effective_pch
+
+    r = client.get("/day/2026-06-12")
+    assert r.status_code == 200
+    fields, radios = _parse_reassign_form(r.text, "2026-06-12")
+
+    assert "DUTY_CORRECTION" in radios.get("version_type", set()), (
+        "the rendered amend form no longer offers a Duty correction option"
+    )
+    assert "DETAILED" in radios.get("entry_mode", set())
+    assert "duty_on_local" in fields, "the rendered form has no duty_on_local field"
+    assert "duty_off_local" in fields, "the rendered form has no duty_off_local field"
+
+    fields["version_type"] = ["DUTY_CORRECTION"]
+    fields["entry_mode"] = ["DETAILED"]
+    # 11h (03:00-14:00), kept under the C2 16h server-side sanity ceiling.
+    fields["duty_on_local"] = ["03:00"]
+    fields["duty_off_local"] = ["14:00"]
+    # JS-computed on a real page load/submit; TestClient never runs JS.
+    fields["block_hours"] = ["4.17"]
+    fields["duty_hours"] = ["0"]
+    fields["tafb_hours"] = ["4.17"]
+
+    payload = _payload_from_fields(fields)
+    resp = client.post("/day/2026-06-12/reassign", data=payload, follow_redirects=False)
+    assert resp.status_code in (302, 303), resp.headers.get("location")
+
+    saved = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12")[-1]
+    assert saved.version_type is VersionType.DUTY_CORRECTION
+    assert saved.duty_on_local == "03:00"
+    assert saved.duty_off_local == "14:00"
+
+    invalidate_caches()
+    after_pr = _pipeline(2026, 6, uid)
+    after_trip = next(t for t in after_pr.updated_month.trips if "768" in t.trip_id)
+    after = after_trip.effective_pch
+
+    assert after != before, "posting via the rendered form had no pay effect"
+    assert after == Decimal("5.50")
+
+
+def test_reassignment_with_clocks_present_does_not_derive_duty_from_them(monkeypatch):
+    """IMPORTANT 1: duty-clock derivation must be confined to
+    DUTY_CORRECTION. A REASSIGNMENT DOES compete in the max() fold, so if
+    clocks (which the form always prefills, regardless of which
+    version_type radio is checked) silently overrode duty_hours here too,
+    amending to a longer trip would undercredit (duty computed from the
+    OLD short window) and amending to a shorter trip would overcredit (duty
+    still computed from the OLD long window, inflating duty rig).
+
+    Posts REASSIGNMENT/DETAILED with duty_on_local/duty_off_local present
+    but describing a MUCH longer window (03:00-23:00, 20h) than the posted
+    duty_hours (4.00) — asserts the clocks are ignored: duty_hours stored
+    is the posted 4.00, not the clock-derived 20.00, and the clocks
+    themselves are not persisted."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "reassignclocks@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "REASSIGNMENT",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "4.00",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "03:00",
+        "duty_off_local": "23:00",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+    v = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12")[-1]
+    assert v.version_type is VersionType.REASSIGNMENT
+    assert v.duty_on_local is None
+    assert v.duty_off_local is None
+    assert abs(v.duty_hours - Decimal("4.00")) < Decimal("0.001")
+    # duty/2 (4.00/2=2.00) must NOT have won pch_value over the posted
+    # block/tafb — confirms recompute_pch_from_times ran on the POSTED
+    # duty_hours (4.00), not a clock-derived 20.00 (which would give 10.00).
+    assert v.pch_value == Decimal("4.17")
+
+
+def test_duty_clocks_are_normalized_to_zero_padded_hhmm(monkeypatch):
+    """Cheap fix: _parse_clock/duty_hours_between accept loose input
+    ("4:41", "004:41") — the STORED clock must be canonical HH:MM so every
+    reader (display, _build_duty_overrides) sees the same shape, not
+    whatever the pilot happened to type."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "clocknorm@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "0",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "4:41",
+        "duty_off_local": "018:15",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+    v = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12")[-1]
+    assert v.duty_on_local == "04:41"
+    assert v.duty_off_local == "18:15"
+
+
+def test_duty_correction_in_simple_mode_is_rejected(monkeypatch):
+    """Fix round 2, NEW-2: SIMPLE mode has no duty field at all — a
+    DUTY_CORRECTION saved that way would change nothing (excluded from the
+    max() fold, and duty_overrides needs a duty_hours/clocks it never got).
+    Must be rejected, not silently saved as a no-op row."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "simplenoop@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "SIMPLE",
+        "pch_value": "10.00",
+    }, follow_redirects=False)
+
+    assert r.status_code in (302, 303)
+    assert "reassign_error=" in r.headers["location"]
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12") == []
+
+
+def test_duty_correction_in_detailed_mode_with_no_clocks_is_rejected(monkeypatch):
+    """Fix round 2, NEW-2: Detailed mode with both clocks left blank is the
+    same no-op reached a different way. Must be rejected too."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "detailednoop@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "9.99",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "",
+        "duty_off_local": "",
+    }, follow_redirects=False)
+
+    assert r.status_code in (302, 303)
+    assert "reassign_error=" in r.headers["location"]
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12") == []
+
+
+# ── C2: server-side sanity ceiling on clock-derived duty ────────────────
+
+
+def test_duty_correction_transposed_clocks_are_rejected(monkeypatch):
+    """C2: duty_hours_between maps off <= on to +24h (a duty that wraps
+    past midnight), so a plain clock transposition — the pilot means a
+    SHORT day but types on/off backwards (06:00 / 05:00) — silently
+    derives a ~24h duty (here 23.00h -> duty rig 11.50 PCH) instead of
+    erroring. The pre-existing >16h client warning does not fire in this
+    clocks-only branch. Must be rejected server-side, before store.save."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "transposed@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "0",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "06:00",
+        "duty_off_local": "05:00",
+    }, follow_redirects=False)
+
+    assert r.status_code in (302, 303)
+    assert "reassign_error=" in r.headers["location"]
+    assert "23.00" in r.headers["location"] or "sanity" in r.headers["location"].lower()
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12") == []
+
+
+def test_duty_correction_long_but_legitimate_duty_just_under_ceiling_saves(monkeypatch):
+    """A real long duty day (15.9667h, just under the 16h ceiling) must
+    still save — the ceiling exists for transposed clocks, not for every
+    long duty."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "longlegit@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "0",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "04:00",
+        "duty_off_local": "19:58",
+    }, follow_redirects=False)
+
+    assert r.status_code in (302, 303)
+    assert "reassign_error" not in r.headers["location"]
+
+    v = UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-12")[-1]
+    assert v.duty_on_local == "04:00"
+    assert v.duty_off_local == "19:58"
+    assert abs(v.duty_hours - Decimal("15.9667")) < Decimal("0.001")
+
+
+# ── C3: ?correct=<seq> against a DUTY_CORRECTION is a pay path ─────────
+
+
+def test_correcting_a_duty_correction_via_correct_param_is_rejected(monkeypatch):
+    """C3: main.py validated only that the ?correct target isn't itself a
+    CORRECTION. Pointing it at a DUTY_CORRECTION would supersede it
+    (removing the override from duty_overrides) and file an ordinary
+    CORRECTION that DOES compete in the max() fold, with the clocks
+    dropped — the exact bug DUTY_CORRECTION exists to avoid. URL-only
+    (day.html's "Correct this" affordance renders for REASSIGNMENT rows
+    only) but must be rejected server-side too."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "correctcorrection@x.test")
+    store = UserAssignmentVersionStore(user_id=uid)
+    v1 = store.save(
+        date_iso="2026-06-12", version_type=VersionType.DUTY_CORRECTION,
+        assignment_id="768", entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("10.00"), duty_hours=Decimal("20.00"),
+        duty_on_local="03:00", duty_off_local="23:00",
+    )
+
+    r = client.post(
+        "/day/2026-06-12/reassign",
+        data={"version_type": "CORRECTION", "correction_of": str(v1.seq),
+              "entry_mode": "SIMPLE", "assignment_id": "768",
+              "pch_value": "15.00"},
+        follow_redirects=False,
+    )
+    assert "reassign_error=" in r.headers["location"]
+    assert "correct" in r.headers["location"].lower()
+
+    # Nothing new was written, and the original correction survives intact.
+    versions = store.list_for_date("2026-06-12")
+    assert len(versions) == 1
+    assert versions[0].seq == v1.seq
+    assert versions[0].version_type is VersionType.DUTY_CORRECTION
+    assert versions[0].duty_on_local == "03:00"
+
+
+# ── I4: a DUTY_CORRECTION with no Trip and no Day is a dead end ────────
+
+
+def test_duty_correction_on_a_blank_off_day_is_rejected(monkeypatch):
+    """I4: a DUTY_CORRECTION saved on a date with neither a Trip nor a Day
+    record has nothing for apply_user_versions to attach duty_overrides
+    to — it can't synthesize a phantom paid day the way a REASSIGNMENT
+    pickup can (see the DUTY_CORRECTION carve-out in apply_user_versions.
+    py's sub-case (b)), so the row would be saved with no history row to
+    show it and no way to delete it. Rejected server-side instead.
+    2026-06-03 is a genuinely blank OFF day for this fixture (no trip, no
+    Day, kind == "off")."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "blankoff@x.test")
+
+    from nac_pay.app.services import load_day
+    assert load_day(2026, 6, 3, user_id=uid).kind == "off"
+
+    r = client.post("/day/2026-06-03/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "",
+        "entry_mode": "DETAILED",
+        "block_hours": "0",
+        "duty_hours": "0",
+        "tafb_hours": "0",
+        "workdays": "1",
+        "duty_on_local": "08:00",
+        "duty_off_local": "18:00",
+    }, follow_redirects=False)
+
+    assert r.status_code in (302, 303)
+    assert "reassign_error=" in r.headers["location"]
+    assert UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-03") == []
+
+    # A REASSIGNMENT (an off-day pickup) on the SAME blank day must still
+    # be allowed — this rejection is DUTY_CORRECTION-specific, not a
+    # blanket "no version types on OFF days" gate.
+    r2 = client.post("/day/2026-06-03/reassign", data={
+        "version_type": "REASSIGNMENT", "entry_mode": "SIMPLE",
+        "assignment_id": "PICKUP", "pch_value": "5.00",
+        "reason_code": "REASSIGNMENT", "premium_category": "NONE",
+    }, follow_redirects=False)
+    assert r2.status_code in (302, 303)
+    assert "reassign_error" not in r2.headers["location"]
+    assert len(UserAssignmentVersionStore(user_id=uid).list_for_date("2026-06-03")) == 1
+
+
+# ── Minor: the post-save banner distinguishes a duty correction ────────
+
+
+def test_duty_correction_save_redirects_with_its_own_saved_marker(monkeypatch):
+    """Minor: day.html's post-save banner said "Reassignment recorded."
+    even for a duty correction. The redirect now encodes which kind was
+    saved so the banner can say the right thing."""
+    client, uid = _bootstrap_user_with_june(monkeypatch, "banner@x.test")
+
+    r = client.post("/day/2026-06-12/reassign", data={
+        "version_type": "DUTY_CORRECTION",
+        "assignment_id": "768",
+        "entry_mode": "DETAILED",
+        "block_hours": "4.17",
+        "duty_hours": "0",
+        "tafb_hours": "4.17",
+        "workdays": "1",
+        "duty_on_local": "03:00",
+        "duty_off_local": "09:00",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 303)
+    assert r.headers["location"] == "/day/2026-06-12?saved=duty_correction"
+
+    page = client.get("/day/2026-06-12?saved=duty_correction")
+    assert "Duty correction recorded." in page.text
+    assert "Reassignment recorded." not in page.text

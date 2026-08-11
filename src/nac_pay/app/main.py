@@ -392,6 +392,12 @@ def day_save(
 
 # ── Phase G: reassignment / correction entry ───────────────────────
 
+# Server-side sanity ceiling for a clock-derived DUTY_CORRECTION duty span.
+# Matches the pre-existing client-side warning threshold (day.html's legs-
+# derived duty preview: "if (duty > 16) warn(...)") — see the comment at the
+# rejection call site for why this branch needs its own server-side gate.
+_DUTY_CORRECTION_CEILING_HOURS = Decimal("16")
+
 
 @app.post("/day/{date_iso}/reassign")
 def day_reassign(
@@ -412,6 +418,13 @@ def day_reassign(
     tafb_hours: str = Form(""),
     deadhead_pch: str = Form("0"),
     workdays: str = Form("1"),
+    # Duty correction clocks (DUTY_CORRECTION, DETAILED mode). Both-or-
+    # neither: a half-filled pair is rejected rather than guessed. When
+    # present they are the truth — duty_hours is DERIVED from them
+    # server-side (never trusted from the client), so the stored duration
+    # can never disagree with the displayed/credited window.
+    duty_on_local: str = Form(""),
+    duty_off_local: str = Form(""),
     # Detailed-mode legs (parallel lists; the JS computes block/duty/TAFB from
     # them client-side — here we persist them for the merged "Legs" display).
     leg_flight: list[str] = Form([]),
@@ -473,6 +486,29 @@ def day_reassign(
         if day_kind != "reserve":
             return _bail("Reserve callout can only be recorded on a reserve (RSV) day.")
 
+    # A DUTY_CORRECTION on a date with neither a Trip nor a Day record has
+    # nothing for apply_user_versions to attach duty_overrides to — it can't
+    # synthesize a phantom paid day the way it does for a REASSIGNMENT pickup
+    # (see the DUTY_CORRECTION carve-out in apply_user_versions.py's
+    # sub-case (b)), so the row would be saved with no reconciled trip to
+    # affect, no Day for _build_day_detail to attach history to (versions
+    # stays () on a blank day), and therefore no way to see or delete it
+    # from the UI. Reject before it's ever written; kind == "off" is exactly
+    # "no Trip and no Day" (see the day/trip lookup above).
+    if vt is VersionType.DUTY_CORRECTION:
+        try:
+            day_kind = load_day(
+                target_date.year, target_date.month, target_date.day, user_id=uid,
+            ).kind
+        except ValueError:
+            day_kind = None
+        if day_kind == "off":
+            return _bail(
+                "No trip or scheduled day here to correct — a duty "
+                "correction needs an existing trip or reserve/other day "
+                "on this date."
+            )
+
     store = UserAssignmentVersionStore(user_id=uid)
 
     correction_of_int: int | None = None
@@ -492,6 +528,34 @@ def day_reassign(
             return _bail(f"No version seq={correction_of_int} on {date_iso}.")
         if target.version_type is VersionType.CORRECTION:
             return _bail("Can't correct a correction — submit a fresh one against the original.")
+        if target.version_type is VersionType.DUTY_CORRECTION:
+            # A DUTY_CORRECTION is an INPUT to the duty_overrides recompute,
+            # never a §3.E.1.b max() candidate (see apply_user_versions.
+            # _fold_candidates). Superseding it here would file an ordinary
+            # CORRECTION that DOES compete in the fold, dropping the pilot's
+            # duty clocks and re-admitting the row to max() — the exact
+            # bug this version_type exists to avoid. No template link
+            # renders this today (day.html's "Correct this" affordance is
+            # REASSIGNMENT-only), so this closes a URL-only path.
+            return _bail(
+                "Can't correct a duty correction — submit a fresh duty "
+                "correction instead; the most recent one drives the "
+                "duty-window recompute."
+            )
+
+    # A DUTY_CORRECTION with no usable duty window is a silent no-op, not a
+    # harmless save: it never competes in the §3.E.1.b max() (see
+    # _fold_candidates in apply_user_versions.py) and its only pay effect
+    # is duty_overrides -> apply_actuals substituting the corrected duty —
+    # which needs SOMETHING to substitute. SIMPLE mode has no duty field at
+    # all. Reject here, before entry_mode branches, so the row is never
+    # even attempted — the pilot needs a clear "do this instead" message,
+    # not a row that quietly changes nothing.
+    if vt is VersionType.DUTY_CORRECTION and em is VersionEntryMode.SIMPLE:
+        return _bail(
+            "A duty correction needs Detailed mode with a duty on and duty "
+            "off time — Simple mode has no duty window to correct."
+        )
 
     if em is VersionEntryMode.SIMPLE:
         try:
@@ -500,6 +564,9 @@ def day_reassign(
             return _bail("Enter a valid PCH value.")
         block_dec = duty_dec = tafb_dec = dh_dec = None
         workdays_int = None
+        # Only bound in the DETAILED branch below; initialise here too so
+        # the store.save call further down is valid in both modes.
+        on_clock = off_clock = ""
     else:
         try:
             block_dec = Decimal(block_hours)
@@ -511,6 +578,96 @@ def day_reassign(
             return _bail("Detailed mode needs valid numeric block/duty/TAFB/workdays.")
         if min(block_dec, duty_dec, tafb_dec) < 0 or workdays_int < 1:
             return _bail("Detailed-mode inputs must be non-negative; workdays ≥ 1.")
+
+        # Duty clocks are the truth ONLY for a DUTY_CORRECTION — that's the
+        # one version_type whose entire purpose is fixing the duty window,
+        # and the one _build_duty_overrides / apply_actuals actually reads
+        # duty_on_local/duty_off_local from (see _fold_candidates in
+        # apply_user_versions.py: DUTY_CORRECTION never competes in the
+        # §3.E.1.b max(), so it's the only type where a shortened window
+        # is meant to change what's credited). For every OTHER version_type
+        # (REASSIGNMENT, CORRECTION, RESERVE_CALLOUT) the clock fields are
+        # form artifacts only — the amend form's duty-on/duty-off inputs are
+        # always populated (prefilled from the feed or the packet's
+        # scheduled show time) regardless of which version_type radio is
+        # selected, and those rows DO compete in the max(). Deriving duty
+        # from them unconditionally would silently redefine duty for a
+        # plain reassignment: amending to a longer trip would keep computing
+        # duty from the OLD window's clocks (undercrediting a real duty
+        # extension), and amending to a shorter trip would keep the old
+        # LONG window (an inflated duty rig that overpays). Duty for those
+        # types keeps tracking the legs exactly as it did before this task
+        # — on_clock/off_clock stay empty and unstored, and duty_dec is
+        # whatever the DETAILED form posted (computed by the legs-based JS
+        # preview, or typed directly).
+        on_clock = off_clock = ""
+        if vt is VersionType.DUTY_CORRECTION:
+            # Reject a half-filled pair rather than guessing which clock
+            # the pilot meant. This runs BEFORE recompute_pch_from_times so
+            # the (audit-only — see _fold_candidates) pch_value reflects
+            # the corrected duty, never the stale posted one.
+            on_clock = duty_on_local.strip()
+            off_clock = duty_off_local.strip()
+            if on_clock and off_clock:
+                from nac_pay.timeutil import duty_hours_between
+                derived = duty_hours_between(on_clock, off_clock)
+                if derived is None:
+                    return _bail("Enter duty on and duty off as HH:MM.")
+                # duty_hours_between maps off <= on to "+24h" (a duty that
+                # wraps past midnight), so a plain clock transposition
+                # (pilot means a SHORT day but types on/off backwards)
+                # silently derives a ~24h duty instead of erroring. Reject
+                # server-side past a sane ceiling before it ever reaches
+                # store.save — the client-side JS already warns above 16h
+                # for the legs-derived duty preview (day.html: "if (duty >
+                # 16) warn(...)"), and applies the same wrap/warn to the
+                # clocks-only DUTY_CORRECTION path (day.html:1215/1219).
+                # Mirror that 16h number here anyway: a warning is not a
+                # block (the pilot can submit past it), and a hand-built
+                # POST skips the browser's JS entirely, so this gate is
+                # the only thing that actually stops a transposed-clock
+                # ~24h duty from reaching the store.
+                if derived > _DUTY_CORRECTION_CEILING_HOURS:
+                    return _bail(
+                        f"Duty on/off yields {derived:.2f}h, over the "
+                        f"{_DUTY_CORRECTION_CEILING_HOURS:.0f}h sanity "
+                        "ceiling — check for transposed clocks (duty on "
+                        "and duty off swapped)."
+                    )
+                duty_dec = derived
+                # Normalize to zero-padded HH:MM before it reaches the
+                # String(5) column — duty_hours_between/_parse_clock accept
+                # loose input ("4:41", "004:41"); the stored clock should
+                # be canonical so every reader (display, _build_duty_
+                # overrides) sees the same shape.
+                on_h, on_m = (int(p) for p in on_clock.split(":"))
+                off_h, off_m = (int(p) for p in off_clock.split(":"))
+                on_clock = f"{on_h:02d}:{on_m:02d}"
+                off_clock = f"{off_h:02d}:{off_m:02d}"
+            elif on_clock or off_clock:
+                return _bail("Enter both duty on and duty off, or neither.")
+            else:
+                # Detailed mode with BOTH clocks blank. NOT a no-op the way
+                # the Simple-mode rejection above is — _build_duty_overrides
+                # falls back to the stored duty_hours when clocks are absent
+                # (services.py: "if hours is None: hours = v.duty_hours"),
+                # so an hours-only DUTY_CORRECTION genuinely DOES drive the
+                # §3.E recompute (this is the pre-Task-7 tier-1b shape other
+                # write paths, e.g. direct store.save in tests, still use).
+                # Rejected here anyway because THIS route has no way to
+                # reach it validly any more: duty_hours is JS-managed
+                # read-only under DUTY_CORRECTION (see day.html's
+                # syncDutyCorrectionMode), only ever set FROM the clocks —
+                # so "duty_hours has a real value AND both clocks are
+                # blank" cannot happen through the shipped form, and a
+                # hand-built POST hitting it would be submitting a number
+                # the pilot never actually entered as a duty duration.
+                return _bail(
+                    "Enter a duty on and duty off time to file a duty "
+                    "correction — use Reassignment / amend instead if "
+                    "you're not correcting the duty window."
+                )
+
         from nac_pay.engine import recompute_pch_from_times
         pch_dec = recompute_pch_from_times(
             block_hours=block_dec, duty_hours=duty_dec,
@@ -531,6 +688,8 @@ def day_reassign(
         block_hours=block_dec, duty_hours=duty_dec,
         tafb_hours=tafb_dec, deadhead_pch=dh_dec,
         workdays=workdays_int,
+        duty_on_local=on_clock or None,
+        duty_off_local=off_clock or None,
         reason_code=reason_code.strip() or "FLOWN",
         premium_category=premium_category.strip() or "NONE",
         notes=notes.strip()[:500],
@@ -553,8 +712,9 @@ def day_reassign(
             store.save_legs(date_iso, saved.seq, legs)
 
     invalidate_caches()
+    saved_kind = "duty_correction" if vt is VersionType.DUTY_CORRECTION else "reassign"
     return RedirectResponse(
-        f"/day/{date_iso}?saved=reassign", status_code=303,
+        f"/day/{date_iso}?saved={saved_kind}", status_code=303,
     )
 
 
@@ -934,6 +1094,7 @@ def day_detail(request: Request, date_iso: str) -> HTMLResponse:
             user_id=_user_id(request),
             saved=(saved_q == "1"),
             saved_reassign=(saved_q == "reassign"),
+            saved_duty_correction=(saved_q == "duty_correction"),
             saved_drop=(saved_q == "drop"),
             saved_version_deleted=(saved_q == "version_deleted"),
             reassign_error=request.query_params.get("reassign_error", ""),

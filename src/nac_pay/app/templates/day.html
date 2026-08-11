@@ -396,7 +396,7 @@
   {% endif %}
 
   {# ── Times: scheduled vs actual ──────────────────────────────── #}
-  {% if data.sch_block_hours is not none or data.actual_block_hours is not none or data.reserve_window_start %}
+  {% if data.sch_block_hours is not none or data.actual_block_hours is not none or data.reserve_window_start or data.duty_correction_no_effect %}
   <div class="card">
     <h2 class="card-title">Times</h2>
     {% if data.sch_block_hours is not none or data.actual_block_hours is not none %}
@@ -459,17 +459,40 @@
     {% if data.duty_on %}
     <table class="times-table" style="margin-top: 10px;">
       <tbody>
-        <tr><th>Duty on (actual)</th><td class="num">{{ data.duty_on }}</td></tr>
-        <tr><th>Duty off (actual)</th><td class="num">{{ data.duty_off }}</td></tr>
+        <tr>
+          <th>Duty on{% if data.duty_window_is_correction %} (pilot-corrected){% else %} (actual){% endif %}</th>
+          <td class="num">{{ data.duty_on }}</td>
+        </tr>
+        <tr>
+          <th>Duty off{% if data.duty_window_is_correction %} (pilot-corrected){% else %} (actual){% endif %}</th>
+          <td class="num">{{ data.duty_off }}</td>
+        </tr>
         <tr><th>Total duty</th><td class="num">{{ "%.2f"|format(data.duty_hours) }} h</td></tr>
         <tr><th>Duty rig (duty ÷ 2)</th><td class="num">{{ "%.2f"|format(data.duty_rig_pch) }} PCH</td></tr>
       </tbody>
     </table>
+    {% if data.duty_window_is_correction %}
+    <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
+      This window is the pilot's own filed duty correction, not the feed —
+      it's what the trip is actually credited on. See Assignment history
+      below for the correction's audit trail.
+    </p>
+    {% else %}
     <p class="subtle" style="font-size: 11.5px; margin-top: 6px;">
       Duty on = scheduled report (1:00 before the scheduled departure), so a
       late push lengthens the duty day rather than moving its start; duty off
       = last arrival + 0:15. Falls back to actual departure − 1:00 when the
       day has no matched packet trip. Times in Anchorage local.
+    </p>
+    {% endif %}
+    {% endif %}
+
+    {% if data.duty_correction_no_effect %}
+    <p class="banner banner--warn" style="margin-top: 10px; font-size: 12.5px;">
+      A duty correction is filed here, but this date has no matching flight
+      to apply it to (the feed legs have aged out, or there's nothing
+      scheduled) — it isn't changing what's credited. To change the
+      credited value on this date, use Reassign / amend below instead.
     </p>
     {% endif %}
 
@@ -576,8 +599,11 @@
   <div class="card">
     <h2 class="card-title">Assignment history (§3.E.1.b)</h2>
     <p class="subtle" style="margin-bottom: 12px;">
-      Effective PCH is the max across non-superseded versions.
-      Corrections preserve the audit trail without inflating pay.
+      Effective PCH is the max across non-superseded versions that compete
+      for pay. A Duty correction row does not compete — it's an input to
+      the duty-rig recompute, shown here as its corrected duty window, not
+      a PCH figure. Corrections preserve the audit trail without inflating
+      pay.
     </p>
     <ul class="version-list">
       {% for v in data.versions %}
@@ -585,7 +611,13 @@
                  {% if v.is_effective %}version--effective{% endif %}
                  {% if v.is_superseded %}version--superseded{% endif %}">
         <span class="version-seq">v{{ v.seq }}</span>
+        {% if v.user_version_type == 'DUTY_CORRECTION' %}
+        <span class="version-pch">
+          {% if v.duty_on_local and v.duty_off_local %}{{ v.duty_on_local }}–{{ v.duty_off_local }}{% else %}—{% endif %}
+        </span>
+        {% else %}
         <span class="version-pch">{{ "%.2f"|format(v.pch_value) }} PCH</span>
+        {% endif %}
         <span class="version-label">
           {{ v.label }}
           <span class="subtle version-source">· {{ v.source }}</span>
@@ -595,6 +627,7 @@
         </span>
         <span class="version-flags">
           {% if v.is_effective %}<span class="badge badge--ok">effective</span>{% endif %}
+          {% if v.is_live_duty_correction %}<span class="badge badge--ok" title="This is the duty correction currently driving the duty-rig recompute.">live</span>{% endif %}
           {% if v.is_superseded %}
             <span class="badge badge--muted">superseded
               {% if v.superseded_by_user_seq is not none %}by v{{ v.superseded_by_user_seq }}{% endif %}
@@ -685,6 +718,12 @@
       <p>It now appears in the assignment history above.</p>
     </div>
     {% endif %}
+    {% if data.saved_duty_correction %}
+    <div class="banner banner--ok" style="margin-bottom: 12px;">
+      <strong>Duty correction recorded.</strong>
+      <p>It now appears in the assignment history above.</p>
+    </div>
+    {% endif %}
     {% if data.reassign_error %}
     <div class="banner banner--warn" style="margin-bottom: 12px;">
       <strong>{{ data.reassign_error }}</strong>
@@ -707,15 +746,39 @@
       </summary>
 
       <form action="/day/{{ data.date_iso }}/reassign" method="post" class="reassign-form">
-        <input type="hidden" name="version_type"
-               value="{% if is_correction %}CORRECTION{% else %}REASSIGNMENT{% endif %}">
         {% if is_correction %}
+        <input type="hidden" name="version_type" value="CORRECTION">
         <input type="hidden" name="correction_of" value="{{ defaults.correction_of }}">
         <p class="subtle reassign-correction-note">
           This will be saved as a new row that supersedes
           {{ defaults.correcting_seq_label }}. The original entry stays in the
           history (struck through) for audit.
         </p>
+        {% else %}
+        {# Explicit choice — never inferred from which fields the pilot
+           touched. A DUTY_CORRECTION does not compete in the §3.E.1.b
+           max() (see apply_user_versions._fold_candidates); it only feeds
+           the duty-rig recompute via duty_overrides, so it can lower
+           credited pay, not just raise or floor it. #}
+        <fieldset class="reassign-type-group">
+          <legend class="form-label">What are you recording?</legend>
+          <label class="radio-inline">
+            <input type="radio" name="version_type" value="REASSIGNMENT"
+                   {% if defaults.version_type != 'DUTY_CORRECTION' %}checked{% endif %}>
+            Reassignment / amend — a different trip or PCH value
+          </label>
+          <label class="radio-inline">
+            <input type="radio" name="version_type" value="DUTY_CORRECTION"
+                   {% if defaults.version_type == 'DUTY_CORRECTION' %}checked{% endif %}>
+            Duty correction — fix duty on/off only
+          </label>
+          <span class="form-hint">
+            A duty correction doesn't claim a new assignment or PCH value —
+            it fixes the duty clocks (report / release) and lets the §3.E
+            duty-rig recompute follow. Use Reassignment for a different trip
+            or a PCH figure you're entering directly.
+          </span>
+        </fieldset>
         {% endif %}
 
         <fieldset class="reassign-mode-group">
@@ -811,20 +874,68 @@
             </table>
             <button type="button" id="reassign-add-leg" class="btn btn--secondary">+ Add leg</button>
             <p id="reassign-legs-warn" class="form-warn" style="display: none;"></p>
+            {# I2/NEW-1: the two prefills must come from ONE source, never
+               mixed — mixing (e.g. computed duty_on with scheduled
+               sched_duty_off) anchors the JS `front`/`back` preview to two
+               different windows, drifting duty_hours on a re-amend.
+               Precedence, highest first:
+                 1. the active DUTY_CORRECTION's own clocks
+                    (data.correction_duty_on/off) — the pilot's own live
+                    correction must round-trip on re-open, or an
+                    untouched field on save silently reverts the credited
+                    duty to the scheduled/computed window (NEW-1).
+                 2. else the packet's scheduled pair when BOTH halves exist
+                 3. else the computed/actual window pair when BOTH halves
+                    exist (e.g. a day reconstructed by the manual-legs
+                    branch, or no packet match at all)
+                 4. else leave both blank
+               Each tier requires BOTH halves before it wins — a half-
+               filled pair falls through rather than mixing tiers. #}
+            {% if data.correction_duty_on and data.correction_duty_off %}
+              {% set report_prefill = data.correction_duty_on %}
+              {% set duty_off_prefill = data.correction_duty_off %}
+            {% elif data.sched_duty_on and data.sched_duty_off %}
+              {% set report_prefill = data.sched_duty_on %}
+              {% set duty_off_prefill = data.sched_duty_off %}
+            {% elif data.duty_on and data.duty_off %}
+              {% set report_prefill = data.duty_on %}
+              {% set duty_off_prefill = data.duty_off %}
+            {% else %}
+              {% set report_prefill = '' %}
+              {% set duty_off_prefill = '' %}
+            {% endif %}
             <label class="reassign-report">
-              <span class="form-label">Report / check-in (local)</span>
-              <input type="time" id="reassign-report"
-                     value="{{ data.sched_duty_on or '' }}">
+              <span class="form-label">Duty on / report (local)</span>
+              <input type="time" id="reassign-report" name="duty_on_local"
+                     value="{{ report_prefill }}">
               <span class="form-hint">
-                Defaults to the scheduled check-in (1:00 before scheduled
-                departure). Duty starts here, not at actual block-out — edit it
-                if the company changed your show time.
+                When duty started — read for every type. Defaults to the
+                scheduled check-in (1:00 before scheduled departure); edit
+                it if the company moved the show time. Not actual
+                block-out: a late push lengthens the duty day via a later
+                arrival, it doesn't move this start. For a Duty correction
+                this is your own report clock, entered directly.
+              </span>
+            </label>
+            <label class="reassign-duty-off">
+              <span class="form-label">Duty off (local)</span>
+              <input type="time" id="reassign-duty-off" name="duty_off_local"
+                     value="{{ duty_off_prefill }}">
+              <span class="form-hint">
+                When duty ended. For Reassignment/Correction this field
+                isn't read — duty off tracks the legs above (last block-in
+                plus 0:15) exactly as it did before duty corrections
+                existed. For a Duty correction, edit this (and duty on
+                above) directly; duty hours and duty rig follow exactly
+                what you enter here.
               </span>
             </label>
             <p class="form-hint">
               Pre-filled from the iCal feed — edit any, add the missing legs;
               order doesn't matter (sorted by departure). Block = Σ(In−Out);
-              Duty = Report → (last In + 0:15); TAFB = Report → last In.
+              TAFB = Report → last In. For Reassignment/Correction, Duty =
+              Report → (last In + 0:15); for a Duty correction, Duty = your
+              duty on/off clocks above, exactly.
             </p>
           </div>
 
@@ -837,7 +948,13 @@
             <label>
               <span class="form-label">Duty hours</span>
               <input type="text" name="duty_hours" inputmode="decimal"
-                     value="{{ defaults.duty_hours }}" placeholder="10.25">
+                     value="{{ defaults.duty_hours }}" placeholder="10.25"
+                     aria-describedby="duty-hours-hint">
+              <span class="form-hint" id="duty-hours-hint">
+                Computed from the legs above (Reassignment/Correction) or
+                from duty on/off (Duty correction) — JS-managed;
+                read-only only while Duty correction is selected.
+              </span>
             </label>
             <label>
               <span class="form-label">TAFB hours</span>
@@ -895,8 +1012,8 @@
           {% if is_correction %}
           <a href="/day/{{ data.date_iso }}" class="btn btn--secondary">Cancel correction</a>
           {% endif %}
-          <button type="submit" class="btn btn--primary">
-            {% if is_restore %}Restore assignment{% elif is_correction %}Save correction{% else %}Save reassignment{% endif %}
+          <button type="submit" id="reassign-submit-btn" class="btn btn--primary">
+            {% if is_restore %}Restore assignment{% elif is_correction %}Save correction{% elif defaults.version_type == 'DUTY_CORRECTION' %}Save duty correction{% else %}Save reassignment{% endif %}
           </button>
         </div>
       </form>
@@ -988,6 +1105,20 @@
       if (!body || !addBtn) return;
       var REPORT_PAD = 60, TRIP_END_PAD = 15; // minutes (1:00 / 0:15)
 
+      // Fix round 2, NEW-1: the duty on/off clocks are the truth ONLY for a
+      // DUTY_CORRECTION, mirroring main.py's server-side gate exactly. For
+      // every other version_type (Reassignment, Correction) duty must track
+      // the legs the same way it did before this feature existed — those
+      // rows DO compete in the §3.E.1.b max(), so pinning them to a
+      // possibly-stale prefilled clock (now that duty-off always prefills,
+      // see the C2 fix) can silently undercredit a real duty extension.
+      function isDutyCorrection() {
+        var r = document.querySelector(
+          'input[name="version_type"][value="DUTY_CORRECTION"]'
+        );
+        return !!(r && r.checked);
+      }
+
       function toMin(v) {           // "HH:MM" -> minutes of day, or null
         if (!v) return null;
         var p = v.split(":");
@@ -1016,7 +1147,31 @@
           legs.push({ out: out, dur: dur });
         }
         warn("");
-        if (!legs.length) return;
+        if (!legs.length) {
+          // No legs to derive block/duty/TAFB from (an off-day pickup, or a
+          // day whose feed legs already aged out of BlueOne's rolling
+          // window) — the common case a duty-only correction exists for.
+          // Duty hours can still auto-fill from the two clocks alone; block
+          // and TAFB have no leg data to compute from and are left for the
+          // pilot to enter directly. Server-side validation is
+          // authoritative regardless — this is a convenience, not a gate.
+          // Only meaningful for a DUTY_CORRECTION (see isDutyCorrection) —
+          // with no legs and no clock-derived duty, there's nothing this
+          // preview can compute for any other version_type; leave
+          // duty_hours whatever it already is (typed directly, or blank).
+          if (isDutyCorrection()) {
+            var reportOnlyEl = document.getElementById("reassign-report");
+            var dutyOffOnlyEl = document.getElementById("reassign-duty-off");
+            var reportOnlyMin = reportOnlyEl ? toMin(reportOnlyEl.value) : null;
+            var dutyOffOnlyMin = dutyOffOnlyEl ? toMin(dutyOffOnlyEl.value) : null;
+            if (reportOnlyMin !== null && dutyOffOnlyMin !== null) {
+              var clockOnlyDuty = (dutyOffOnlyMin - reportOnlyMin) / 60;
+              if (clockOnlyDuty <= 0) { clockOnlyDuty += 24; }
+              setOut("duty_hours", clockOnlyDuty);
+            }
+          }
+          return;
+        }
         // Block is order-independent (sum of leg durations).
         var block = 0;
         legs.forEach(function (l) { block += l.dur; });
@@ -1043,14 +1198,33 @@
           lastIn = inAbs;
           prevIn = inAbs;
         }
-        // Duty STARTS at the report/check-in time (default = scheduled, 1:00
-        // before scheduled departure), NOT at actual block-out — the pilot
-        // reports on the schedule even if the flight pushes late. The report
-        // field overrides; fall back to first-out − 1:00 when it's blank.
+        // Duty STARTS at the report/check-in time — this predates the
+        // whole duty-time-override feature and applies to EVERY
+        // version_type: "The report field overrides; fall back to
+        // first-out − 1:00 when it's blank" is the shipped duty-rig entry
+        // flow (a company show-time move is a real, editable input for a
+        // plain Reassignment too, not just a DUTY_CORRECTION). Duty ENDS
+        // at the duty-off clock ONLY for a DUTY_CORRECTION
+        // (isDutyCorrection) — for every other version_type that field is
+        // ignored and duty-off falls back to last-in + 0:15, exactly as it
+        // did before this feature existed. Fix round 2, NEW-1: the
+        // duty-off field is now ALWAYS prefilled (see C2), so without
+        // gating IT SPECIFICALLY, `back` would pin to that stale clock for
+        // a Reassignment too and silently undercredit a real duty
+        // extension. Fix round 3: the ORIGINAL round-2 fix over-gated —
+        // it also silenced the report/front anchor, which was never the
+        // bug; that regressed the pre-existing "edit the report time to
+        // reflect a company show-time move" flow for every non-correction
+        // type. Only `dutyOffMin` is gated here; `reportMin` is read
+        // unconditionally.
         var reportEl = document.getElementById("reassign-report");
+        var dutyOffEl = document.getElementById("reassign-duty-off");
         var reportMin = reportEl ? toMin(reportEl.value) : null;
+        var dutyOffMin = (isDutyCorrection() && dutyOffEl) ? toMin(dutyOffEl.value) : null;
         var front = (reportMin !== null) ? reportMin : (firstOut - REPORT_PAD);
-        var duty = ((lastIn + TRIP_END_PAD) - front) / 60;
+        var back = (dutyOffMin !== null) ? dutyOffMin : (lastIn + TRIP_END_PAD);
+        var duty = (back - front) / 60;
+        if (duty <= 0) { duty += 24; }   // duty off after local midnight
         setOut("block_hours", block / 60);
         setOut("duty_hours", duty);
         setOut("tafb_hours", (lastIn - front) / 60);
@@ -1067,6 +1241,8 @@
       body.addEventListener("input", recompute);
       var reportEl = document.getElementById("reassign-report");
       if (reportEl) reportEl.addEventListener("input", recompute);
+      var dutyOffEl = document.getElementById("reassign-duty-off");
+      if (dutyOffEl) dutyOffEl.addEventListener("input", recompute);
       body.addEventListener("click", function (e) {
         if (!e.target.classList.contains("leg-remove")) return;
         var row = e.target.closest(".reassign-leg-row");
@@ -1077,7 +1253,59 @@
         }
         recompute();
       });
-      recompute();   // compute from any pre-filled (iCal) legs on load
+
+      // duty_hours is read-only ONLY while Duty correction is selected —
+      // the clocks are the source of truth there. For every other
+      // version_type it's a normal editable field (computed from the legs
+      // above as a starting point, same as before this feature existed).
+      // Re-synced on every version_type change, and recompute() re-run so
+      // the previewed duty switches source immediately rather than only on
+      // the next leg/clock edit.
+      function syncDutyCorrectionMode() {
+        var dutyHoursEl = document.querySelector('[name="duty_hours"]');
+        if (dutyHoursEl) dutyHoursEl.readOnly = isDutyCorrection();
+        // Minor: keep the submit label honest when the pilot toggles the
+        // radio client-side — it's server-rendered from defaults.version_type
+        // on load, but nothing updated it on change until now. Only touch it
+        // when the version_type RADIO group actually renders (fresh
+        // reassign/duty-correction choice) — the correction/restore flow
+        // posts version_type as a hidden field instead and must keep its
+        // own "Save correction" / "Restore assignment" label untouched.
+        var versionTypeRadio = document.querySelector(
+          'input[type="radio"][name="version_type"]'
+        );
+        var submitBtn = document.getElementById("reassign-submit-btn");
+        if (versionTypeRadio && submitBtn) {
+          submitBtn.textContent = isDutyCorrection()
+            ? "Save duty correction" : "Save reassignment";
+        }
+        recompute();
+      }
+      document.querySelectorAll('input[name="version_type"]').forEach(function (r) {
+        r.addEventListener("change", syncDutyCorrectionMode);
+      });
+      syncDutyCorrectionMode();   // sets initial readonly state + recomputes
+                                  // from any pre-filled (iCal) legs on load
+    })();
+
+    // A duty correction is meaningless in Simple mode (there's no PCH field
+    // to type a clock into) — selecting it switches to Detailed as a
+    // convenience. This does NOT infer the version_type from anything; the
+    // pilot already made that choice explicitly by clicking the radio.
+    (function () {
+      var dutyCorrectionRadio = document.querySelector(
+        'input[name="version_type"][value="DUTY_CORRECTION"]'
+      );
+      var detailedRadio = document.querySelector(
+        'input[name="entry_mode"][value="DETAILED"]'
+      );
+      if (!dutyCorrectionRadio || !detailedRadio) return;
+      dutyCorrectionRadio.addEventListener("change", function () {
+        if (dutyCorrectionRadio.checked && !detailedRadio.checked) {
+          detailedRadio.checked = true;
+          detailedRadio.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      });
     })();
 
     // "Amend / add legs" entry point (?amend=1): open the form, select

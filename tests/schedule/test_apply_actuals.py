@@ -1413,3 +1413,241 @@ def test_lea_non_sick_labels_do_not_seed():
     )
     assert updated.trips[0].reason_code is ReasonCode.FLOWN
     assert events == ()
+
+
+# ── Duty override (Task 4): replaces feed-derived duty in §3.E recompute ─
+
+
+def test_duty_override_replaces_the_feed_derived_duty():
+    from nac_pay.schedule.apply_actuals import _actual_duty_hours
+
+    packet = _trip_pairing("720/721/1780/1781", "6.08")
+    packet = replace(packet, sched_duty_on="04:41")
+    start = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc)
+    rt = ReconciledTrip(
+        flight_sequence="720/721/1780/1781", legs=(_leg("720", start, end),),
+        packet_trip=packet, match_status=MatchStatus.MATCHED,
+        first_dt_utc=start, last_dt_utc=end, actual_block_hours=D("7.13"),
+    )
+
+    # No override → the packet-anchored window (PR #76): 04:41 → 18:15.
+    assert abs(_actual_duty_hours(rt) - D("13.5667")) < D("0.001")
+    # Override → exactly what the pilot said, in this case SHORTER.
+    got = _actual_duty_hours(rt, {"2026-08-08": D("11.00")})
+    assert got == D("11.00")
+
+
+def test_duty_override_can_lower_a_day_where_duty_rig_was_winning():
+    """The silent no-op this feature exists to fix: with max()-only
+    semantics a shorter duty was ignored. Published 4.17, feed duty rig
+    5.51 wins; pilot corrects duty down to 10.02h → rig 5.01 → credited."""
+    baseline_trip = Trip(trip_id="766", published_pch=D("4.17"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="9.77")
+
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+    no_override, _, _ = apply_actuals_to_month(baseline, reconciliation)
+    lowered, _, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("10.02")},
+    )
+
+    assert no_override.trips[0].effective_pch > lowered.trips[0].effective_pch
+    assert lowered.trips[0].effective_pch == D("5.01")
+
+
+def test_duty_override_never_takes_a_day_below_published():
+    """§3.E is structural — max(published, recomputed) still holds.
+
+    NOTE: this passes via _extension_recompute's tolerance short-circuit
+    (comp.duty_rig doesn't clear published_pch + duty_tolerance_hours, so
+    _apply_duty_extension returns the baseline trip unchanged) — not by
+    exercising the max() fold the docstring's headline implies. It does not
+    independently prove the max()-floor behavior."""
+    baseline_trip = Trip(trip_id="766", published_pch=D("4.17"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="9.77")
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    updated, _, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("0.50")},
+    )
+
+    assert updated.trips[0].effective_pch == D("4.17")
+
+
+def test_duty_override_does_not_discard_block_credit():
+    """The Aug 8 shape: block 7.13 wins. Shortening duty must NOT cost the
+    flight-op credit the pilot never disputed.
+
+    NOTE: this test has no discriminating power against "the override is
+    silently ignored" — block (7.13) beats duty-rig regardless of whether
+    duty_overrides is threaded at all, so it passes identically either way.
+    It does not prove the override was actually applied; see the
+    duty-rig-driven tests above for that."""
+    baseline_trip = Trip(trip_id="720", published_pch=D("6.08"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _matched_trip("720", actual_block="7.13", packet_pch="6.08",
+                       packet_block="6.08", packet_duty="10.73")
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    updated, _, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("8.00")},
+    )
+
+    assert updated.trips[0].effective_pch == D("7.13")
+
+
+def test_duty_override_applies_to_reserve_callout():
+    """The silent no-op also hits callouts: this is the ORIGINAL duty-rig
+    worked example (report 04:41, ~11h duty, rig 5.51) — a callout day is
+    one of the MOST likely places a pilot corrects duty, since duty rig
+    genuinely wins there. No override: feed span 12h → padded 13.25h → rig
+    6.625 wins over published 4.50. Pilot corrects duty down to 10.02h →
+    rig 5.01 → credited instead."""
+    callout_date = date(2026, 6, 12)
+    rsv = Day(date=callout_date, duty_type=DutyType.RSV, pch_value=D("3.82"),
+              reason_code=ReasonCode.FLOWN, workdays=1, label="RSV")
+    baseline = _empty_month(days=(rsv,))
+    rt = _rt_with_span("766", packet_pch="4.50", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="12.0", on_date=callout_date)
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    no_override, _, _ = apply_actuals_to_month(baseline, reconciliation)
+    lowered, _, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("10.02")},
+    )
+
+    assert no_override.days[0].callout_trip_pch == D("6.625")
+    assert lowered.days[0].callout_trip_pch == D("5.01")
+
+
+def test_duty_override_is_keyed_by_anchorage_local_date_not_utc():
+    """Override dict must be keyed by ANC-LOCAL date, not the UTC date — an
+    evening ANC departure is already the next day in UTC (Anchorage is
+    UTC-8 in summer). This exact class of bug has bitten the codebase three
+    times (PRs #42, #52; see timeutil.py header) — a silent no-op on a
+    correction is precisely what this feature exists to remove."""
+    from nac_pay.timeutil import local_date
+    from nac_pay.schedule.apply_actuals import _actual_duty_hours
+
+    start = datetime(2026, 8, 9, 4, 0, tzinfo=timezone.utc)   # 20:00 AKDT Aug 8
+    end = start + _hours_to_timedelta(D("2.00"))
+    packet = _trip_pairing("720/721", "6.08")
+    rt = ReconciledTrip(
+        flight_sequence="720/721", legs=(_leg("720", start, end),),
+        packet_trip=packet, match_status=MatchStatus.MATCHED,
+        first_dt_utc=start, last_dt_utc=end, actual_block_hours=D("2.00"),
+    )
+
+    # Sanity: the ANC-local date and the UTC date genuinely differ for this
+    # timestamp — the test is meaningless otherwise.
+    assert start.date().isoformat() == "2026-08-09"
+    assert local_date(start).isoformat() == "2026-08-08"
+
+    # Keyed by ANC-local date ("2026-08-08"), NOT the UTC date ("2026-08-09").
+    got = _actual_duty_hours(rt, {"2026-08-08": D("9.00")})
+    assert got == D("9.00")
+
+
+# ── I3: the audit trail must not credit the pilot's own duty to the feed ──
+
+
+def test_duty_extension_note_flags_pilot_corrected_duty():
+    """I3: the DUTY_EXTENSION AssignmentVersion label
+    ("Duty extension from iCal: recomputed ...") and the matching
+    AppliedEvent detail ("Actual block ... -> recomputed PCH ...") both
+    said the recompute came "from iCal"/"from actuals" even when
+    credited_duty was substituted outright by a DUTY_CORRECTION
+    (_actual_duty_hours). The amount was right; the provenance the pilot
+    would show the company in a pay dispute was not. Both must flag the
+    override; neither may without one."""
+    baseline_trip = Trip(trip_id="766", published_pch=D("4.17"),
+                         reason_code=ReasonCode.FLOWN, workdays=1)
+    baseline = _empty_month(trips=(baseline_trip,))
+    rt = _rt_with_span("766", packet_pch="4.17", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="9.77")
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    no_override, no_events, _ = apply_actuals_to_month(baseline, reconciliation)
+    corrected, events, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("10.02")},
+    )
+
+    # Sanity: the override genuinely drove this recompute (same fixture as
+    # test_duty_override_can_lower_a_day_where_duty_rig_was_winning).
+    assert corrected.trips[0].effective_pch == D("5.01")
+
+    corrected_event = next(
+        e for e in events if e.kind is AppliedEventKind.DUTY_EXTENSION
+    )
+    assert "(pilot-corrected duty)" in corrected_event.detail
+
+    corrected_version = corrected.trips[0].versions[-1]
+    assert "(pilot-corrected duty)" in corrected_version.label
+
+    # Without the override, the feed-only recompute must not claim a
+    # pilot correction that never happened.
+    plain_event = next(
+        e for e in no_events if e.kind is AppliedEventKind.DUTY_EXTENSION
+    )
+    assert "(pilot-corrected duty)" not in plain_event.detail
+    plain_version = no_override.trips[0].versions[-1]
+    assert "(pilot-corrected duty)" not in plain_version.label
+
+
+def test_reserve_callout_note_flags_pilot_corrected_duty():
+    """I3, the third site (apply_actuals.py:249-258): the RESERVE_CALLOUT
+    AppliedEvent detail ("Reserve callout to ... (recomputed from actuals,
+    published ...)") must flag pilot-corrected provenance the same way the
+    other two sites do (test_duty_extension_note_flags_pilot_corrected_duty
+    covers :1073/:1090) — this branch gained the ", pilot-corrected duty"
+    suffix but was only ever verified by a manual script, with no
+    committed test. Same callout fixture as
+    test_duty_override_applies_to_reserve_callout (no override: feed span
+    12h -> padded rig 6.625 beats published 4.50; corrected duty 10.02h ->
+    rig 5.01)."""
+    callout_date = date(2026, 6, 12)
+    rsv = Day(date=callout_date, duty_type=DutyType.RSV, pch_value=D("3.82"),
+              reason_code=ReasonCode.FLOWN, workdays=1, label="RSV")
+    baseline = _empty_month(days=(rsv,))
+    rt = _rt_with_span("766", packet_pch="4.50", packet_block="4.17",
+                       packet_duty="7.0833", actual_block="4.17",
+                       span_hours="12.0", on_date=callout_date)
+    reconciliation = ReconciliationResult(trips=(rt,), matched=(rt,))
+
+    no_override, no_events, _ = apply_actuals_to_month(baseline, reconciliation)
+    corrected, events, _ = apply_actuals_to_month(
+        baseline, reconciliation,
+        duty_overrides={"2026-06-12": D("10.02")},
+    )
+
+    # Sanity: the override genuinely drove this recompute (same fixture as
+    # test_duty_override_applies_to_reserve_callout).
+    assert corrected.days[0].callout_trip_pch == D("5.01")
+
+    corrected_event = next(
+        e for e in events if e.kind is AppliedEventKind.RESERVE_CALLOUT
+    )
+    assert "pilot-corrected duty" in corrected_event.detail
+
+    # Without the override, the feed-only recompute must not claim a
+    # pilot correction that never happened.
+    plain_event = next(
+        e for e in no_events if e.kind is AppliedEventKind.RESERVE_CALLOUT
+    )
+    assert "pilot-corrected duty" not in plain_event.detail

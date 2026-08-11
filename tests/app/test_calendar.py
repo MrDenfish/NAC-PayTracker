@@ -400,3 +400,54 @@ def test_calendar_flown_day_unchanged():
     assert ">FLT<" in body
     assert "duty-bg--absence" not in body
     assert "duty-bg--premium" not in body
+
+
+# ── Minor: a DUTY_CORRECTION is not a "pilot-recorded reassignment" ────
+
+
+def test_calendar_does_not_count_a_duty_correction_as_a_reassignment():
+    """Minor: calendar.html's badge/title ("N pilot-recorded
+    reassignments") comes from user_reassignment_count, which counted a
+    DUTY_CORRECTION even though it never claims a new assignment or PCH
+    value (see the module fold note) — it's an input to the duty-rig
+    recompute, not a reassignment."""
+    from nac_pay.storage import (
+        DEFAULT_USER_ID,
+        UserAssignmentVersionStore,
+        VersionEntryMode,
+        VersionType,
+    )
+
+    UserAssignmentVersionStore(user_id=DEFAULT_USER_ID).save(
+        date_iso="2026-06-12",
+        version_type=VersionType.DUTY_CORRECTION,
+        assignment_id="768",
+        entry_mode=VersionEntryMode.DETAILED,
+        pch_value=Decimal("10.00"),
+        duty_hours=Decimal("20.00"),
+        duty_on_local="03:00",
+        duty_off_local="23:00",
+    )
+    _pipeline.cache_clear()
+
+    data = load_calendar(2026, 6)
+    cell = next(
+        c for week in data.weeks for c in week if c.date == date(2026, 6, 12)
+    )
+    assert cell.user_reassignment_count == 0
+
+    # A genuine REASSIGNMENT on the same date still counts — this is
+    # DUTY_CORRECTION-specific, not a blanket exclusion.
+    UserAssignmentVersionStore(user_id=DEFAULT_USER_ID).save(
+        date_iso="2026-06-12",
+        version_type=VersionType.REASSIGNMENT,
+        assignment_id="900",
+        entry_mode=VersionEntryMode.SIMPLE,
+        pch_value=Decimal("6.00"),
+    )
+    _pipeline.cache_clear()
+    data2 = load_calendar(2026, 6)
+    cell2 = next(
+        c for week in data2.weeks for c in week if c.date == date(2026, 6, 12)
+    )
+    assert cell2.user_reassignment_count == 1

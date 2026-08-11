@@ -12,6 +12,7 @@ timezone — tracked as an open item, deliberately not built yet.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 DOMICILE_TZ = ZoneInfo("America/Anchorage")
@@ -46,3 +47,36 @@ def scheduled_report_utc(
     if report > local_out:
         report -= timedelta(days=1)
     return report.astimezone(timezone.utc)
+
+
+def _parse_clock(clock_hhmm: str) -> int | None:
+    """Minutes past local midnight for a bare ``"HH:MM"``, else None."""
+    try:
+        hh, mm = (int(part) for part in clock_hhmm.split(":"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return None
+    return hh * 60 + mm
+
+
+def duty_hours_between(
+    duty_on_local: str, duty_off_local: str,
+) -> Decimal | None:
+    """Duty duration in hours between two bare local ``"HH:MM"`` clocks.
+
+    Duty off is on the same local date as duty on unless it is ``<=`` it,
+    in which case it is the next day — a trip releasing 01:30 after an
+    04:41 show is 20.82h, never negative. Equal clocks mean a full 24h.
+
+    Returns None if either clock is unparsable; callers fall back rather
+    than crediting a guess.
+    """
+    on = _parse_clock(duty_on_local)
+    off = _parse_clock(duty_off_local)
+    if on is None or off is None:
+        return None
+    span = off - on
+    if span <= 0:
+        span += 24 * 60
+    return Decimal(span) / Decimal("60")
