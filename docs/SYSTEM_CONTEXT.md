@@ -106,14 +106,15 @@ The entire program is built around one idea: **PCH accounting and dollar calcula
 | DPG (daily guarantee) | 3.82 PCH per workday | 3.D.2 |
 | Flight Operation PCH | block_hours × 1 (1:1) | 3.E |
 | Duty Rig PCH | duty_hours ÷ 2 (1:2) | 3.E |
+| Report pad / trip-end pad | duty ON = scheduled report (`L Day Show`; fallback actual out − `REPORT_PAD_HOURS` 1.0); duty OFF = last in + `TRIP_END_PAD_HOURS` 0.25 — drives every duty-rig recompute from actuals | engine/constants.py (unverified vs JCBA text) |
 | Trip Rig PCH | TAFB_hours ÷ 4.90 | 3.E |
 | Cumulative DPG PCH | workdays × 3.82 | 3.E / 3.D.2 |
 | Trip PCH (a trip's value) | `max(Flight Op, Duty Rig, Trip Rig, Cumulative DPG, Deadhead)` | 3.E |
 | Guarantee floor | `max(line_value, 65)` | 3.D / Master Schedule |
-| Classroom training/day | `max(4.0, (classroom_hours − lunch_deduction) ÷ 2)`; lunch_deduction = 1 hr if lunch in curriculum | 3.G.1 |
-| Simulator/period | `max(5.0, sim_minutes/60 + 0.5 × num_briefs_and_debriefs)` | 3.G.2 |
+| Classroom training/day (SPEC ONLY — not implemented; CLASS days lower at their published PCH) | `max(4.0, (classroom_hours − lunch_deduction) ÷ 2)`; lunch_deduction = 1 hr if lunch in curriculum | 3.G.1 |
+| Simulator/period (SPEC ONLY — not implemented; SIM days lower at their published PCH) | `max(5.0, sim_minutes/60 + 0.5 × num_briefs_and_debriefs)` | 3.G.2 |
 | Training day guarantee | `max(scheduled_master_value, G.1/G.2 actual)` — master-scheduled value is guaranteed regardless of actual time | 3.G + pilot note |
-| Home Study | `max(1.0, module_hours) × 0.5` PCH-equivalent, paid at regular rate, additive, no premiums | 3.H |
+| Home Study (formula SPEC ONLY — HOME_STUDY days lower at their published PCH; the pay-breakdown renders module-hours × half-rate for display) | `max(1.0, module_hours) × 0.5` PCH-equivalent, paid at regular rate, additive, no premiums | 3.H |
 | Taxi (STUBBED) | `max(1/6, actual)` — not implemented; see §11 | 3.M |
 | Rounding | 2 decimals, matching the packet | — |
 
@@ -319,6 +320,7 @@ Event types are distinguished by a **summary prefix**. Known formats:
 - **M. Taxi** — real-world taxi is block time inside a trip (already counted) or a call-in at DPG 3.82 (floor already handles it); the literal 1/6 rule isn't used.
 - **S. Instructor/Check Airman/APD** — does not apply to the author; revisit if other pilots need it.
 - **U. Hostile Area** — very rare; expose `HOSTILE AREA → 2.0×, duty-period scope` as a manual category and let the generic premium engine handle it if it ever occurs. No detection logic.
+- **G.1/G.2 Classroom & Simulator formulas, H. Home Study formula** — the §5 formulas are SPEC ONLY. `DutyType.CLASS`/`SIM`/`HOME_STUDY` lower to their FA-published PCH (`schedule/lower.py`); no `4.0`/`5.0`/lunch/brief logic exists in the engine. The pay-breakdown's Home Study display (module-hours × half-rate) is presentation over the same published total.
 
 **Out of scope:**
 - A/B rate machinery & Appendix A — rate is pilot-entered.
@@ -407,7 +409,7 @@ Pay is issued twice a month, each check carrying a **fixed 32.50 PCH MPG advance
 4. **Pay breakdown** — mirrors the pay stub: a per-category earnings table (Pay type | PCH | Rate | Amount) with premium rows shown as raw PCH × the multiplied rate. Below it, the greater-of-three guarantee computation with the winning option highlighted and the top-up (when any) stated, paid at the regular rate.
 5. **Compare to pay stub** — a verdict banner (is there a discrepancy, and how much); a tracker-vs-company table by category with the mismatch highlighted, zero rows collapsed, and a gross total; source chips for the two semi-monthly checks with the fixed 32.50 advance netted, plus an import/enter affordance. Reconciliation is monthly.
 6. **Discrepancies** — one queue for validation flags, compare mismatches, and unmatched feed legs; each tagged by source with a direct action (review / view / categorize); money-owed items sort to the top.
-7. **Settings** — profile (hourly rate — the basis for every figure; position; fleet fixed at 737), leave banks (sick / PTO — these cap crediting), schedule feed (masked URL + test, auto-update toggle), and contract constants (MPG 65, DPG 3.82 — editable only on a new contract).
+7. **Settings** — profile (hourly rate — the basis for every figure; position; fleet fixed at 737), leave banks (sick / PTO — these cap crediting), schedule feed (masked URL + test, auto-update toggle), and contract constants (MPG 65, DPG 3.82 — displayed read-only; no edit path exists).
 
 ---
 
@@ -418,14 +420,14 @@ The pay engine (§§2–12) is *headless* — it knows nothing about users, sess
 ### 14.1 Multi-tenant storage
 
 - **Default-user pattern.** A single sentinel `DEFAULT_USER_ID` exists for local development. With `AUTH_REQUIRED=false`, every request resolves to the default user, who reads the author's bundled `docs/` (May & June 2026) as if uploaded — the engine code path is identical to a real user. With `AUTH_REQUIRED=true`, the default user is unreachable; only authenticated users access their own data.
-- **Per-user namespacing.** Every storage class (`PilotProfileStore`, `DayOverrideStore`, `UserDocumentsStore`) takes a `user_id` constructor argument and writes under `data/users/<user_id>/…`. Routes in `nac_pay/app/main.py` resolve the active user via `_user_id(request)` (session-backed in prod, default user in dev) and pass it explicitly to every loader — no implicit global current-user lookup.
-- **SQLAlchemy 2.0 backend** (Phase 2). Identity, subscription, and onboarding state live in a relational table (`UserRow`); per-month documents and pilot profiles are still on disk under the user's directory. `DATABASE_URL` selects SQLite for dev / Postgres for prod; tests force SQLite via the same env var.
+- **Per-user namespacing.** Every storage class takes a `user_id`. `UserDocumentsStore` writes files under `data/users/<user_id>/docs/…`; `PilotProfileStore` and `DayOverrideStore` are SQL-backed (`pilot_profiles` / `day_overrides` tables — `base_dir` is accepted for back-compat but ignored). Routes (split across `main.py`, `auth_routes.py`, `billing_routes.py`, `document_routes.py`, `onboarding_routes.py`, `admin_routes.py`, `account_routes.py`, `pwa.py`) resolve the active user via `_user_id(request)` (session-backed in prod, default user in dev) and pass it explicitly to every loader — no implicit global current-user lookup.
+- **SQLAlchemy 2.0 backend** (Phase 2). Identity, subscription, onboarding state, pilot profiles, day overrides, assignment versions, and feed decisions live in relational tables; only per-month document FILES are on disk under the user's directory. `NAC_PAY_DATABASE_URL` selects the backend (unset ⇒ SQLite under `NAC_PAY_DATA_DIR`; prod runs SQLite); tests force SQLite via the same var.
 
 ### 14.2 Authentication (Phase A)
 
 - **Email + password**, argon2-cffi hashed (`PasswordHasher` defaults).
 - **Email verification** required before login: 24h signed token, link `/verify/<token>`.
-- **Password reset** via the same token mechanism: `/forgot-password` → email link → `/reset/<token>`.
+- **Password reset** via the same token mechanism: `/forgot` (GET + POST) → email link → `/reset/<token>`.
 - **Sessions** via Starlette `SessionMiddleware` (signed cookies, `SESSION_SECRET` env var). The session stores `user_id` only.
 - **Toggle:** `AUTH_REQUIRED` env flag flips the entire auth layer for dev convenience.
 - **Bot protection (2026-08-08, PR #74):** Cloudflare Turnstile gates `POST /signup` and `POST /forgot` (`auth/turnstile.py`, pluggable `TURNSTILE_BACKEND` off/fake/cloudflare, server-side siteverify, fails closed), and in-process per-IP rate limits back it up (`auth/rate_limit.py`: signup + forgot 5/h, login 10/5 min, keyed by `CF-Connecting-IP` via `auth/client_ip.py`). Both checks run before any argon2/DB/email work. Edge-side, Cloudflare WAF Managed Challenge rules cover `/signup`, `/forgot`, `/verify/*`, `/reset/*`, and `POST /login` (account-level config, not in the repo).
@@ -436,7 +438,7 @@ The pay engine (§§2–12) is *headless* — it knows nothing about users, sess
 - **State machine** on `subscription_status`: `TRIALING → ACTIVE | CANCELED | EXPIRED`; `ACTIVE → PAST_DUE → ACTIVE | CANCELED`.
 - **Stripe Checkout** (B2) creates the paid subscription. **Customer Portal** (B3) handles self-service cancel / payment-method update / invoice download.
 - **Webhook handler** at `/webhooks/stripe` keeps `subscription_status` in sync with Stripe's lifecycle events. Signature verification on every event.
-- **Toggle:** `STRIPE_BACKEND=fake` (in-memory, deterministic IDs) for tests; `STRIPE_BACKEND=live` reads `STRIPE_SECRET_KEY` + `STRIPE_PRICE_ID` and hits the real API.
+- **Toggle:** `STRIPE_BACKEND=fake` (in-memory, deterministic IDs) for tests; `STRIPE_BACKEND=real` reads `STRIPE_API_KEY` + `STRIPE_PRICE_ID` and hits the real API (any other value raises at startup).
 
 ### 14.X Pilot-recorded assignment versions (Phase G)
 
@@ -458,8 +460,8 @@ The pipeline (`services._pipeline`) loads all rows for the month, runs the activ
 
 ### 14.4 Per-user documents (Phases D, F)
 
-- `/documents` is the upload surface. The fresh-user funnel from `/onboarding` also lands here for step 2.
-- Storage: `data/users/<user_id>/documents/<year>-<month>/<kind>.{pdf,ics}` with original-filename metadata in the DB. `DocumentKind` enum: `FINAL_AWARD`, `TRIP_PACKET`, `ICAL_FEED`, `PAY_STUB`.
+- `/documents` is the upload surface for personal per-month documents. (The onboarding wizard's step 2 is `/onboarding/feed` since the 2026-07-26 overhaul; `/onboarding/documents` 303s there.)
+- Storage: `data/users/<user_id>/docs/<year>-<month>/<kind>.{pdf,ics}` with original-filename metadata in the DB. `DocumentKind` enum: `FINAL_AWARD`, `TRIP_PACKET`, `ICAL_FEED`, `PAY_STUB`.
 - **Slot dimension (Phase F).** Composite PK is `(user_id, year, month, kind, slot)`. FA/Packet/iCal always use `slot=0` (re-upload replaces). PAY_STUB uses an auto-incrementing slot so semi-monthly stubs accumulate side by side (`stub_0.pdf`, `stub_1.pdf`, …). Delete is slot-targeted; slot numbers never renumber so existing handles stay valid.
 - Default user cannot upload (it reads the bundled `docs/` directory, including the May 2026 stub pair). All other users must upload before any pay computation works.
 - The Compare screen resolves stubs via `stubs_for_user(user_id, year, month)` — default user reads the bundled corpus, real users read `UserDocumentsStore.list_stubs()`. The hardcoded `_STUB_INDEX` from earlier phases is gone.
@@ -496,14 +498,16 @@ Each middleware short-circuits on its own exempt path list (auth pages exempt th
 |---|---|---|---|
 | `AUTH_REQUIRED` | `false` | `true` | Off ⇒ default user only; On ⇒ real auth |
 | `SESSION_SECRET` | random per-process | persisted secret | Signs the session cookie |
-| `DATABASE_URL` | `sqlite:///./data/nac_pay.db` | `postgresql://…` | SQLAlchemy backend |
+| `NAC_PAY_DATA_DIR` | `~/.nac-pay/data` | `/data` (volume) | Root of ALL on-disk state — user/shared documents and the default SQLite file live under it |
+| `NAC_PAY_DATABASE_URL` | unset ⇒ `sqlite:///{NAC_PAY_DATA_DIR}/nac_pay.db` | same (prod is SQLite) | SQLAlchemy backend; set explicitly only to point at Postgres |
 | `EMAIL_BACKEND` | `console` | `resend` | Verification + reset email transport |
 | `RESEND_API_KEY` | unset | required for `resend` | Resend HTTP API key |
-| `STRIPE_BACKEND` | `fake` | `live` | Fake = deterministic in-memory; live = real API |
-| `STRIPE_SECRET_KEY` | unset | required for `live` | Stripe API key |
-| `STRIPE_PRICE_ID` | unset | required for `live` | Price the Checkout session subscribes to |
-| `STRIPE_WEBHOOK_SECRET` | unset | required for `live` | Signature on `/webhooks/stripe` |
-| `APP_BASE_URL` | `http://127.0.0.1:8000` | public URL | Used to build email + Stripe return links |
+| `RESEND_FROM_EMAIL` | unset | verified-domain sender | The From address Resend sends as |
+| `STRIPE_BACKEND` | `fake` | `real` | `fake` = deterministic in-memory; `real` = live API. Any other value (incl. `live`) raises at startup |
+| `STRIPE_API_KEY` | unset | required for `real` | Stripe API key |
+| `STRIPE_PRICE_ID` | unset | required for `real` | Price the Checkout session subscribes to |
+| `STRIPE_WEBHOOK_SECRET` | unset | required for `real` | Signature on `/webhooks/stripe` |
+| `BASE_URL` | `http://127.0.0.1:8000` | public URL | Used to build email + Stripe return links |
 | `FEED_UPDATER_ENABLED` | `false` | `true` | Starts the hourly feed-updater background task (§14.10) |
 | `TURNSTILE_BACKEND` | `off` | `cloudflare` | Bot gate on signup + forgot. `off` = no widget; `fake` = test backend (magic token `pass`); `cloudflare` = real siteverify |
 | `TURNSTILE_SITE_KEY` | unset | required for `cloudflare` | Public widget key (rendered into the form pages) |
