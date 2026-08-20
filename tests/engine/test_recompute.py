@@ -80,3 +80,51 @@ def test_duty_extension_scenario_from_spec():
         tafb_hours=_D("12.00"), workdays=1,
     )
     assert pch == Decimal("6")
+
+
+# ── §3.E.1.d deadhead PCH (three-way greater-of) ──────────────────────────
+# Live calibration case: 2026-08-20 return deadhead MIA→DFW→ANC (POG legs
+# from the captured feed). Scheduled block 10.35 h; dep→arr span 12.45 h;
+# padded report→release duty 13.70 h. Company published 6.22 = the bare
+# span ÷ 2; §7.C.2 counts report/release, so the honest duty rig is 6.85.
+
+def test_deadhead_duty_rig_wins_aug_20_worked_example():
+    from nac_pay.engine import deadhead_pch_from_times
+
+    pch = deadhead_pch_from_times(
+        dh_block_hours=_D("10.35"), duty_hours=_D("13.70"),
+    )
+    assert pch == Decimal("6.85")
+
+
+def test_deadhead_half_block_wins_when_duty_short():
+    # A long nonstop with a tight duty day: 50% of block beats duty/2.
+    from nac_pay.engine import deadhead_pch_from_times
+
+    pch = deadhead_pch_from_times(
+        dh_block_hours=_D("12.00"), duty_hours=_D("11.00"),
+    )
+    assert pch == Decimal("6.00")
+
+
+def test_deadhead_duty_rig_floors_at_dpg():
+    # §3.E.2.b: the duty-rig leg is at least DPG per duty period, so a
+    # short hop can never credit below 3.82.
+    from nac_pay.engine import deadhead_pch_from_times
+
+    pch = deadhead_pch_from_times(
+        dh_block_hours=_D("1.00"), duty_hours=_D("3.00"),
+    )
+    assert pch == Decimal("3.82")
+
+
+def test_deadhead_trip_rig_wins_with_long_tafd():
+    # 100% of the trip rig (§3.E.3) competes when TAFD is supplied:
+    # 49 h / 4.90 = 10 beats duty/2 = 5 and block/2 = 2.
+    from nac_pay.engine import deadhead_pch_from_times
+
+    pch = deadhead_pch_from_times(
+        dh_block_hours=_D("4.00"), duty_hours=_D("10.00"),
+        tafd_hours=_D("49.00"),
+    )
+    assert pch == Decimal("10")

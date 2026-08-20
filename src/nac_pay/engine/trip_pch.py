@@ -65,6 +65,40 @@ def recompute_pch_from_times(
     ).trip_pch
 
 
+def deadhead_pch_from_times(
+    dh_block_hours: Decimal,
+    duty_hours: Decimal,
+    tafd_hours: Decimal = Decimal("0"),
+    duty_periods: int = 1,
+) -> Decimal:
+    """§3.E.1.d: deadhead PCH = the greater of three legs.
+
+    (i)   fifty percent of all scheduled Deadhead block time;
+    (ii)  100% of the Duty Rig (§3.E.2) for all Duty Periods involving
+          any Deadhead — 1 PCH per 2 hours on duty, floored at DPG per
+          Duty Period;
+    (iii) 100% of the Trip Rig (§3.E.3) for all Time Away From Domicile
+          when Deadheading (1 PCH per 4.90 hours of TAFD).
+
+    §7.C.2 makes report/release time part of a Deadhead Assignment, so
+    ``duty_hours`` must already include the report/release pads — the
+    caller owns the duty-window derivation. ``tafd_hours`` defaults to 0
+    for a same-day deadhead where no TAFD measure applies.
+
+    Live calibration (2026-08-20 MIA→DFW→ANC return): the company's
+    published 6.22 is exactly leg (ii) computed WITHOUT report/release
+    (12.45 h dep→arr ÷ 2, rounded down) — padding the duty window per
+    §7.C.2 yields 6.85, which §3.E.1.b then pays as the greater value.
+
+    Returns the raw (unquantized) PCH like the other helpers here;
+    quantization to 2 dp happens at the compute/display layer.
+    """
+    half_block = dh_block_hours / Decimal("2")
+    duty_rig = max(duty_hours / Decimal("2"), Decimal(duty_periods) * DPG)
+    trip_rig = tafd_hours / TRIP_RIG_DIVISOR
+    return max(half_block, duty_rig, trip_rig)
+
+
 def effective_trip_pch_after_reassignment(
     original_published: Decimal,
     *recomputed_candidates: Decimal,

@@ -132,6 +132,13 @@ class Day:
     # captured from the iCal reconciliation. Surfaced on the calendar as the
     # bold "new assignment" over the subtle reserve line. None when unknown.
     callout_trip_id: str | None = None
+    # §3.E.1.d recompute for a deadhead (DH) day, derived from the feed's
+    # POG legs: greater of 50% of scheduled DH block, the duty rig over the
+    # padded report→release window (§7.C.2), and the trip rig. Kept separate
+    # from pch_value (the FA-published guarantee) so the day card can show
+    # both; lowering credits max(pch_value, deadhead_pch) per §3.E.1.b.
+    # None when the feed has no deadhead legs for the day.
+    deadhead_pch: Decimal | None = None
     custom_multiplier: Decimal | None = None
     label: str = ""
     # The day's PCH before any pilot reassignment version lifted/synthesized

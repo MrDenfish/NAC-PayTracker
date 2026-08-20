@@ -6,6 +6,7 @@ the parser output into ``schedule.Month`` etc.
 """
 
 from .ical_feed import (
+    DeadheadLegEvent,
     FlightLegEvent,
     OffEvent,
     ParsedFeed,
@@ -41,6 +42,7 @@ from .validation import (
 
 __all__ = [
     "DayCell",
+    "DeadheadLegEvent",
     "FlightLegEvent",
     "MatchStatus",
     "OffEvent",

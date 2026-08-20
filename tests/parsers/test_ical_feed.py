@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from nac_pay.parsers import (
+    DeadheadLegEvent,
     FlightLegEvent,
     OffEvent,
     ReserveEvent,
@@ -19,11 +20,19 @@ from nac_pay.parsers import (
 D = Decimal
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 SAMPLE = DOCS / "iCal_schedule_feed.ics"
+SAMPLE_AUG = DOCS / "iCal_schedule_feed_aug_2026.ics"
 
 
 @pytest.fixture(scope="module")
 def feed():
     return parse_ical_feed(SAMPLE)
+
+
+@pytest.fixture(scope="module")
+def feed_aug():
+    """Live pull captured 2026-08-19 — first specimen with POG deadhead,
+    STP stopover, and GCO training events (Dennis FISHER, Aug 18-Sep 1)."""
+    return parse_ical_feed(SAMPLE_AUG)
 
 
 # ── Event-count sanity ──────────────────────────────────────────────────
@@ -104,6 +113,55 @@ def test_off_event_is_24_hour_block(feed):
     # 08:00Z → next day 07:59Z = 23h59m, just shy of 24h (intentional avoidance
     # of midnight crossing). Tolerance ±1 minute.
     assert abs(duration.total_seconds() - 86400) < 120
+
+
+# ── POG deadhead events (August 2026 live specimen) ───────────────────
+def test_aug_feed_partitions_events_by_type(feed_aug):
+    """Aug 18-Sep 1 pull: 20 FLT legs, 2 POG deadheads (MIA→DFW→ANC return
+    from recurrent training), 3 R/S days, 4 LEA days (3 OFF + one 24/7),
+    and 3 not-yet-typed events (2 STP stopovers, 1 GCO training)."""
+    assert len(feed_aug.flight_legs) == 20
+    assert len(feed_aug.deadhead_legs) == 2
+    assert len(feed_aug.reserves) == 3
+    assert len(feed_aug.off_days) == 4
+    assert len(feed_aug.unknown) == 3
+    assert feed_aug.total_events == 32
+
+
+def test_deadhead_leg_decoded_fully(feed_aug):
+    dh = feed_aug.deadhead_legs[0]
+    assert isinstance(dh, DeadheadLegEvent)
+    assert dh.origin == "MIA"
+    assert dh.destination == "DFW"
+    assert dh.carrier == "American Airlines"
+    assert dh.pilot == "Dennis FISHER"       # "(p)" passenger marker stripped
+    assert dh.dt_start_utc == datetime(2026, 8, 20, 18, 5, tzinfo=timezone.utc)
+    assert dh.dt_end_utc == datetime(2026, 8, 20, 21, 29, tzinfo=timezone.utc)
+
+
+def test_deadhead_block_hours(feed_aug):
+    """MIA→DFW 18:05→21:29 = 3h24m = 3.4h; DFW→ANC 23:35→06:32 = 6h57m = 6.95h."""
+    first, second = feed_aug.deadhead_legs
+    assert first.block_hours == D("3.4")
+    assert second.block_hours == D("6.95")
+    assert second.destination == "ANC"
+
+
+def test_stopover_and_training_stay_unknown(feed_aug):
+    """STP/GCO have no pay rule yet — they must land in unknown (fail open),
+    not be silently misfiled as flights or deadheads."""
+    summaries = {u.summary for u in feed_aug.unknown}
+    assert summaries == {
+        "STP - Stop over at MIA",
+        "GCO - Recurrent Training - Northern Air Cargo",
+    }
+
+
+def test_lea_247_rides_the_off_prefix(feed_aug):
+    """LEA - 24/7 (the contractual 24-in-7 day off) parses as an OffEvent
+    with its label preserved, distinguishable from a plain OFF."""
+    labels = sorted(o.label for o in feed_aug.off_days)
+    assert labels == ["24/7", "OFF", "OFF", "OFF"]
 
 
 # ── Unknown / forward-compat ──────────────────────────────────────────

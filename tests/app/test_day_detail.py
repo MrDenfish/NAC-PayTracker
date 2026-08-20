@@ -1584,3 +1584,80 @@ def test_amend_form_shows_the_pilot_own_correction_clocks():
         "duty-off prefill fell back to the packet's scheduled show time "
         "instead of the pilot's own live correction"
     )
+
+
+# ── §3.E.1.d deadhead-day candidates card ──────────────────────────────
+
+
+def test_deadhead_day_candidates_and_uplift():
+    """A DH day whose POG legs beat the published value surfaces the
+    §3.E.1.d component rows on the candidates card with the padded duty-rig
+    marked winning, and pch_uplift shows the §3.E.1.b delta. Poked onto
+    June 7 (the corpus has no DH days — the POG format was first sampled
+    live 2026-08-19; fixture times mirror the real Aug 20 MIA→DFW→ANC
+    return: published 6.22 = bare span ÷ 2, padded duty rig 6.85). June 16
+    is the corpus's first reserve Day — the poke retypes it DH."""
+    from datetime import datetime, timezone
+
+    from nac_pay.parsers import DeadheadLegEvent
+    from nac_pay.schedule import DutyType
+
+    _pipeline.cache_clear()
+    real = _pipeline(2026, 6)
+    target = date(2026, 6, 16)
+    new_days = []
+    for day in real.updated_month.days:
+        if day.date == target:
+            new_days.append(replace(
+                day,
+                duty_type=DutyType.DH,
+                pch_value=Decimal("6.22"),
+                deadhead_pch=Decimal("6.85"),
+                callout_trip_pch=None,
+                callout_published_pch=None,
+                callout_trip_id=None,
+                label="DH",
+            ))
+        else:
+            new_days.append(day)
+    poked_month = replace(real.updated_month, days=tuple(new_days))
+
+    def _dh(uid, dep, arr, org, dst):
+        return DeadheadLegEvent(
+            uid=uid, dt_start_utc=dep, dt_end_utc=arr, origin=org,
+            destination=dst, carrier="American Airlines",
+            pilot="Dennis FISHER",
+        )
+
+    legs = (
+        _dh("dh1",
+            datetime(2026, 6, 16, 18, 5, tzinfo=timezone.utc),
+            datetime(2026, 6, 16, 21, 29, tzinfo=timezone.utc), "MIA", "DFW"),
+        _dh("dh2",
+            datetime(2026, 6, 16, 23, 35, tzinfo=timezone.utc),
+            datetime(2026, 6, 17, 6, 32, tzinfo=timezone.utc), "DFW", "ANC"),
+    )
+    poked = replace(
+        real,
+        updated_month=poked_month,
+        engine_result=compute_pay(lower_month(poked_month)),
+        feed=replace(real.feed, deadhead_legs=legs),
+    )
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked):
+        d = load_day(2026, 6, 16)
+        r = client.get("/day/2026-06-16")
+
+    assert d.published_pch == Decimal("6.22")
+    assert d.effective_pch == Decimal("6.85")
+    assert d.pch_uplift == Decimal("0.63")
+    labels = [c.label for c in d.pch_candidates]
+    assert "Published" in labels
+    assert "Deadhead 50% of scheduled block (§3.E.1.d.i)" in labels
+    winners = [c for c in d.pch_candidates if c.is_winning]
+    assert len(winners) == 1
+    assert winners[0].label == "Deadhead duty-rig, report→release (§3.E.1.d.ii)"
+    assert winners[0].pch == Decimal("6.85")
+    # Rendered HTML pins the template loop, not just the loader record.
+    assert r.status_code == 200
+    assert "Deadhead duty-rig" in r.text

@@ -223,11 +223,16 @@ def _lower_day(
 
     # Normal reserve day (no callout) — or any other FLOWN day.
     kind = _chunk_kind_for_day(day)
+    raw_pch = day.pch_value
+    if day.deadhead_pch is not None:
+        # §3.E.1.b on a deadhead day: pay the greater of the FA-published
+        # value and the §3.E.1.d recompute from the feed's actual DH legs.
+        raw_pch = max(raw_pch, day.deadhead_pch)
     chunks.append(
         Chunk(
             source_id=_day_source_id(day),
             kind=kind,
-            raw_pch=day.pch_value,
+            raw_pch=raw_pch,
             multiplier=multiplier,
             in_guarantee=True,
             workdays=day.workdays,

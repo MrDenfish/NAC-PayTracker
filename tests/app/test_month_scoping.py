@@ -187,3 +187,27 @@ def test_dashboard_dropdown_uses_logged_in_users_months(monkeypatch):
     assert (2026, 7) in months and (2026, 6) in months
     # NOT the bundled default-user set (which would be May + June).
     assert (2026, 5) not in months
+
+
+def test_feed_filter_keeps_deadhead_legs_in_month():
+    """The month filter re-constructs ParsedFeed field by field — a new
+    event tuple silently vanishes if it isn't listed (the classic drop).
+    Deadhead legs must survive scoping or the §3.E.1.d recompute never
+    sees them."""
+    from datetime import datetime, timezone
+
+    from nac_pay.parsers import DeadheadLegEvent
+
+    def _dh(month: int, day: int) -> DeadheadLegEvent:
+        return DeadheadLegEvent(
+            uid=f"dh-{month}-{day}",
+            dt_start_utc=datetime(2026, month, day, 18, 5, tzinfo=timezone.utc),
+            dt_end_utc=datetime(2026, month, day, 21, 29, tzinfo=timezone.utc),
+            origin="MIA", destination="DFW",
+            carrier="American Airlines", pilot="Dennis FISHER",
+        )
+
+    feed = ParsedFeed(deadhead_legs=(_dh(6, 10), _dh(7, 5)))
+    out = s._filter_feed_to_month(feed, 2026, 6)
+    assert len(out.deadhead_legs) == 1
+    assert out.deadhead_legs[0].uid == "dh-6-10"

@@ -1845,3 +1845,113 @@ def test_offday_pickup_event_names_the_recompute_when_it_wins():
     assert "company PCH 4.80" in ev.detail
     assert "recomputed 5.05" in ev.detail
     assert "crediting 5.05" in ev.detail
+
+
+# ── §3.E.1.d deadhead-day recompute (apply_deadhead_recompute) ────────────
+# Fixture times are the live 2026-08-20 return deadhead (MIA→DFW→ANC POG
+# legs from docs/iCal_schedule_feed_aug_2026.ics): block 10.35 h, dep→arr
+# span 12.45 h. The company's published 6.22 is exactly span ÷ 2; padding
+# report/release per §7.C.2 lifts the duty rig to 6.85.
+
+
+def _dh_leg(uid: str, dep: datetime, arr: datetime, org: str, dst: str):
+    from nac_pay.parsers import DeadheadLegEvent
+
+    return DeadheadLegEvent(
+        uid=uid, dt_start_utc=dep, dt_end_utc=arr, origin=org,
+        destination=dst, carrier="American Airlines", pilot="Dennis FISHER",
+    )
+
+
+def _aug20_dh_legs():
+    return (
+        _dh_leg(
+            "6661236",
+            datetime(2026, 8, 20, 18, 5, tzinfo=timezone.utc),
+            datetime(2026, 8, 20, 21, 29, tzinfo=timezone.utc),
+            "MIA", "DFW",
+        ),
+        _dh_leg(
+            "6661237",
+            datetime(2026, 8, 20, 23, 35, tzinfo=timezone.utc),
+            datetime(2026, 8, 21, 6, 32, tzinfo=timezone.utc),
+            "DFW", "ANC",
+        ),
+    )
+
+
+def _dh_month(pch: str = "6.22", duty_type: DutyType = DutyType.DH) -> Month:
+    return Month(
+        pilot=_pilot(),
+        year=2026,
+        month=8,
+        line_value=D("112.73"),
+        trips=(),
+        days=(
+            Day(
+                date=date(2026, 8, 20),
+                duty_type=duty_type,
+                pch_value=D(pch),
+                reason_code=ReasonCode.FLOWN,
+            ),
+        ),
+    )
+
+
+def test_deadhead_recompute_uplifts_the_padded_duty_rig():
+    """Published 6.22 (bare span ÷ 2) loses to the §7.C.2-padded duty rig
+    6.85 — the recompute lands on Day.deadhead_pch and lowering credits it."""
+    from nac_pay.schedule import apply_deadhead_recompute
+
+    updated, events = apply_deadhead_recompute(_dh_month(), _aug20_dh_legs())
+    day = updated.days[0]
+    assert day.deadhead_pch == D("6.85")
+    assert day.pch_value == D("6.22")            # published untouched
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.kind is AppliedEventKind.DEADHEAD_RECOMPUTE
+    assert ev.date == date(2026, 8, 20)
+    assert ev.delta_pch == D("0.63")
+
+    result = compute_pay(lower_month(updated))
+    dh_chunks = [c for c in result.per_chunk if c.raw_pch == D("6.85")]
+    assert len(dh_chunks) == 1                   # credited at the recompute
+
+
+def test_deadhead_recompute_never_reduces_a_higher_published():
+    """§3.E.1.b: when the FA published beats the recompute, the recompute is
+    still recorded (for the day card) but lowering credits the published."""
+    from nac_pay.schedule import apply_deadhead_recompute
+
+    updated, events = apply_deadhead_recompute(
+        _dh_month(pch="7.50"), _aug20_dh_legs(),
+    )
+    day = updated.days[0]
+    assert day.deadhead_pch == D("6.85")
+    assert events[0].delta_pch == D("0")         # no uplift over published
+
+    result = compute_pay(lower_month(updated))
+    assert any(c.raw_pch == D("7.50") for c in result.per_chunk)
+    assert not any(c.raw_pch == D("6.85") for c in result.per_chunk)
+
+
+def test_deadhead_recompute_ignores_non_dh_days():
+    """POG legs landing on a day the FA types as something else (here RSV)
+    must not be recomputed — a DH leg attached to an operating trip is
+    priced by the packet inside the §3.E trip value, not per-day."""
+    from nac_pay.schedule import apply_deadhead_recompute
+
+    month = _dh_month(pch="3.82", duty_type=DutyType.RSV)
+    updated, events = apply_deadhead_recompute(month, _aug20_dh_legs())
+    assert events == ()
+    assert updated is month                      # untouched, same object
+    assert updated.days[0].deadhead_pch is None
+
+
+def test_deadhead_recompute_no_legs_is_a_noop():
+    from nac_pay.schedule import apply_deadhead_recompute
+
+    month = _dh_month()
+    updated, events = apply_deadhead_recompute(month, ())
+    assert events == ()
+    assert updated is month

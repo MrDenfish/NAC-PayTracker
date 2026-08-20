@@ -124,6 +124,10 @@
             <span class="doc-uploaded subtle">uploaded {{ slot.uploaded_at[:10] }}</span>
             {% if kind.value in ("FINAL_AWARD", "TRIP_PACKET") %}
             <a href="/documents/view/{{ month_row.year }}/{{ month_row.month }}/{{ kind.value }}" target="_blank" rel="noopener">View</a>
+            {% elif kind.value == "ICAL_FEED" %}
+            {# The stored feed is the only archive of legs aged out of
+               BlueOne's rolling window — let the pilot download their copy. #}
+            <a href="/documents/download/{{ month_row.year }}/{{ month_row.month }}/ical">Download</a>
             {% endif %}
             <form action="/documents/delete" method="post" class="doc-delete">
               <input type="hidden" name="year" value="{{ month_row.year }}">
