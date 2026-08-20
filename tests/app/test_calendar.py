@@ -451,3 +451,47 @@ def test_calendar_does_not_count_a_duty_correction_as_a_reassignment():
         c for week in data2.weeks for c in week if c.date == date(2026, 6, 12)
     )
     assert cell2.user_reassignment_count == 1
+
+
+def test_calendar_cell_shows_deadhead_recompute_credit(monkeypatch):
+    """A DH day carrying the §3.E.1.d recompute must show the credited
+    max(published, recompute) on its calendar cell — live 2026-08-20
+    defect: the day page and engine credited 6.85 while the calendar
+    cell still displayed the published 6.22. Poked onto June 16 (the
+    corpus's first reserve Day), mirroring the reassigned-flag poke."""
+    from dataclasses import replace
+
+    _pipeline.cache_clear()
+    real = _pipeline(2026, 6)
+    target = date(2026, 6, 16)
+    new_days = []
+    for day in real.updated_month.days:
+        if day.date == target:
+            new_days.append(replace(
+                day,
+                duty_type=DutyType.DH,
+                pch_value=Decimal("6.22"),
+                deadhead_pch=Decimal("6.85"),
+                callout_trip_pch=None,
+                callout_published_pch=None,
+                callout_trip_id=None,
+                label="DH",
+            ))
+        else:
+            new_days.append(day)
+    poked_month = replace(real.updated_month, days=tuple(new_days))
+    poked_result = replace(
+        real,
+        updated_month=poked_month,
+        engine_result=compute_pay(lower_month(poked_month)),
+    )
+
+    with patch("nac_pay.app.services._pipeline", return_value=poked_result):
+        data = load_calendar(2026, 6)
+
+    cell = next(
+        c for week in data.weeks for c in week if c.date == target
+    )
+    assert cell.pch == Decimal("6.85")          # credited, not published
+    # Cell dollars round to the whole dollar (Phase I.5): 6.85 x 124.59 = 853.
+    assert cell.pay_dollars == Decimal("853")
