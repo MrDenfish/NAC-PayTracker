@@ -60,6 +60,7 @@ from nac_pay.schedule import (
     Position,
     Trip,
     apply_actuals_to_month,
+    apply_deadhead_recompute,
     apply_feed_cancellations,
     apply_lea_reason_seeds,
     apply_overrides_to_month,
@@ -71,6 +72,7 @@ from nac_pay.schedule import (
 from nac_pay.schedule.apply_actuals import (
     REASSIGN_KIND_OFF_DAY_PICKUP,
     REASSIGN_REJECTED,
+    deadhead_window_hours,
 )
 from nac_pay.storage import (
     DEFAULT_USER_ID,
@@ -402,6 +404,7 @@ def _filter_feed_to_month(feed: ParsedFeed, year: int, month: int) -> ParsedFeed
     inm = lambda ev: _in_month(_local_date(ev.dt_start_utc), year, month)  # noqa: E731
     return ParsedFeed(
         flight_legs=tuple(e for e in feed.flight_legs if inm(e)),
+        deadhead_legs=tuple(e for e in feed.deadhead_legs if inm(e)),
         reserves=tuple(e for e in feed.reserves if inm(e)),
         off_days=tuple(e for e in feed.off_days if inm(e)),
         unknown=tuple(e for e in feed.unknown if inm(e)),
@@ -674,6 +677,15 @@ def _pipeline(
     if feed is not None and feed.off_days:
         updated, seed_events = apply_lea_reason_seeds(updated, feed.off_days)
         applied = tuple(applied) + seed_events
+
+    # Recompute deadhead (DH) days per §3.E.1.d from the feed's POG legs —
+    # the company's published value omits the §7.C.2 report/release
+    # allowance, so the padded duty rig can beat it; the day then credits
+    # max(published, recompute) per §3.E.1.b. Runs BEFORE overrides so the
+    # pilot's explicit edit remains the final word.
+    if feed is not None and feed.deadhead_legs:
+        updated, dh_events = apply_deadhead_recompute(updated, feed.deadhead_legs)
+        applied = tuple(applied) + dh_events
 
     # Apply pilot overrides LAST so an explicit pilot edit is the final
     # word: it trumps iCal-derived events AND the premium_category a
@@ -2328,10 +2340,20 @@ def _build_day_detail(
         duty_class = "flt" if is_callout else class_suffix
         assignment_id = day_entry.label or None
         published = day_entry.pch_value
-        effective = (
-            max(_DPG, day_entry.callout_trip_pch) if is_callout else day_entry.pch_value
+        # A DH day with feed-derived POG legs carries the §3.E.1.d
+        # recompute; §3.E.1.b credits the greater of it and published.
+        is_dh_recompute = day_entry.deadhead_pch is not None
+        if is_callout:
+            effective = max(_DPG, day_entry.callout_trip_pch)
+        elif is_dh_recompute:
+            effective = max(day_entry.pch_value, day_entry.deadhead_pch)
+        else:
+            effective = day_entry.pch_value
+        uplift = (
+            effective - published
+            if (is_callout or is_dh_recompute)
+            else Decimal("0")
         )
-        uplift = effective - published if is_callout else Decimal("0")
         reason_value = day_entry.reason_code.value
         premium_value = day_entry.premium_category.value
         entry_mode_value = "SIMPLE"
@@ -2544,9 +2566,23 @@ def _build_day_detail(
         else None
     )
 
+    # A DH day carrying the §3.E.1.d recompute lists its own component
+    # rows; the derivation mirrors apply_deadhead_recompute exactly (same
+    # helper) so the card never disagrees with the credited value.
+    dh_legs_for_day: tuple = ()
+    if (
+        day_entry is not None
+        and day_entry.deadhead_pch is not None
+        and pr.feed is not None
+    ):
+        dh_legs_for_day = tuple(
+            e for e in pr.feed.deadhead_legs
+            if _local_date(e.dt_start_utc) == target
+        )
+
     pch_candidates: tuple[PchComponent, ...] = ()
     if effective is not None and not is_dropped and (
-        legs or sched_duty_rig_pch is not None
+        legs or sched_duty_rig_pch is not None or dh_legs_for_day
     ):
         raw: list[tuple[str, Decimal]] = []
         if day_is_callout or kind == "reserve":
@@ -2602,6 +2638,19 @@ def _build_day_detail(
             raw.append((
                 "Recomputed from actual times (max of the §3.E components)",
                 fr_for_day.new_pch,
+            ))
+        if dh_legs_for_day:
+            # §3.E.1.d's three-way greater-of, from the feed's POG legs.
+            # The trip-rig leg is omitted at day level (TAFD ÷ 4.90 over a
+            # single duty window can never beat duty ÷ 2).
+            dh_block, dh_duty = deadhead_window_hours(dh_legs_for_day)
+            raw.append((
+                "Deadhead 50% of scheduled block (§3.E.1.d.i)",
+                dh_block / Decimal("2"),
+            ))
+            raw.append((
+                "Deadhead duty-rig, report→release (§3.E.1.d.ii)",
+                max(dh_duty / Decimal("2"), _DPG),
             ))
         if actual_block is not None and actual_block > 0:
             raw.append(("Flight-op (actual block)", actual_block))

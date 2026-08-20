@@ -15,13 +15,21 @@ prefix:
   ``1021``, iCal uses ``1021S``).
 - ``LEA - <label>`` — leave / non-duty (``LEA - OFF`` for a day off).
   Spec notes other LEA subtypes (PTO, etc.) likely share this prefix.
+- ``POG - Deadheading <ORG> to <DST>`` — a deadhead leg (live specimen
+  captured 2026-08-19). DTSTART/DTEND are the leg's scheduled
+  departure/arrival — NOT a duty window. DESCRIPTION carries the
+  operating carrier (``American Airlines``) and a crew line with a
+  ``(p)`` passenger marker (``FO    Dennis FISHER (p)``).
 
 Anything else lands in ``unknown`` so the caller can flag it for review.
 
-Spec §10 lists training (CLASS/SIM), deadhead (DH), layover, and the
-R-1/R-2/R-4 reserve distinction as deferred — none of those appear in
-our current sample either, so they remain genuinely unknown formats
-until we see samples.
+Spec §10 lists training (CLASS/SIM), layover, and the R-1/R-2/R-4
+reserve distinction as deferred. The 2026-08-19 live pull also surfaced
+``STP - Stop over at <city>`` (layover, hotel in DESCRIPTION) and
+``GCO - <training label>`` — sampled but not yet typed; they stay in
+``unknown`` until a pay rule needs them. ``LEA - 24/7`` (the contractual
+24-in-7 day off) rides the existing ``LEA -`` prefix as an ``OffEvent``
+with label ``"24/7"``.
 """
 
 from __future__ import annotations
@@ -67,6 +75,27 @@ class FlightLegEvent:
 
 
 @dataclass(frozen=True)
+class DeadheadLegEvent:
+    uid: str
+    dt_start_utc: datetime           # scheduled departure of the DH leg
+    dt_end_utc: datetime             # scheduled arrival
+    origin: str                      # "MIA"
+    destination: str                 # "DFW"
+    carrier: str                     # "American Airlines" — operating carrier
+    pilot: str                       # "Dennis FISHER" ("(p)" passenger marker stripped)
+
+    @property
+    def block_hours(self) -> Decimal:
+        """Scheduled deadhead segment time = DTEND - DTSTART, in hours.
+
+        Same Decimal path as ``FlightLegEvent.block_hours`` so §3.E.1.d's
+        50%-of-scheduled-deadhead-block leg quantizes identically."""
+        delta = self.dt_end_utc - self.dt_start_utc
+        total_seconds = delta.days * 86400 + delta.seconds
+        return Decimal(total_seconds) / Decimal("3600")
+
+
+@dataclass(frozen=True)
 class ReserveEvent:
     uid: str
     dt_start_utc: datetime           # RAP window start
@@ -96,6 +125,7 @@ class UnknownEvent:
 @dataclass(frozen=True)
 class ParsedFeed:
     flight_legs: tuple[FlightLegEvent, ...] = ()
+    deadhead_legs: tuple[DeadheadLegEvent, ...] = ()
     reserves: tuple[ReserveEvent, ...] = ()
     off_days: tuple[OffEvent, ...] = ()
     unknown: tuple[UnknownEvent, ...] = ()
@@ -104,6 +134,7 @@ class ParsedFeed:
     def total_events(self) -> int:
         return (
             len(self.flight_legs)
+            + len(self.deadhead_legs)
             + len(self.reserves)
             + len(self.off_days)
             + len(self.unknown)
@@ -124,6 +155,7 @@ def parse_ical_feed(source: str | Path | bytes) -> ParsedFeed:
 
     cal = Calendar.from_ical(raw)
     flights: list[FlightLegEvent] = []
+    deadheads: list[DeadheadLegEvent] = []
     reserves: list[ReserveEvent] = []
     offs: list[OffEvent] = []
     unknown: list[UnknownEvent] = []
@@ -132,6 +164,8 @@ def parse_ical_feed(source: str | Path | bytes) -> ParsedFeed:
         ev = _parse_vevent(component)
         if isinstance(ev, FlightLegEvent):
             flights.append(ev)
+        elif isinstance(ev, DeadheadLegEvent):
+            deadheads.append(ev)
         elif isinstance(ev, ReserveEvent):
             reserves.append(ev)
         elif isinstance(ev, OffEvent):
@@ -141,6 +175,7 @@ def parse_ical_feed(source: str | Path | bytes) -> ParsedFeed:
 
     return ParsedFeed(
         flight_legs=tuple(flights),
+        deadhead_legs=tuple(deadheads),
         reserves=tuple(reserves),
         off_days=tuple(offs),
         unknown=tuple(unknown),
@@ -150,6 +185,9 @@ def parse_ical_feed(source: str | Path | bytes) -> ParsedFeed:
 # ── Per-VEVENT dispatch ────────────────────────────────────────────────
 _FLT_SUMMARY_RE = re.compile(
     r"^FLT\s*-\s*(?P<flight>\S+)\s+(?P<org>[A-Z]{3})-(?P<dst>[A-Z]{3})\s+(?P<tail>\S+)\s*$"
+)
+_POG_SUMMARY_RE = re.compile(
+    r"^POG\s*-\s*Deadheading\s+(?P<org>[A-Z]{3})\s+to\s+(?P<dst>[A-Z]{3})\s*$"
 )
 _RS_SUMMARY_RE = re.compile(
     r"^R/S\s*-\s*Reserve or Standby at\s+(?P<base>[A-Z]{3})\s*$"
@@ -166,7 +204,7 @@ _NC_PREFIX_RE = re.compile(r"^NC", re.IGNORECASE)
 
 def _parse_vevent(
     component,
-) -> FlightLegEvent | ReserveEvent | OffEvent | UnknownEvent:
+) -> FlightLegEvent | DeadheadLegEvent | ReserveEvent | OffEvent | UnknownEvent:
     uid = str(component.get("UID", ""))
     summary = str(component.get("SUMMARY", "")).strip()
     description = _decode_description(component.get("DESCRIPTION", ""))
@@ -175,6 +213,8 @@ def _parse_vevent(
 
     if (m := _FLT_SUMMARY_RE.match(summary)):
         return _build_flight_leg(uid, dt_start, dt_end, m, description)
+    if (m := _POG_SUMMARY_RE.match(summary)):
+        return _build_deadhead_leg(uid, dt_start, dt_end, m, description)
     if (m := _RS_SUMMARY_RE.match(summary)):
         return _build_reserve(uid, dt_start, dt_end, m.group("base"), description)
     if (m := _LEA_SUMMARY_RE.match(summary)):
@@ -217,6 +257,32 @@ def _build_flight_leg(
         customer=customer,
         captain=cpt,
         first_officer=fo,
+    )
+
+
+_PASSENGER_MARKER_RE = re.compile(r"\s*\(p\)\s*$")
+
+
+def _build_deadhead_leg(
+    uid: str,
+    dt_start: datetime,
+    dt_end: datetime,
+    m: re.Match[str],
+    description: str,
+) -> DeadheadLegEvent:
+    # DESCRIPTION: first line = operating carrier, then a crew line like
+    # "FO    Dennis FISHER (p)" — the (p) marks the pilot as a passenger.
+    lines = [ln.strip() for ln in description.splitlines() if ln.strip()]
+    crew = _first_match(_DESC_FO_RE, description) or _first_match(_DESC_CPT_RE, description)
+    carrier = lines[0] if lines and not lines[0].startswith(("FO ", "CPT ")) else ""
+    return DeadheadLegEvent(
+        uid=uid,
+        dt_start_utc=dt_start,
+        dt_end_utc=dt_end,
+        origin=m.group("org"),
+        destination=m.group("dst"),
+        carrier=carrier,
+        pilot=_PASSENGER_MARKER_RE.sub("", crew),
     )
 
 

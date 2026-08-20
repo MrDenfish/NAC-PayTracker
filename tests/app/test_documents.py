@@ -224,3 +224,57 @@ def test_uploaded_docs_run_the_full_pipeline(monkeypatch):
     # FISHER's June total — proves the engine ran against greg's
     # (now-uploaded) copy of the source files.
     assert "$8,195.53" in r.text
+
+
+# ── iCal feed download ───────────────────────────────────────────────
+# The stored feed.ics is the app's only archive of flown legs that aged
+# out of BlueOne's rolling window (parsers.ical_merge) — the pilot must
+# be able to get their own copy back out (added 2026-08-19, prompted by
+# re-examining the Aug 15/20 deadhead days after the live feed window
+# had rolled past them).
+
+
+def test_ical_download_roundtrips_the_stored_feed(monkeypatch):
+    isolated = _bootstrap_paid_user(monkeypatch, "dl-ical@example.com")
+    ics_bytes = (_docs_dir() / "iCal_schedule_feed.ics").read_bytes()
+    r = isolated.post(
+        "/documents/upload",
+        data={"year": "2026", "month": "6", "kind": "ICAL_FEED"},
+        files={"upload": ("feed.ics", ics_bytes, "text/calendar")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    r = isolated.get("/documents/download/2026/6/ical")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/calendar")
+    assert "attachment" in r.headers["content-disposition"]
+    assert "feed_2026-06.ics" in r.headers["content-disposition"]
+    assert r.content == ics_bytes
+
+    # The Documents page offers the link.
+    page = isolated.get("/documents")
+    assert '/documents/download/2026/6/ical' in page.text
+
+
+def test_ical_download_404_when_no_feed_stored(monkeypatch):
+    isolated = _bootstrap_paid_user(monkeypatch, "dl-none@example.com")
+    assert isolated.get("/documents/download/2026/6/ical").status_code == 404
+
+
+def test_ical_download_is_scoped_to_the_logged_in_user(monkeypatch):
+    """User B must never receive user A's feed — the route resolves the
+    store by session user id, so B (no feed) gets 404 for the same
+    year/month A populated."""
+    owner = _bootstrap_paid_user(monkeypatch, "dl-owner@example.com")
+    ics_bytes = (_docs_dir() / "iCal_schedule_feed.ics").read_bytes()
+    owner.post(
+        "/documents/upload",
+        data={"year": "2026", "month": "6", "kind": "ICAL_FEED"},
+        files={"upload": ("feed.ics", ics_bytes, "text/calendar")},
+        follow_redirects=False,
+    )
+    other = _bootstrap_paid_user(monkeypatch, "dl-other@example.com")
+    assert other.get("/documents/download/2026/6/ical").status_code == 404
+    # The owner still can.
+    assert owner.get("/documents/download/2026/6/ical").status_code == 200

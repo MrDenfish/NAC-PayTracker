@@ -155,6 +155,31 @@ def document_view(
     )
 
 
+@router.get("/documents/download/{year}/{month}/ical")
+def document_download_ical(request: Request, year: int, month: int) -> FileResponse:
+    """Download the stored (merge-preserved) iCal feed for a month.
+
+    The stored ``feed.ics`` is the app's only archive of flown legs that
+    have aged out of BlueOne's rolling window (see ``parsers.ical_merge``),
+    so the pilot must be able to get their own copy back out — e.g. to
+    re-examine a past day's actual times. Deliberately separate from
+    ``/documents/view``: the feed is personal-only (never shared, no
+    fallback), served as an attachment rather than inline, and stays out
+    of ``_VIEWABLE`` so the PDF view route's semantics don't change.
+    """
+    user_id = _user_id_for(request)
+    rec = UserDocumentsStore(get_data_dir(), user_id).get(
+        year, month, DocumentKind.ICAL_FEED,
+    )
+    if rec is None or not rec.exists:
+        raise HTTPException(404)
+    return FileResponse(
+        rec.path, media_type="text/calendar",
+        filename=f"feed_{year}-{month:02d}.ics",
+        content_disposition_type="attachment",
+    )
+
+
 @router.post("/documents/upload")
 async def documents_upload(
     request: Request,

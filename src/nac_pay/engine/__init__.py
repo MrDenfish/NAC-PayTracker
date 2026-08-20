@@ -17,6 +17,7 @@ from .models import (
 from .trip_pch import (
     TripPchComponents,
     components_from_times,
+    deadhead_pch_from_times,
     effective_trip_pch_after_reassignment,
     recompute_pch_from_times,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "WinningOption",
     "components_from_times",
     "compute_pay",
+    "deadhead_pch_from_times",
     "effective_trip_pch_after_reassignment",
     "recompute_pch_from_times",
 ]

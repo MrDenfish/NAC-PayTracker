@@ -60,9 +60,15 @@ from nac_pay.engine.constants import (
 )
 from nac_pay.engine.trip_pch import (
     components_from_times,
+    deadhead_pch_from_times,
     effective_trip_pch_after_reassignment,
 )
-from nac_pay.parsers import OffEvent, ReconciledTrip, ReconciliationResult
+from nac_pay.parsers import (
+    DeadheadLegEvent,
+    OffEvent,
+    ReconciledTrip,
+    ReconciliationResult,
+)
 
 # Crew domicile timezone: feed timestamps are UTC; trips are attributed to
 # their Anchorage-local civil date to match the FA schedule, the reconciliation
@@ -71,7 +77,7 @@ from nac_pay.parsers import OffEvent, ReconciledTrip, ReconciliationResult
 from nac_pay.timeutil import local_date as _local_date
 from nac_pay.timeutil import scheduled_report_utc
 
-from .labels import EntryMode, PremiumCategory, ReasonCode
+from .labels import DutyType, EntryMode, PremiumCategory, ReasonCode
 from .models import AssignmentVersion, Day, Month, Trip
 
 _DUTY_EXTENSION_TOLERANCE_HOURS: Decimal = Decimal("0.05")  # 3 minutes — the
@@ -92,6 +98,7 @@ class AppliedEventKind(StrEnum):
     COMPANY_CANCELLATION = "COMPANY_CANCELLATION"
     FEED_DROP = "FEED_DROP"
     LEA_REASON_SEED = "LEA_REASON_SEED"
+    DEADHEAD_RECOMPUTE = "DEADHEAD_RECOMPUTE"
 
 
 # Decision states for a feed-detected reassignment. No stored decision =
@@ -599,6 +606,86 @@ def apply_feed_cancellations(
     if not events:
         return month, ()
     return replace(month, trips=tuple(new_trips)), tuple(events)
+
+
+def deadhead_window_hours(
+    legs: tuple[DeadheadLegEvent, ...] | list[DeadheadLegEvent],
+) -> tuple[Decimal, Decimal]:
+    """Total scheduled DH block and the padded report→release duty window
+    for one local date's deadhead legs, in hours.
+
+    §7.C.2 makes report/release time part of a Deadhead Assignment, so the
+    duty window is first departure minus REPORT_PAD_HOURS through last
+    arrival plus TRIP_END_PAD_HOURS. Public so the day-detail candidates
+    card derives exactly the numbers the recompute used.
+    """
+    ordered = sorted(legs, key=lambda e: e.dt_start_utc)
+    block = sum((e.block_hours for e in ordered), Decimal("0"))
+    window = ordered[-1].dt_end_utc - ordered[0].dt_start_utc
+    duty = (
+        Decimal(window.days * 86400 + window.seconds) / Decimal("3600")
+        + REPORT_PAD_HOURS
+        + TRIP_END_PAD_HOURS
+    )
+    return block, duty
+
+
+def apply_deadhead_recompute(
+    month: Month,
+    deadhead_legs: tuple[DeadheadLegEvent, ...],
+) -> tuple[Month, tuple[AppliedEvent, ...]]:
+    """Recompute deadhead (DH) days per §3.E.1.d from the feed's POG legs.
+
+    The company publishes a DH day's PCH from the bare dep→arr span WITHOUT
+    the report/release allowance §7.C.2 grants a Deadhead Assignment
+    (verified live 2026-08-20: published 6.22 = 12.45 h dep→arr ÷ 2
+    exactly). Grouping the feed's ``POG - Deadheading`` legs by their
+    Anchorage-local date, the duty window is padded (report before the
+    first departure, release after the last arrival) and the recompute is
+    stored on ``Day.deadhead_pch``; lowering then credits
+    ``max(published, recompute)`` per §3.E.1.b — never a reduction.
+
+    Only days the FA already types as ``DH`` are touched: a deadhead leg
+    attached to an operating trip is priced by the packet's DeadHead PCH
+    inside the §3.E trip value, not here. A redeye whose legs land on two
+    local dates recomputes each date's window separately (untested against
+    a live specimen — both Aug 2026 DH duty periods were same-date). Runs
+    BEFORE ``apply_overrides_to_month`` so an explicit pilot edit remains
+    the final word.
+    """
+    if not deadhead_legs:
+        return month, ()
+
+    legs_by_date: dict[date_t, list[DeadheadLegEvent]] = {}
+    for leg in deadhead_legs:
+        legs_by_date.setdefault(_local_date(leg.dt_start_utc), []).append(leg)
+
+    events: list[AppliedEvent] = []
+    new_days: list[Day] = []
+    for day in month.days:
+        legs = legs_by_date.get(day.date) if day.date is not None else None
+        if not legs or day.duty_type is not DutyType.DH:
+            new_days.append(day)
+            continue
+        block, duty = deadhead_window_hours(legs)
+        recomputed = deadhead_pch_from_times(block, duty)
+        new_days.append(replace(day, deadhead_pch=recomputed))
+        events.append(
+            AppliedEvent(
+                kind=AppliedEventKind.DEADHEAD_RECOMPUTE,
+                date=day.date,
+                trip_id=None,
+                detail=(
+                    f"Deadhead §3.E.1.d recompute: {recomputed:.2f} "
+                    f"(DH block {block:.2f}h, padded duty {duty:.2f}h) "
+                    f"vs published {day.pch_value:.2f}"
+                ),
+                delta_pch=max(Decimal("0"), recomputed - day.pch_value),
+            )
+        )
+    if not events:
+        return month, ()
+    return replace(month, days=tuple(new_days)), tuple(events)
 
 
 # The feed's affirmative approved-drop marker (specimen captured live
