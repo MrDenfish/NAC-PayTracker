@@ -3833,9 +3833,15 @@ def _build_cell(
         display_label = "CALLOUT" if is_callout else label
         from nac_pay.engine.constants import DPG
         from nac_pay.schedule.labels import premium_multiplier as _pm
-        pch_display = (
-            max(DPG, day.callout_trip_pch) if is_callout else day.pch_value
-        )
+        if is_callout:
+            pch_display = max(DPG, day.callout_trip_pch)
+        elif day.deadhead_pch is not None:
+            # §3.E.1.b on a DH day: the calendar shows the credited value —
+            # the same max(published, §3.E.1.d recompute) lowering applies —
+            # so the cell agrees with the day page and the engine.
+            pch_display = max(day.pch_value, day.deadhead_pch)
+        else:
+            pch_display = day.pch_value
         mult = _pm(day.premium_category, day.custom_multiplier)
         # On an iCal callout, surface the flown trip id (e.g. 720/1780) as the
         # bold "new" assignment over the subtle reserve line (e.g. 1021), the
