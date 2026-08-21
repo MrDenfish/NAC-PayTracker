@@ -1,0 +1,39 @@
+{% extends "public/_base_public.html" %}
+{% block title %}NAC Pay Tracker — pilot pay, verified{% endblock %}
+
+{% block content %}
+<div class="auth-card public-card">
+  <h1>Know what you earned.</h1>
+  <p class="subtle">
+    NAC Pay Tracker is a private pay-tracking tool for airline pilots.
+    It reads the monthly schedule documents you already receive, computes
+    your credited pay hours under your contract's pay rules, and flags
+    days where the company's published figures don't match.
+  </p>
+
+  <h2>What it does</h2>
+  <ul>
+    <li>Builds a calendar of your month from your own schedule documents.</li>
+    <li>Recomputes each day's credit — trip pay, duty rigs, guarantees, premiums.</li>
+    <li>Highlights discrepancies so you can file for the pay you're owed.</li>
+  </ul>
+
+  <h2>Access</h2>
+  <p class="subtle">
+    This is a private tool, not a public service. Creating an account
+    requires details from your airline crew documents, so signup is
+    effectively limited to invited crewmembers.
+  </p>
+
+  <div class="public-actions">
+    <a class="btn btn--primary" href="/login">Sign in</a>
+    <a class="btn btn--secondary" href="/signup">Sign up</a>
+  </div>
+
+  <h2>Contact</h2>
+  <p class="subtle">
+    Questions, or want your data removed?
+    Email <a href="mailto:support@pch-ledger.com">support@pch-ledger.com</a>.
+  </p>
+</div>
+{% endblock %}

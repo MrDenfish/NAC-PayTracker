@@ -16,8 +16,11 @@ from .dependencies import auth_required
 _PUBLIC_PATHS: frozenset[str] = frozenset(
     # /sw.js + /manifest.webmanifest are static-like PWA control files that
     # the browser may fetch outside an authed page context.
+    # "/" is public so anonymous visitors get the landing page; the route
+    # itself branches before resolving any user, so no data is reachable.
     {"/login", "/signup", "/forgot", "/api/health", "/logout",
-     "/sw.js", "/manifest.webmanifest"}
+     "/sw.js", "/manifest.webmanifest",
+     "/", "/privacy", "/terms", "/robots.txt"}
 )
 _PUBLIC_PREFIXES: tuple[str, ...] = (
     "/verify/", "/reset/", "/static/", "/webhooks/",

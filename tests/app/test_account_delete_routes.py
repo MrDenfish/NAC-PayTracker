@@ -78,7 +78,12 @@ def test_delete_happy_path_removes_user_and_ends_session(monkeypatch):
     assert "Your account and all of its data have been deleted" in r.text
     assert find_by_email(email) is None
 
+    # Session is gone: "/" serves the public landing page, and protected
+    # pages redirect to /login.
     r = client.get("/", follow_redirects=False)
+    assert r.status_code == 200
+    assert "private pay-tracking tool" in r.text
+    r = client.get("/calendar", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/login"
 

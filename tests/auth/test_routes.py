@@ -235,13 +235,18 @@ def test_auth_required_false_lets_unauthenticated_dashboard_through():
 
 
 def test_auth_required_true_redirects_unauthenticated_to_login(monkeypatch):
-    """When AUTH_REQUIRED=true and no session, dashboard redirects to
-    /login. Public paths (login, signup, static) stay open."""
+    """When AUTH_REQUIRED=true and no session, protected pages redirect
+    to /login; ``/`` renders the public landing page instead. Public
+    paths (login, signup, static) stay open."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     isolated = TestClient(app)
-    r = isolated.get("/", follow_redirects=False)
+    r = isolated.get("/calendar", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/login"
+    # ``/`` is public now — landing page, not a redirect.
+    r = isolated.get("/", follow_redirects=False)
+    assert r.status_code == 200
+    assert "private pay-tracking tool" in r.text
     # /login itself stays reachable
     assert isolated.get("/login").status_code == 200
     assert isolated.get("/signup").status_code == 200
@@ -262,14 +267,18 @@ def test_logout_clears_session(monkeypatch):
     from nac_pay.auth import find_by_email
     from nac_pay.onboarding import mark_completed
     mark_completed(find_by_email("leo@example.com"))
-    # Dashboard should be reachable now.
-    assert isolated.get("/", follow_redirects=False).status_code == 200
+    # Dashboard should be reachable now (and NOT the public landing page).
+    r = isolated.get("/", follow_redirects=False)
+    assert r.status_code == 200
+    assert "private pay-tracking tool" not in r.text
     # Log out.
     r = isolated.post("/logout", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/login"
-    # Dashboard redirects again after logout.
-    assert isolated.get("/", follow_redirects=False).status_code == 303
+    # After logout ``/`` serves the public landing page again.
+    r = isolated.get("/", follow_redirects=False)
+    assert r.status_code == 200
+    assert "private pay-tracking tool" in r.text
 
 
 # ── Tiny helper used above ───────────────────────────────────────────
