@@ -43,6 +43,7 @@ from .auth_routes import router as auth_router
 from .billing_routes import router as billing_router
 from .document_routes import router as document_router
 from .onboarding_routes import router as onboarding_router
+from .public import landing_response, router as public_router
 from .pwa import router as pwa_router
 
 from .feed_updater import feed_update_loop, updater_enabled
@@ -188,6 +189,7 @@ app.include_router(billing_router)
 app.include_router(document_router)
 app.include_router(onboarding_router)
 app.include_router(pwa_router)
+app.include_router(public_router)
 app.include_router(admin_router)
 
 
@@ -224,6 +226,12 @@ def dashboard(
 ) -> HTMLResponse:
     """Dashboard view. Accepts either explicit ?year=&month= or a combined
     ?ym=YYYY-M (what the month switcher submits)."""
+    # Anonymous visitors get the public landing page. This branch MUST
+    # come before any user resolution: _user_id() falls back to the
+    # default (sample-data) user when the session is empty, which must
+    # never render for strangers.
+    if _auth_required_flag() and not request.session.get("user_id"):
+        return landing_response(request)
     if ym and (year is None or month is None):
         try:
             y_str, m_str = ym.split("-", 1)

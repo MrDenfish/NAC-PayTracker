@@ -9,8 +9,11 @@
 </head>
 <body class="auth-body">
   <main class="auth-shell">
-    <div class="auth-brand">NAC Pay Tracker</div>
+    <div class="auth-brand"><a href="/" style="text-decoration:none;color:inherit;">NAC Pay Tracker</a></div>
     {% block content %}{% endblock %}
+    <p class="subtle" style="text-align:center;margin-top:18px;font-size:13px;">
+      <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a>
+    </p>
   </main>
   {% include "_pwa_scripts.html" %}
 </body>

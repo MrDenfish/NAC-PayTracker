@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}NAC Pay Tracker{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v={{ static_v }}">
+  {# Deliberately NO _pwa_head/_pwa_scripts: public pages must not register
+     the service worker or trigger the per-user offline pre-warm. #}
+  <style>
+    .public-shell { max-width: 640px; margin: 0 auto; padding: 40px 20px 24px; }
+    .public-card { text-align: left; }
+    .public-card ul { margin: 10px 0 18px; padding-left: 22px; }
+    .public-card li { margin: 6px 0; }
+    .public-actions { display: flex; gap: 10px; margin: 18px 0 6px; }
+    .public-actions .btn { flex: 1; text-align: center; text-decoration: none; padding: 12px 0; }
+    .public-foot { text-align: center; margin-top: 22px; font-size: 13px; }
+    .public-card h2 { font-size: 16px; margin: 22px 0 6px; }
+  </style>
+</head>
+<body class="auth-body">
+  <main class="auth-shell public-shell">
+    <div class="auth-brand"><a href="/" style="text-decoration:none;color:inherit;">NAC Pay Tracker</a></div>
+    {% block content %}{% endblock %}
+    <p class="subtle public-foot">
+      <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/login">Sign in</a>
+    </p>
+  </main>
+</body>
+</html>

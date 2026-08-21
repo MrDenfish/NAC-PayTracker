@@ -88,6 +88,11 @@ _ONBOARDING_PUBLIC_PATHS: frozenset[str] = frozenset(
         "/sw.js",
         "/manifest.webmanifest",
         "/offline-manifest.json",
+        # Public trust pages — a fresh user reading the policy linked from
+        # the auth pages must not be bounced into the wizard.
+        "/privacy",
+        "/terms",
+        "/robots.txt",
     }
 )
 _ONBOARDING_PUBLIC_PREFIXES: tuple[str, ...] = (
