@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
@@ -157,21 +157,29 @@ class ReconciledTrip:
         return self.packet_trip.trip_pch_value if self.packet_trip else None
 
     @property
-    def calendar_days_touched(self) -> int:
-        """Distinct calendar dates (Anchorage-local) covered by the trip's legs.
+    def workday_count(self) -> int:
+        """§3.D.2 workdays: a single duty period spanning two calendar days is
+        ONE workday; two duty periods touching the same day are two.
 
-        Rough workday count — proper §3.D.2 workday counting needs duty-
-        period boundaries (one duty period across two calendar days = 1
-        workday), which the packet has and this grouping doesn't yet
-        reproduce. Local, not UTC: an ANC-afternoon leg already spans two
-        UTC dates, which would overcount workdays (and the cumulative-DPG
-        candidate downstream).
+        Duty periods are separated by a rest, so count the rests: any gap of
+        at least ``OVERNIGHT_REST_MIN_HOURS`` between one leg's arrival and
+        the next leg's departure starts a new duty period. Counting calendar
+        dates instead (the pre-2026-08-31 behaviour) credited an overnight
+        single duty period as 2 x DPG — the Sept 2026 1700/1701 ANC-SEA-ANC
+        pickup goes out 17:45 and lands 02:30 ANC-local, and was paying 7.64
+        instead of its 6.75 actual block.
+
+        Deliberately timezone-free: gaps are durations, so unlike a date
+        count this cannot be skewed by UTC-vs-local attribution.
         """
-        days = {local_date(leg.dt_start_utc) for leg in self.legs}
-        # Also include the final leg's end date in case it spills past midnight.
-        if self.legs:
-            days.add(local_date(self.legs[-1].dt_end_utc))
-        return len(days)
+        if not self.legs:
+            return 0
+        rest = timedelta(hours=OVERNIGHT_REST_MIN_HOURS)
+        periods = 1
+        for prev, nxt in zip(self.legs, self.legs[1:]):
+            if nxt.dt_start_utc - prev.dt_end_utc >= rest:
+                periods += 1
+        return periods
 
 
 @dataclass(frozen=True)

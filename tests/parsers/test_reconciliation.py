@@ -135,7 +135,7 @@ def test_first_trip_is_768_768_769_on_june_12(reconciled):
     assert trip.published_pch == D("4.17")
     assert len(trip.legs) == 3
     assert trip.first_dt_utc.date().isoformat() == "2026-06-12"
-    assert trip.calendar_days_touched == 1
+    assert trip.workday_count == 1
 
 
 def test_second_trip_is_722_723_754_755_on_june_17(reconciled):
@@ -325,12 +325,41 @@ def test_matched_multiday_group_is_never_split():
     assert result.trips[0].match_status is MatchStatus.MATCHED
 
 
-def test_calendar_days_touched_uses_anchorage_local_dates():
+def test_workday_count_is_one_for_a_single_leg():
     """A 15:00→17:00 ANC afternoon leg spans 23:00Z→01:00Z — two UTC dates,
-    ONE civil day. Days-touched feeds workday counting (cumulative DPG in
-    the off-day pickup recompute) and must be local, not UTC."""
+    ONE duty period. Workday count feeds the cumulative-DPG candidate in the
+    off-day pickup recompute, so a single leg must never count as two."""
     legs = (
         _leg("768", "ANC", "OME", _utc(2026, 7, 24, 23, 0), _utc(2026, 7, 25, 1, 0)),
     )
     result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), {})
-    assert result.trips[0].calendar_days_touched == 1
+    assert result.trips[0].workday_count == 1
+
+
+def test_workday_count_is_one_for_one_duty_period_crossing_midnight():
+    """§3.D.2: a single duty period spanning two calendar days = ONE workday.
+
+    Live case — Sept 2026 flight 1700/1701 ANC-SEA-ANC: out 0145Z, 2h on the
+    ground in SEA, in 1030Z. Anchorage-local that is 17:45 out and 02:30 in
+    the NEXT morning. Counting calendar dates gave 2 workdays and a bogus
+    7.64 (2 x DPG) cumulative-DPG candidate."""
+    legs = (
+        _leg("1700", "ANC", "SEA", _utc(2026, 9, 3, 1, 45), _utc(2026, 9, 3, 5, 0)),
+        _leg("1701", "SEA", "ANC", _utc(2026, 9, 3, 7, 0), _utc(2026, 9, 3, 10, 30)),
+    )
+    result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), {})
+    assert len(result.trips) == 1
+    assert result.trips[0].workday_count == 1
+
+
+def test_workday_count_is_two_when_an_overnight_rest_splits_duty_periods():
+    """The counterpart: a genuine two-duty-period pairing (8.5h rest in OME)
+    that matches the packet is never split, and must still count 2 workdays."""
+    legs = (
+        _leg("900", "ANC", "OME", _utc(2026, 7, 25, 2, 0), _utc(2026, 7, 25, 3, 15)),
+        _leg("901", "OME", "ANC", _utc(2026, 7, 25, 11, 45), _utc(2026, 7, 25, 13, 0)),
+    )
+    packet = {"900/901": object()}
+    result = reconcile_feed_to_packet(ParsedFeed(flight_legs=legs), packet)
+    assert len(result.trips) == 1
+    assert result.trips[0].workday_count == 2

@@ -1153,6 +1153,45 @@ def test_offday_pickup_surfaces_as_proposal_with_dpg_floor():
     assert all(e.kind is not AppliedEventKind.UNMATCHED_TRIP_REVIEW for e in events)
 
 
+def test_offday_pickup_across_midnight_credits_block_not_two_dpg():
+    """2026-09-02 flight 1700/1701 (ANC-SEA-ANC) picked up on an off day.
+
+    One duty period: out 0145Z (17:45 ANC-local Sep 2), 2h sit in SEA, in
+    1030Z (02:30 ANC-local Sep 3). §3.D.2 makes that ONE workday, so the
+    cumulative-DPG candidate is 3.82 and actual block 6.75 wins the §3.E max.
+    Counting calendar dates instead credited 2 x 3.82 = 7.64 — a 0.89
+    overcredit on a pairing that repeats three times a week."""
+    on = date(2026, 9, 2)
+    out1 = datetime(2026, 9, 3, 1, 45, tzinfo=timezone.utc)
+    in1 = datetime(2026, 9, 3, 5, 0, tzinfo=timezone.utc)
+    out2 = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+    in2 = datetime(2026, 9, 3, 10, 30, tzinfo=timezone.utc)
+    rt = ReconciledTrip(
+        flight_sequence="1700/1701",
+        legs=(
+            _leg("1700", out1, in1, org="ANC", dst="SEA"),
+            _leg("1701", out2, in2, org="SEA", dst="ANC"),
+        ),
+        packet_trip=None,
+        match_status=MatchStatus.UNMATCHED_NO_PACKET,
+        first_dt_utc=out1,
+        last_dt_utc=in2,
+        actual_block_hours=D("6.75"),
+    )
+    baseline = replace(_empty_month(), month=9)
+    reconciliation = ReconciliationResult(trips=(rt,), unmatched=(rt,))
+
+    updated, _events, reassigns = apply_actuals_to_month(baseline, reconciliation)
+
+    added = updated.trips[-1]
+    assert added.trip_id == "1700/1701"
+    assert added.dates == (on,)
+    assert added.workdays == 1
+    assert added.published_pch == D("6.75")
+    assert reassigns[0].new_pch == D("6.75")
+    assert reassigns[0].effective_pch == D("6.75")
+
+
 def test_offday_pickup_rejected_adds_nothing():
     on = date(2026, 6, 12)
     baseline = _empty_month()

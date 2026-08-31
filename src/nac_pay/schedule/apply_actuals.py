@@ -283,7 +283,7 @@ def apply_actuals_to_month(
                     published_pch=rt.published_pch,
                     reason_code=ReasonCode.FLOWN,
                     premium_category=PremiumCategory.OPEN_TIME_BID_PERIOD,
-                    workdays=rt.calendar_days_touched,
+                    workdays=rt.workday_count,
                     entry_mode=EntryMode.SIMPLE,
                     label=f"Mid-month pickup {rt.trip_id} on {first_date.isoformat()}",
                     dates=(first_date,),
@@ -392,7 +392,7 @@ def apply_actuals_to_month(
                     published_pch=credited,
                     reason_code=ReasonCode.FLOWN,
                     premium_category=PremiumCategory.OPEN_TIME_BID_PERIOD,
-                    workdays=rt.calendar_days_touched,
+                    workdays=rt.workday_count,
                     entry_mode=EntryMode.SIMPLE,
                     label=(
                         f"Company pickup {signature} on "
@@ -888,7 +888,7 @@ def _recomputed_reroute_pch(
         deadhead = original_packet.deadhead_pch
     else:
         tafb = duty
-        workdays = rt.calendar_days_touched
+        workdays = rt.workday_count
         deadhead = Decimal("0")
     return components_from_times(
         block_hours=block,

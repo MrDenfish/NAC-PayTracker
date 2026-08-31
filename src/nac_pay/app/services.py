@@ -486,11 +486,12 @@ def _resolve_duty_override_key(
     (the ``/day/<date>`` page) when they filed the correction — for a
     single-day trip that's also the trip's first local date, but for a
     multi-day pairing a correction filed on day 2 or 3 would otherwise
-    never match apply_actuals' lookup and silently no-op. Reuses the same
-    day-enumeration idiom as ``ReconciledTrip.calendar_days_touched``
-    (``reconciliation.py``) rather than inventing a new one — including the
-    last leg's END date, which can spill past local midnight and cover a
-    date no leg's START date touches.
+    never match apply_actuals' lookup and silently no-op. Enumerates every
+    local date the trip covers — including the last leg's END date, which
+    can spill past local midnight and cover a date no leg's START date
+    touches. (This is date COVERAGE, deliberately not §3.D.2 workday
+    counting — see ``ReconciledTrip.workday_count`` in
+    ``reconciliation.py``, where a spill date must NOT add a workday.)
 
     Falls back to ``date_iso`` itself when no trip covers that date (e.g.
     the feed already aged the trip out) — a key that might still match is

@@ -347,10 +347,11 @@ def test_build_duty_overrides_prefers_latest_created_at_over_seq():
 def test_duty_override_key_resolves_via_overnight_leg_spill():
     """MINOR 5: a trip's last leg landing after ANC local midnight must
     extend the trip's covered dates via that leg's END date, not just leg
-    START dates — the same idiom ReconciledTrip.calendar_days_touched
-    uses (broken 3 times in this repo's history per the brief). A
+    START dates (broken 3 times in this repo's history per the brief). A
     correction filed on the spill date must still resolve to the trip's
-    first local date.
+    first local date. Note this is date COVERAGE, not workday counting —
+    that same spill date must not add a workday (see
+    ReconciledTrip.workday_count).
 
     Mutation-verified: changing ``if rt.legs:`` to ``if False:`` inside
     ``_resolve_duty_override_key`` makes this FAIL — "2026-06-02" would
