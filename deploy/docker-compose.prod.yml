@@ -14,6 +14,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        # Set by deploy/deploy.sh; "unknown" when built by hand.
+        NAC_PAY_GIT_SHA: ${NAC_PAY_GIT_SHA:-unknown}
     image: nac-pay:latest
     container_name: nac-pay
     restart: unless-stopped

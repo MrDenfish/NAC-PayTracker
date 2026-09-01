@@ -87,15 +87,28 @@ sudo docker exec amis-caddy caddy reload   --config /etc/caddy/Caddyfile
 ## Deploy / update
 
 ```bash
-cd /opt/nac-pay/deploy
-docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+sudo /opt/nac-pay/deploy/deploy.sh
 ```
 
-To ship new code later: `git pull` then re-run the command above.
+That is the whole procedure. The script pulls `main` **as the repo owner**,
+asserts `HEAD` actually moved to `origin/main`, rebuilds, then reads
+`NAC_PAY_GIT_SHA` back out of the **running container** and refuses to report
+success unless it matches. It finishes by checking health both inside the
+container and through Cloudflare.
+
+Do **not** deploy with a bare `docker compose up -d --build`. On 2026-08-31
+that path reported success while serving code from three PRs earlier: `git
+pull` had failed with *"detected dubious ownership"* (the repo is owned by
+`ubuntu`; SSM and sudo run as root), the build silently reused the old source,
+and the health check passed because the **old** app was perfectly healthy.
+Liveness is not identity.
 
 ## Verify
 
 ```bash
+# what commit is actually running?
+docker exec nac-pay printenv NAC_PAY_GIT_SHA
+
 # from the box — direct to the container
 docker exec nac-pay curl -fsS http://localhost:8000/api/health   # {"status":"ok"}
 docker compose -f docker-compose.prod.yml logs -f nac-pay
