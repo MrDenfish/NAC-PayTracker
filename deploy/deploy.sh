@@ -11,6 +11,13 @@
 # passed because the OLD app was perfectly healthy. Liveness never proves
 # identity. Every step below is asserted, and the script exits non-zero the
 # moment reality diverges from intent.
+#
+# Two stages, deliberately. This script lives IN the repo it pulls, and bash
+# reads a script lazily by byte offset — so a pull that rewrites deploy.sh
+# mid-run makes bash execute a mixture of old and new code. (That is not
+# hypothetical: it silently ran the pre-fix health check on 2026-08-31.)
+# Stage 1 pulls, then re-execs a /tmp COPY of the freshly pulled script as
+# stage 2, which is therefore immune to further edits.
 # =============================================================================
 set -euo pipefail
 
@@ -22,26 +29,37 @@ COMPOSE="docker compose -f docker-compose.prod.yml --env-file .env.prod"
 
 die() { echo "DEPLOY FAILED: $*" >&2; exit 1; }
 step() { echo; echo "── $* ──"; }
-
-# Always drive git as the repo owner. Running git as root against an
-# ubuntu-owned tree is the exact failure this script exists to prevent.
 as_owner() { sudo -u "$OWNER" -H git -C "$REPO" "$@"; }
 
-[ -d "$REPO/.git" ] || die "$REPO is not a git repository"
+# ── Stage 1: pull, then hand off to a pinned copy of the new script ─────────
+if [ "${DEPLOY_STAGE:-1}" = "1" ]; then
+  [ -d "$REPO/.git" ] || die "$REPO is not a git repository"
 
-step "Resolving intent"
-EXPECTED=$(as_owner ls-remote origin "$BRANCH" | cut -f1)
-[ -n "$EXPECTED" ] || die "could not resolve origin/$BRANCH"
-BEFORE=$(as_owner rev-parse HEAD)
-echo "  current: ${BEFORE:0:7}"
-echo "  target : ${EXPECTED:0:7}"
+  step "Resolving intent"
+  EXPECTED=$(as_owner ls-remote origin "$BRANCH" | cut -f1)
+  [ -n "$EXPECTED" ] || die "could not resolve origin/$BRANCH"
+  BEFORE=$(as_owner rev-parse HEAD)
+  echo "  current: ${BEFORE:0:7}"
+  echo "  target : ${EXPECTED:0:7}"
 
-step "Pulling"
-as_owner pull --ff-only origin "$BRANCH"
-ACTUAL=$(as_owner rev-parse HEAD)
-[ "$ACTUAL" = "$EXPECTED" ] ||
-  die "HEAD is ${ACTUAL:0:7} but origin/$BRANCH is ${EXPECTED:0:7} — pull did not take"
-echo "  now at : ${ACTUAL:0:7}"
+  step "Pulling"
+  as_owner pull --ff-only origin "$BRANCH"
+  ACTUAL=$(as_owner rev-parse HEAD)
+  [ "$ACTUAL" = "$EXPECTED" ] ||
+    die "HEAD is ${ACTUAL:0:7} but origin/$BRANCH is ${EXPECTED:0:7} — pull did not take"
+  echo "  now at : ${ACTUAL:0:7}"
+
+  PINNED=$(mktemp /tmp/nac-pay-deploy.XXXXXX.sh)
+  cp "$REPO/deploy/deploy.sh" "$PINNED"
+  chmod +x "$PINNED"
+  trap 'rm -f "$PINNED"' EXIT
+  DEPLOY_STAGE=2 DEPLOY_SHA="$ACTUAL" DEPLOY_PREV="$BEFORE" "$PINNED"
+  exit $?
+fi
+
+# ── Stage 2: build and verify (running from /tmp, cannot be rewritten) ──────
+ACTUAL=${DEPLOY_SHA:?stage 2 requires DEPLOY_SHA}
+BEFORE=${DEPLOY_PREV:-unknown}
 
 step "Building and starting"
 cd "$REPO/deploy"
@@ -50,12 +68,13 @@ cd "$REPO/deploy"
 NAC_PAY_GIT_SHA="$ACTUAL" $COMPOSE up -d --build
 
 step "Proving the running container is the intended commit"
-for i in $(seq 1 30); do
+RUNNING=""
+for _ in $(seq 1 30); do
   RUNNING=$(docker exec nac-pay printenv NAC_PAY_GIT_SHA 2>/dev/null || true)
   [ -n "$RUNNING" ] && break
   sleep 2
 done
-[ -n "${RUNNING:-}" ] || die "container never reported NAC_PAY_GIT_SHA (old image without the build arg?)"
+[ -n "$RUNNING" ] || die "container never reported NAC_PAY_GIT_SHA (old image without the build arg?)"
 [ "$RUNNING" = "$ACTUAL" ] ||
   die "container is running ${RUNNING:0:7} but we deployed ${ACTUAL:0:7} — STALE IMAGE"
 echo "  container reports ${RUNNING:0:7} ✓"
