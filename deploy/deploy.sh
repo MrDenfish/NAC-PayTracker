@@ -24,7 +24,8 @@ set -euo pipefail
 REPO=${REPO:-/opt/nac-pay}
 OWNER=${OWNER:-ubuntu}
 BRANCH=${BRANCH:-main}
-PUBLIC_URL=${PUBLIC_URL:-https://pch-ledger.com/api/health}
+SITE_HOST=${SITE_HOST:-pch-ledger.com}
+HEALTH_PATH=${HEALTH_PATH:-/api/health}
 COMPOSE="docker compose -f docker-compose.prod.yml --env-file .env.prod"
 
 die() { echo "DEPLOY FAILED: $*" >&2; exit 1; }
@@ -97,11 +98,21 @@ wait_for "container health" 30 2 \
   docker exec nac-pay curl -fsS http://localhost:8000/api/health ||
   die "container never became healthy (60s)"
 
-# Box-local health says nothing about Caddy, Cloudflare, TLS, or DNS. A deploy
-# that only checks localhost can leave the public site broken and call it a win.
-wait_for "public health" 10 3 \
-  curl -fsS --max-time 20 "$PUBLIC_URL" ||
-  die "public health check failed at $PUBLIC_URL (container is up — suspect Caddy/Cloudflare)"
+# A container health check says nothing about Caddy, TLS, or routing, so also
+# go in through the front door — but at 127.0.0.1, NOT through Cloudflare.
+# Fetching the real public URL from the box returns 403: Cloudflare's WAF
+# (added during the 2026-08 signup-abuse hardening) blocks the origin's own
+# egress. --resolve keeps the SNI and Host correct while pinning the
+# connection to local Caddy; -k because the origin cert is Cloudflare Origin
+# CA, which is deliberately not publicly trusted.
+wait_for "edge health (via Caddy)" 10 3 \
+  curl -fsSk --resolve "${SITE_HOST}:443:127.0.0.1" --max-time 20 \
+    "https://${SITE_HOST}${HEALTH_PATH}" ||
+  die "Caddy did not serve ${SITE_HOST}${HEALTH_PATH} (container is up — suspect Caddy config or the amis-internal network)"
 
 echo
 echo "DEPLOY OK — ${BEFORE:0:7} → ${ACTUAL:0:7}"
+echo
+# Everything above runs ON the origin, so it cannot prove Cloudflare, DNS, or
+# the public TLS path. Confirm from off-box after deploying:
+echo "  Still to confirm from OFF the box:  curl -fsS https://${SITE_HOST}${HEALTH_PATH}"
