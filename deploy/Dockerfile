@@ -34,6 +34,14 @@ RUN useradd --create-home --uid 10001 appuser \
 USER appuser
 
 ENV NAC_PAY_DATA_DIR=/data
+
+# Stamp the build with the commit it came from. deploy/deploy.sh reads this
+# back out of the RUNNING container and refuses to call a deploy successful
+# unless it matches the commit that was just pulled — a healthy container is
+# not evidence that it is the right container.
+ARG NAC_PAY_GIT_SHA=unknown
+ENV NAC_PAY_GIT_SHA=${NAC_PAY_GIT_SHA}
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
