@@ -61,14 +61,28 @@ done
 echo "  container reports ${RUNNING:0:7} ✓"
 
 step "Health — container, then the public path"
-docker exec nac-pay curl -fsS http://localhost:8000/api/health >/dev/null ||
-  die "container health check failed"
-echo "  container health ✓"
+# A freshly recreated container answers `printenv` immediately but is not
+# serving yet: uvicorn needs a moment to bind, and the compose healthcheck
+# allows a 20s start period. Probing once, instantly, fails a deploy that is
+# actually fine — so wait for readiness rather than asserting it.
+wait_for() {
+  local what=$1 tries=$2 delay=$3; shift 3
+  for _ in $(seq 1 "$tries"); do
+    if "$@" >/dev/null 2>&1; then echo "  $what ✓"; return 0; fi
+    sleep "$delay"
+  done
+  return 1
+}
+
+wait_for "container health" 30 2 \
+  docker exec nac-pay curl -fsS http://localhost:8000/api/health ||
+  die "container never became healthy (60s)"
+
 # Box-local health says nothing about Caddy, Cloudflare, TLS, or DNS. A deploy
 # that only checks localhost can leave the public site broken and call it a win.
-curl -fsS --max-time 20 "$PUBLIC_URL" >/dev/null ||
+wait_for "public health" 10 3 \
+  curl -fsS --max-time 20 "$PUBLIC_URL" ||
   die "public health check failed at $PUBLIC_URL (container is up — suspect Caddy/Cloudflare)"
-echo "  public health ✓"
 
 echo
 echo "DEPLOY OK — ${BEFORE:0:7} → ${ACTUAL:0:7}"
